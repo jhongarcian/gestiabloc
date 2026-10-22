@@ -7,10 +7,12 @@ export async function lockServiceStepRuntimeTx(
   source: { tenantId: string; serviceContext?: unknown },
 ) {
   const context = readAutomationServiceContext(source.serviceContext)
-  if (!context?.serviceStepOccurrenceId || typeof tx.$queryRaw !== "function") return null
-  await tx.$queryRaw(
+  if (!context || typeof tx.$queryRaw !== "function") return null
+  const locked = await tx.$queryRaw(
     Prisma.sql`SELECT id FROM "ContactService" WHERE "tenantId"=${source.tenantId} AND id=${context.contactServiceId} FOR UPDATE`,
   )
+  if (Array.isArray(locked) && !locked.length) return { context, superseded: true }
+  if (!context.serviceStepOccurrenceId) return { context, superseded: false }
   const occurrence = await tx.serviceStepOccurrence.findFirst({
     where: {
       tenantId: source.tenantId,

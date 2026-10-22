@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
-import { captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
+import { processClaimedAutomationEvent, captureContactChangeSnapshot, claimQueuedAutomationDispatch, queueAppointmentCreatedAutomationEvent, queueAppointmentStatusChangedAutomationEvent, queueBirthdayReminderAutomationEvent, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent, queueTaskAddedAutomationEvent, queueTaskCompletedAutomationEvent, queueOpportunityAutomationEvent } from "./automation-event-queue.js"
 
 const WAIT_ACTION = {
   id: "action-1",
@@ -958,4 +958,18 @@ describe("queueOpportunityAutomationEvent", () => {
       pipelineId: "pipeline-1",
     })
   })
+})
+
+test("an event worker whose shared lease expired cannot renew or execute a dispatch", async () => {
+  let eventRenewed = false
+  const client = {
+    automationEvent: {
+      findUnique: async () => ({ id: "event", leaseToken: "old-token", status: "PROCESSING", dispatches: [{ id: "dispatch", status: "QUEUED" }] }),
+      updateMany: async () => { eventRenewed = true; return { count: 1 } },
+    },
+    automationExecutionLease: { updateMany: async () => ({ count: 0 }) },
+    $transaction: async () => { throw new Error("An expired worker must not execute") },
+  }
+  await processClaimedAutomationEvent(client, { eventId: "event", leaseToken: "old-token" })
+  assert.equal(eventRenewed, false)
 })

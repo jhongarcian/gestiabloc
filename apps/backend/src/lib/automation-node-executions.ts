@@ -2,6 +2,7 @@ import type { AutomationServiceContext } from "./automation-service-context.js"
 
 export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
+  | "SERVICE_ENROLLED" | "SERVICE_STATUS_CHANGED" | "SERVICE_CHECKLIST_STATUS_CHANGED" | "SERVICE_PAYMENT_CHANGED"
   | "SERVICE_STEP_ENTERED"
   | "SERVICE_STEP_COMPLETED"
   | "MANUAL_ENROLLMENT"
@@ -177,6 +178,8 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
+  const serviceLabels: Record<string, string> = { SERVICE_ENROLLED: "Enrollment created", SERVICE_STATUS_CHANGED: "Service status changed", SERVICE_CHECKLIST_STATUS_CHANGED: "Checklist status changed", SERVICE_PAYMENT_CHANGED: "Payment changed" }
+  if (serviceLabels[triggerType]) return serviceLabels[triggerType]
   if (triggerType === "SERVICE_STEP_COMPLETED") return "Step completed"
   if (triggerType === "SERVICE_STEP_ENTERED") return "Step entered"
   if (triggerType === "CONTACT_CREATED") return "Contact created"

@@ -1,3 +1,7 @@
+import { mutateServicePaymentTx } from "../lib/service-payment-mutations.js"
+import { captureServiceAutomationsTx } from "../lib/service-automation-snapshots.js"
+import { previewServiceConfigurationTx, applyServiceConfigurationTx } from "../lib/service-configuration-review.js"
+import { emitServiceAutomationEventTx } from "../lib/service-automation-events.js"
 import { mutateEnrolledServiceTx, lockServiceActionEnrollment } from "../lib/service-automation-actions.js"
 import { getServiceFollowUpQueue } from "../lib/service-followup-queue.js"
 import { changeServiceStepDeadlineTx, ChangeServiceStepDeadlineSchema } from "../lib/service-step-deadlines.js"
@@ -1890,6 +1894,74 @@ async function reconcileContactServiceCompletionFromFollowUps(
   return contactService
 }
 
+router.get("/:tenantId/configuration-updates/:serviceId/enrollments", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = z.object({ tenantId: z.uuid(), serviceId: z.uuid() }).parse(req.params)
+    const { cursor } = z.object({ cursor: z.uuid().optional() }).parse(req.query)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const service = await prisma.service.findFirst({ where: { tenantId, id: serviceId }, select: { kind: true } })
+    if (!service) return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    const items = await prisma.contactService.findMany({
+      where: { tenantId, workflowKind: "SERVICE_STEPS", status: { in: ["IN_PROGRESS", "PENDING_PAYMENT"] }, ...(cursor ? { id: { gt: cursor } } : {}),
+        ...(service.kind === "GROUP" ? { service: { parentServiceId: serviceId } } : { serviceId }) },
+      orderBy: { id: "asc" }, take: 21,
+      select: { id: true, serviceId: true, service: { select: { name: true } }, contact: { select: { firstName: true, lastName: true } },
+        configurationChanges: { where: { appliedAt: { not: null } }, orderBy: { appliedAt: "desc" }, take: 1, select: { appliedAt: true, appliedByName: true } } },
+    })
+    return res.json({ ok: true, items: items.slice(0, 20).map(item => ({ id: item.id, serviceId: item.serviceId, serviceName: item.service.name,
+      contactName: [item.contact.firstName, item.contact.lastName].filter(Boolean).join(" ") || "Contact", lastApplied: item.configurationChanges[0] ?? null })), nextCursor: items.length > 20 ? items[19]!.id : null })
+  } catch (error) { return next(error) }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/configuration-preview", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const preview = await prisma.$transaction(tx => previewServiceConfigurationTx(tx, path), { timeout: 15000 })
+    return res.json({ ok: true, preview })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/configuration-apply", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const payload = z.object({ previewId: z.uuid() }).strict().parse(req.body)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const result = await prisma.$transaction(tx => applyServiceConfigurationTx(tx, { ...path, ...payload, actorUserId: authed.user.id, actorName: authed.user.name ?? authed.user.email }), { timeout: 15000 })
+    return res.json({ ok: true, ...result })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/contact-services/:contactServiceId/configuration-history", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const items = await prisma.contactServiceConfigurationChange.findMany({ where: { ...path, appliedAt: { not: null } }, orderBy: { appliedAt: "desc" }, take: 20,
+      select: { id: true, appliedAt: true, appliedByName: true, preview: true } })
+    return res.json({ ok: true, items })
+  } catch (error) { return next(error) }
+})
+
 router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -3483,6 +3555,10 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       const activeChecklist = effective.checklistItems
       const usesServiceSteps = !payload.followUpTemplateId && effective.steps.length > 0
       const workflowKind = usesServiceSteps ? "SERVICE_STEPS" : selectedPublishedTemplate || templateStepsForEnrollment.length ? "LEGACY_TEMPLATE" : "NONE"
+      const serviceAutomations = usesServiceSteps ? await captureServiceAutomationsTx(tx, {
+        tenantId, serviceId: effective.id, groupId: effective.parentService?.id ?? null,
+        sourceStepIds: effective.steps.map(step => step.id),
+      }) : undefined
       const billingSnapshot = { schemaVersion: 1, sourceServiceId: effective.inheritance.billing.sourceServiceId ?? payload.serviceId,
         ...pickBilling(effective), ...tenantBilling, totalPriceCents }
       const selectedProfessional = effective.professionals.find(p => p.id === payload.assignedProfessionalId) ?? null
@@ -3494,7 +3570,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           workflowKind,
           followUpTemplateId: usesServiceSteps ? null : selectedPublishedTemplate?.id ?? null,
           followUpTemplateVersionId: usesServiceSteps ? null : selectedPublishedTemplate?.activeVersion?.id ?? null,
-          configurationSnapshot: captureEnrollmentConfiguration({ service: effective, billing: billingSnapshot, workflowKind,
+          configurationSnapshot: captureEnrollmentConfiguration({ service: effective, billing: billingSnapshot, workflowKind, serviceAutomations,
             followUpTemplateVersionId: usesServiceSteps ? null : selectedPublishedTemplate?.activeVersion?.id ?? null }),
           assignedProfessionalSnapshot: selectedProfessional ? professionalSnapshot(selectedProfessional) : Prisma.DbNull,
           followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
@@ -3513,8 +3589,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         },
       })
 
+      let initialPayment: any = null
       if (initialPaymentCents > 0) {
-        await prismaTx.contactServicePayment.create({
+        initialPayment = await prismaTx.contactServicePayment.create({
           data: {
             tenantId,
             contactServiceId: contactService.id,
@@ -3598,6 +3675,10 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         authed.user.id,
       )
 
+      if (usesServiceSteps) {
+        await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_ENROLLED", next: { status: "IN_PROGRESS" }, actor: { actorUserId: authed.user.id } })
+        if (initialPayment) await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_PAYMENT_CHANGED", recordId: initialPayment.id, change: "ADDED", isInitialPayment: true, next: initialPayment, actor: { actorUserId: authed.user.id } })
+      }
       return { contactService, followUpRunId }
     })
 
@@ -3969,11 +4050,17 @@ router.patch(
 
       const scopedEnrollment = await prisma.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
       if (scopedEnrollment?.workflowKind === "SERVICE_STEPS") {
-        const result = await prisma.$transaction(tx => mutateEnrolledServiceTx(tx, {
-          tenantId, contactServiceId, requestId: randomUUID(), actor: { actorUserId: authed.user.id },
-          action: { type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: payload.assignedToUserId } },
-        }))
-        return res.json({ ok: true, result })
+        const updated = await prisma.$transaction(async tx => {
+          await mutateEnrolledServiceTx(tx, {
+            tenantId, contactServiceId, requestId: randomUUID(), actor: { actorUserId: authed.user.id },
+            action: { type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: payload.assignedToUserId } },
+          })
+          return tx.contactService.findFirstOrThrow({ where: { tenantId, id: contactServiceId }, select: {
+            followUpCoordinatorUserId: true,
+            followUpCoordinator: { select: { id: true, name: true, email: true, image: true } },
+          } })
+        })
+        return res.json({ ok: true, ...updated })
       }
       const nextCoordinatorMembership = payload.assignedToUserId
         ? await prisma.membership.findUnique({
@@ -5149,301 +5236,71 @@ router.delete(
   },
 )
 
-router.post(
-  "/:tenantId/contact-services/:contactServiceId/payments",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const payload = CreateContactServicePaymentSchema.parse(req.body)
+router.post("/:tenantId/contact-services/:contactServiceId/payments", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    const payload = CreateContactServicePaymentSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "ADDED", actorUserId: authed.user.id, payload })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
+      return { payment: result.payment, summary }
+    })
+    return res.status(201).json({ ok: true, payment: result.payment, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
+router.patch("/:tenantId/contact-services/:contactServiceId/payments/:paymentId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, paymentId } = TenantContactServicePaymentPathSchema.parse(req.params)
+    const payload = UpdateContactServicePaymentSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    if (!Object.keys(payload).length) return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "UPDATED", actorUserId: authed.user.id, paymentId, payload })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
+      return { payment: result.payment, summary }
+    })
+    return res.status(200).json({ ok: true, payment: result.payment, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-      const contactService = await prismaWithServices.contactService.findFirst({
-        where: {
-          id: contactServiceId,
-          tenantId,
-        },
-        select: {
-          id: true,
-          totalPriceCents: true,
-          billingSnapshot: true,
-          allowPartialPayments: true,
-          service: {
-            select: {
-              minimumPartialPaymentCents: true,
-            },
-          },
-        },
-      })
+router.delete("/:tenantId/contact-services/:contactServiceId/payments/:paymentId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, paymentId } = TenantContactServicePaymentPathSchema.parse(req.params)
 
-      if (!contactService) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-      const existingPayments = await prismaWithServices.contactServicePayment.findMany({
-        where: {
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          amountCents: true,
-        },
-      })
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
-      const currentPaidCents = existingPayments.reduce(
-        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-        0,
-      )
-
-      const paymentError = getServiceTransactionPaymentValidationError({
-        totalPriceCents: contactService.totalPriceCents,
-        alreadyPaidCents: currentPaidCents,
-        paymentAmountCents: payload.amountCents,
-        allowPartialPayments: contactService.allowPartialPayments,
-        minimumPartialPaymentCents:
-          (readBillingSnapshot(contactService.billingSnapshot) ?? contactService.service).minimumPartialPaymentCents,
-      })
-      if (paymentError) {
-        return res.status(400).json({ error: paymentError })
-      }
-
-      const payment = await prismaWithServices.contactServicePayment.create({
-        data: {
-          tenantId,
-          contactServiceId,
-          amountCents: payload.amountCents,
-          paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
-          paymentMethod: payload.paymentMethod ?? null,
-          note: payload.note ?? null,
-          recordedById: authed.user.id,
-        },
-        select: {
-          id: true,
-          amountCents: true,
-          paidAt: true,
-          paymentMethod: true,
-          note: true,
-          recordedById: true,
-        },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.status(201).json({
-        ok: true,
-        payment,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.patch(
-  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, paymentId } =
-        TenantContactServicePaymentPathSchema.parse(req.params)
-      const payload = UpdateContactServicePaymentSchema.parse(req.body)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
-
-      if (Object.keys(payload).length === 0) {
-        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
-      }
-
-      const existing = await prismaWithServices.contactServicePayment.findFirst({
-        where: {
-          id: paymentId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-          amountCents: true,
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
-      }
-
-      const contactService = await prismaWithServices.contactService.findFirst({
-        where: {
-          id: contactServiceId,
-          tenantId,
-        },
-        select: {
-          totalPriceCents: true,
-          billingSnapshot: true,
-          allowPartialPayments: true,
-          service: {
-            select: {
-              minimumPartialPaymentCents: true,
-            },
-          },
-        },
-      })
-
-      if (!contactService) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-
-      const otherPayments = await prismaWithServices.contactServicePayment.findMany({
-        where: {
-          tenantId,
-          contactServiceId,
-          id: { not: paymentId },
-        },
-        select: {
-          amountCents: true,
-        },
-      })
-
-      const otherPaidCents = otherPayments.reduce(
-        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-        0,
-      )
-      const nextAmountCents = payload.amountCents ?? existing.amountCents
-
-      const paymentError = getServiceTransactionPaymentValidationError({
-        totalPriceCents: contactService.totalPriceCents,
-        alreadyPaidCents: otherPaidCents,
-        paymentAmountCents: nextAmountCents,
-        allowPartialPayments: contactService.allowPartialPayments,
-        minimumPartialPaymentCents:
-          (readBillingSnapshot(contactService.billingSnapshot) ?? contactService.service).minimumPartialPaymentCents,
-      })
-      if (paymentError) {
-        return res.status(400).json({ error: paymentError })
-      }
-
-      const payment = await prismaWithServices.contactServicePayment.update({
-        where: { id: paymentId },
-        data: {
-          ...(payload.amountCents !== undefined ? { amountCents: payload.amountCents } : {}),
-          ...(payload.paidAt !== undefined ? { paidAt: new Date(payload.paidAt) } : {}),
-          ...(payload.paymentMethod !== undefined
-            ? { paymentMethod: payload.paymentMethod }
-            : {}),
-          ...(payload.note !== undefined
-            ? { note: payload.note }
-            : {}),
-        },
-        select: {
-          id: true,
-          amountCents: true,
-          paidAt: true,
-          paymentMethod: true,
-          note: true,
-          recordedById: true,
-        },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.json({
-        ok: true,
-        payment,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.delete(
-  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, paymentId } =
-        TenantContactServicePaymentPathSchema.parse(req.params)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
-
-      const existing = await prismaWithServices.contactServicePayment.findFirst({
-        where: {
-          id: paymentId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
-      }
-
-      await prismaWithServices.contactServicePayment.delete({
-        where: { id: paymentId },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.json({
-        ok: true,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "REMOVED", actorUserId: authed.user.id, paymentId })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
+      return { payment: result.payment, summary }
+    })
+    return res.status(200).json({ ok: true, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
 router.patch(
   "/:tenantId/contact-services/:contactServiceId",

@@ -1,17 +1,19 @@
+import { isEnrollmentServiceAction } from "./service-automation-triggers.js"
+import { emitServiceAutomationEventTx, updateServiceStatusTx } from "./service-automation-events.js"
 import { createHash } from "node:crypto"
 import { z } from "zod"
 import { Prisma } from "../generated/prisma/index.js"
 import { validateAutomationServiceContextTx } from "./automation-service-context.js"
 import { ServiceCollectionError } from "./service-configuration-collections.js"
-import { loadEffectiveServiceConfiguration, serviceConfigurationSelect, resolveServiceConfiguration, lockServiceHierarchyTx } from "./service-configuration-inheritance.js"
-import { enrollmentProfessionalOptions, professionalSnapshot } from "./service-enrollment-snapshots.js"
+import { serviceConfigurationSelect, resolveServiceConfiguration, lockServiceHierarchyTx } from "./service-configuration-inheritance.js"
+import { enrollmentProfessionalOptions, professionalSnapshot, readProfessionalSnapshot } from "./service-enrollment-snapshots.js"
 import { resolveContactServiceChecklistTransition, buildContactServiceChecklistActivityData } from "./contact-service-checklist-status.js"
 import { serializeEnrolledChecklistItem } from "./service-enrollment-snapshots.js"
 import { moveServiceStepTx, supersedeStepWorkTx } from "./service-step-movement.js"
 import { completeServiceStepOccurrenceTx } from "./service-step-progression.js"
 import { changeServiceStepDeadlineTx, ServiceStepDeadlineScheduleSchema } from "./service-step-deadlines.js"
 
-const nodeKey = z.uuid().optional()
+const nodeKey = z.string().trim().min(1).max(200).optional()
 const userConfig = z.object({ assignedToUserId: z.uuid().nullable() }).strict()
 const reason = z.string().trim().min(1).max(1000)
 export const SERVICE_ACTION_TYPES = ["MOVE_SERVICE_STEP", "COMPLETE_SERVICE_STEP", "SKIP_SERVICE_STEP", "SCHEDULE_SERVICE_STEP", "SET_SERVICE_STEP_OWNER", "SET_SERVICE_COORDINATOR", "SET_SERVICE_PROFESSIONAL", "SET_SERVICE_CHECKLIST_STATUS", "SET_SERVICE_STATUS"] as const
@@ -40,12 +42,13 @@ export async function serviceActionCatalog(tx: Prisma.TransactionClient, tenantI
     select: serviceConfigurationSelect,
     orderBy: { name: "asc" },
   })
+  const activeUsers = new Set((await tx.membership.findMany({ where: { tenantId, status: "ACTIVE" }, select: { userId: true } })).map(member => member.userId))
   return offerings.map(offering => {
     const effective = resolveServiceConfiguration(offering)
-    return { id: offering.id, name: offering.name,
+    return { id: offering.id, name: offering.name, serviceGroupId: offering.parentServiceId,
       steps: effective.steps.map(step => ({ id: step.id, name: step.title })),
       checklistItems: effective.checklistItems.map(item => ({ id: item.id, name: item.label })),
-      professionals: effective.professionals.map(item => ({ id: item.id, name: item.externalProfessionalName || item.user?.name || item.user?.email || "Professional" })),
+      professionals: effective.professionals.filter(item => item.kind !== "INTERNAL_USER" || Boolean(item.userId && activeUsers.has(item.userId))).map(item => ({ id: item.id, name: item.externalProfessionalName || item.user?.name || item.user?.email || "Professional" })),
     }
   })
 }
@@ -84,6 +87,8 @@ export async function mutateEnrolledServiceTx(tx: Prisma.TransactionClient, inpu
   if (input.occurrenceId && (!occurrence || occurrence.supersededAt || (action.type !== "COMPLETE_SERVICE_STEP" && occurrence.status !== "ACTIVE" && !["WAITING_AUTOMATION", "PAUSED"].includes(occurrence.progressionStatus)))) throw new ServiceCollectionError("SERVICE_STEP_CHANGED", 409)
   let previous: unknown = null
   let next: unknown = null
+  let previousLabel: string | null = null
+  let nextLabel: string | null = null
   if (action.type === "MOVE_SERVICE_STEP" || action.type === "SKIP_SERVICE_STEP") {
     if (!occurrence) throw new ServiceCollectionError("SERVICE_STEP_OCCURRENCE_REQUIRED")
     const target = action.type === "MOVE_SERVICE_STEP" ? await tx.contactServiceStep.findFirst({ where: { tenantId, contactServiceId, sourceStepId: action.serviceConfig.targetSourceStepId } }) : null
@@ -124,9 +129,12 @@ export async function mutateEnrolledServiceTx(tx: Prisma.TransactionClient, inpu
   } else if (action.type === "SET_SERVICE_PROFESSIONAL") {
     // All callers lock the enrollment before configuration, including manual controls.
     await lockServiceHierarchyTx(tx, tenantId, enrollment.serviceId)
-    const effective = await loadEffectiveServiceConfiguration(tx, tenantId, enrollment.serviceId)
-    const options = await enrollmentProfessionalOptions(tx, tenantId, enrollment.configurationSnapshot, effective.professionals)
+    const options = await enrollmentProfessionalOptions(tx, tenantId, enrollment.configurationSnapshot, [])
     previous = enrollment.assignedProfessionalId; next = action.serviceConfig.professionalId
+    const previousProfessional = readProfessionalSnapshot(enrollment.assignedProfessionalSnapshot)
+    previousLabel = previousProfessional?.externalProfessionalName || previousProfessional?.user?.name || previousProfessional?.user?.email || "Unassigned"
+    const nextProfessional = options.find(option => option.id === next)
+    nextLabel = nextProfessional?.externalProfessionalName || nextProfessional?.user?.name || nextProfessional?.user?.email || "Unassigned"
     if (previous !== next) {
       const professional = options.find(option => option.id === next)
       if (professional?.kind === "INTERNAL_USER" && professional.userId && !await tx.membership.findFirst({ where: { tenantId, userId: professional.userId, status: "ACTIVE" } })) throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
@@ -141,6 +149,7 @@ export async function mutateEnrolledServiceTx(tx: Prisma.TransactionClient, inpu
     if (transition.changed) {
       await tx.contactServiceChecklistItem.update({ where: { id: item.id }, data: { status: action.serviceConfig.status, completedAt: transition.completedAt } })
       await tx.contactServiceChecklistActivity.create({ data: { ...buildContactServiceChecklistActivityData({ tenantId, contactServiceId, contactServiceChecklistItemId: item.id, itemLabel: serializeEnrolledChecklistItem(item).label, previousStatus: item.status, status: action.serviceConfig.status, actorUserId: actor.actorUserId }) } })
+      await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId, triggerType: "SERVICE_CHECKLIST_STATUS_CHANGED", recordId: item.id, checklistItemId: item.checklistItemId, itemLabel: serializeEnrolledChecklistItem(item).label, previous: { status: item.status, completedAt: item.completedAt }, next: { status: action.serviceConfig.status, completedAt: transition.completedAt }, actor, chain: input.chain })
     }
   } else if (action.type === "SET_SERVICE_STATUS") {
     previous = enrollment.status; next = action.serviceConfig.status
@@ -153,13 +162,18 @@ export async function mutateEnrolledServiceTx(tx: Prisma.TransactionClient, inpu
       await tx.serviceStepOccurrence.updateMany({ where: { tenantId, contactServiceId, status: "ACTIVE" }, data: { status: "CANCELED", resolvedAt: now, resolutionReason: actor.actorName ?? "Service canceled" } })
       await supersedeStepWorkTx(tx, tenantId, contactServiceId, now, "Service canceled", actor.actorUserId, (actor.automationSource as { runId?: string } | undefined)?.runId)
     }
-    if (previous !== next) await tx.contactService.update({ where: { id: contactServiceId }, data: { status: action.serviceConfig.status, canceledAt: next === "CANCELED" ? new Date() : null, completedAt: null } })
+    if (previous !== next) await updateServiceStatusTx(tx, { tenantId, contactServiceId, status: action.serviceConfig.status, canceledAt: next === "CANCELED" ? new Date() : null, completedAt: null, actor, chain: input.chain })
   }
   const changed = previous !== next
+  if (changed && (action.type === "SET_SERVICE_STEP_OWNER" || action.type === "SET_SERVICE_COORDINATOR")) {
+    const users = await tx.user.findMany({ where: { id: { in: [previous, next].filter((value): value is string => typeof value === "string") } }, select: { id: true, name: true, email: true } })
+    const label = (value: unknown) => users.find(user => user.id === value)?.name || users.find(user => user.id === value)?.email || "Unassigned"
+    previousLabel = label(previous); nextLabel = label(next)
+  }
   if (changed) await tx.serviceFollowUpExecutionLog.create({ data: {
     tenantId, contactServiceId, contactId: enrollment.contactId, actorUserId: actor.actorUserId,
-    eventType: action.type, title: action.type.toLowerCase().replaceAll("_", " "),
-    details: `${actor.actorName ?? "Staff"}: ${String(previous ?? "Unassigned")} → ${String(next ?? "Unassigned")}`,
+    eventType: action.type, title: ({ SET_SERVICE_STEP_OWNER: "Step owner updated", SET_SERVICE_COORDINATOR: "Coordinator updated", SET_SERVICE_PROFESSIONAL: "Professional updated", SET_SERVICE_CHECKLIST_STATUS: "Checklist item updated", SET_SERVICE_STATUS: "Service status updated" } as Record<string, string>)[action.type] ?? "Service updated",
+    details: `${actor.actorName ?? "Staff"}: ${previousLabel ?? String(previous ?? "Unassigned")} → ${nextLabel ?? String(next ?? "Unassigned")}`,
     payload: { previous: previous as Prisma.InputJsonValue, next: next as Prisma.InputJsonValue, stepId: input.stepId ?? occurrence?.stepId ?? null, occurrenceId: occurrence?.id ?? null, automationSource: actor.automationSource ?? null },
   } })
   return { details: changed ? `${action.type.toLowerCase().replaceAll("_", " ")} updated.` : "Already set; no change was needed.", changed, terminal: isTerminalServiceAction(action) }
@@ -176,7 +190,8 @@ export async function executeServiceActionTx(tx: Prisma.TransactionClient, input
   const run = await tx.automationRun.findFirst({ where: { id: input.runId, tenantId: input.tenantId, contactId: input.contactId } })
   if (!run) throw new ServiceCollectionError("INVALID_SERVICE_CONTEXT")
   const context = await validateAutomationServiceContextTx(tx, run)
-  if (!context?.serviceStepOccurrenceId) throw new ServiceCollectionError("SERVICE_STEP_OCCURRENCE_REQUIRED")
+  if (!context) throw new ServiceCollectionError("INVALID_SERVICE_CONTEXT")
+  if (!context.serviceStepOccurrenceId && !isEnrollmentServiceAction(input.action.type)) throw new ServiceCollectionError("SERVICE_STEP_OCCURRENCE_REQUIRED")
   await lockServiceActionEnrollment(tx, input.tenantId, context.contactServiceId)
   const key = { tenantId: input.tenantId, runId: input.runId, nodeKey: input.action.nodeKey }
   const previous = await tx.serviceAutomationActionResult.findUnique({ where: { tenantId_runId_nodeKey: key } })
@@ -184,12 +199,27 @@ export async function executeServiceActionTx(tx: Prisma.TransactionClient, input
   const event = input.eventContext as ServiceActionChain & { eventId?: string }
   const depth = (event?.chainDepth ?? 0) + 1
   if (depth > 20) throw new ServiceCollectionError("SERVICE_AUTOMATION_CHAIN_LIMIT")
+  const chainId = event?.chainId ?? input.runId
+  let transitionKey: string | null = null
+  if (input.action.type === "MOVE_SERVICE_STEP") transitionKey = `MOVE:${context.serviceStepId}:${input.action.serviceConfig.targetSourceStepId}`
+  else if (input.action.type === "SKIP_SERVICE_STEP") {
+    const steps = await tx.contactServiceStep.findMany({ where: { tenantId: input.tenantId, contactServiceId: context.contactServiceId }, orderBy: [{ sortOrder: "asc" }, { id: "asc" }] })
+    const next = steps[steps.findIndex(step => step.id === context.contactServiceStepId) + 1]
+    transitionKey = `MOVE:${context.serviceStepId}:${next?.sourceStepId ?? "END"}`
+  } else if (input.action.type === "COMPLETE_SERVICE_STEP") {
+    const entry = await tx.serviceStepOccurrence.findFirst({ where: { tenantId: input.tenantId, contactServiceId: context.contactServiceId, id: context.serviceStepOccurrenceId! }, select: { status: true } })
+    if (entry?.status === "ACTIVE") transitionKey = `COMPLETE:${context.serviceStepId}`
+  }
+  if (transitionKey && await tx.serviceAutomationActionResult.findFirst({ where: {
+    tenantId: input.tenantId, contactServiceId: context.contactServiceId,
+    AND: [{ result: { path: ["chainId"], equals: chainId } }, { result: { path: ["transitionKey"], equals: transitionKey } }],
+  } })) throw new ServiceCollectionError("SERVICE_AUTOMATION_TRANSITION_LOOP", 409)
   const result = await mutateEnrolledServiceTx(tx, {
     tenantId: input.tenantId, contactServiceId: context.contactServiceId, occurrenceId: context.serviceStepOccurrenceId,
     action: input.action, requestId: actionRequestId(input.runId, input.action.nodeKey),
     actor: { actorUserId: null, actorName: `Automation: ${input.automationName}`, automationSource: { automationId: input.automationId, automationName: input.automationName, runId: input.runId, nodeKey: input.action.nodeKey } },
-    chain: { chainId: event?.chainId ?? input.runId, parentEventId: event?.eventId, chainDepth: depth, sourceAutomationId: input.automationId, sourceAutomationName: input.automationName, sourceNodeKey: input.action.nodeKey },
+    chain: { chainId, parentEventId: event?.eventId, chainDepth: depth, sourceAutomationId: input.automationId, sourceAutomationName: input.automationName, sourceNodeKey: input.action.nodeKey },
   })
-  await tx.serviceAutomationActionResult.create({ data: { ...key, contactServiceId: context.contactServiceId, occurrenceId: context.serviceStepOccurrenceId, result } })
+  await tx.serviceAutomationActionResult.create({ data: { ...key, contactServiceId: context.contactServiceId, occurrenceId: context.serviceStepOccurrenceId, result: { ...result, chainId, transitionKey } } })
   return result
 }

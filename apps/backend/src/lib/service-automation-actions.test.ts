@@ -5,6 +5,7 @@ import { ServiceAutomationActionSchema, isTerminalServiceAction, serviceActionOp
 import { executionBudget, transientAutomationFailure, TRANSIENT_AUTOMATION_RETRY_DELAYS } from "./automation-execution-budget.js"
 
 test("service action schemas reject unrelated fields, invalid statuses and empty reasons", () => {
+  assert.equal(ServiceAutomationActionSchema.safeParse({ nodeKey: "legacy/action-1", type: "COMPLETE_SERVICE_STEP", serviceConfig: {} }).success, true)
   for (const invalid of [
     { type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: randomUUID(), reason: " " } },
     { type: "SKIP_SERVICE_STEP", serviceConfig: { reason: "" } },
@@ -19,7 +20,7 @@ test("service action schemas reject unrelated fields, invalid statuses and empty
 })
 test("shared pickers exclude selections missing in any eligible sub-service", () => {
   const source = randomUUID(), target = randomUUID(), custom = randomUUID(), professional = randomUUID()
-  const catalog = [{ id: "a", name: "A", steps: [{ id: source, name: "Start" }, { id: target, name: "End" }], checklistItems: [], professionals: [{ id: professional, name: "Doctor" }] }, { id: "b", name: "B", steps: [{ id: source, name: "Start" }, { id: custom, name: "Other" }], checklistItems: [], professionals: [] }]
+  const catalog = [{ serviceGroupId: null, id: "a", name: "A", steps: [{ id: source, name: "Start" }, { id: target, name: "End" }], checklistItems: [], professionals: [{ id: professional, name: "Doctor" }] }, { serviceGroupId: null, id: "b", name: "B", steps: [{ id: source, name: "Start" }, { id: custom, name: "Other" }], checklistItems: [], professionals: [] }]
   const shared = serviceActionOptions(catalog, source)
   assert.deepEqual(shared.steps.map(item => item.id), [source])
   assert.equal(shared.professionals.length, 0)

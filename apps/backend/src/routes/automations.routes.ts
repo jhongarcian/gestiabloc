@@ -1,3 +1,4 @@
+import { isEnrollmentServiceTrigger, SERVICE_TRIGGER_TYPES } from "../lib/service-automation-triggers.js"
 import { serviceActionCatalog } from "../lib/service-automation-actions.js"
 import { readAutomationServiceContext } from "../lib/automation-service-context.js"
 import { Router } from "express"
@@ -149,7 +150,9 @@ function serializeAutomation(record: any) {
     serviceStep: record.serviceStep ?? null,
     serviceOffering: record.serviceOffering ?? null,
     trigger:
-      (record.triggerType === "SERVICE_STEP_ENTERED" || record.triggerType === "SERVICE_STEP_COMPLETED")
+      isEnrollmentServiceTrigger(record.triggerType)
+        ? { type: record.triggerType, serviceGroupId: record.serviceGroupId, serviceOfferingId: record.serviceOfferingId, serviceTriggerConfig: record.serviceTriggerConfig }
+        :       (record.triggerType === "SERVICE_STEP_ENTERED" || record.triggerType === "SERVICE_STEP_COMPLETED")
         ? { type: record.triggerType, serviceStepId: record.serviceStepId, serviceOfferingId: record.serviceOfferingId ?? null }
         : record.triggerType === "CONTACT_CREATED"
         ? { type: "CONTACT_CREATED" as const }
@@ -349,7 +352,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         select: { id: true, name: true },
       }),
       prismaWithAutomations.automation.findMany({
-        where: { tenantId, isEnabled: true, serviceStepId: null },
+        where: { tenantId, isEnabled: true, triggerType: { notIn: [...SERVICE_TRIGGER_TYPES] } },
         orderBy: [{ name: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
@@ -403,6 +406,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         tags,
         services,
         serviceActionOfferings: await serviceActionCatalog(prisma, tenantId),
+        serviceChecklistReferences: (await prisma.serviceChecklistItem.findMany({ where: { tenantId, archivedAt: { not: null } }, select: { id: true, label: true } })).map(item => ({ id: item.id, name: `${item.label} (archived)` })),
         serviceStepServices: serviceGroups.map((group: any) => ({ id: group.id, name: group.name, subServices: group.subServices.map((offering: any) => ({ id: offering.id, name: offering.name, steps: offering.stepsMode === "INHERIT" ? group.steps : offering.steps })) })),
         workflowAutomations: workflowAutomations.map((automation: any) => ({
           id: automation.id,
@@ -909,6 +913,8 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         isEnabled: normalized.isEnabled,
         triggerType: normalized.triggerType,
         serviceStepId: normalized.serviceStepId,
+        serviceGroupId: normalized.serviceGroupId,
+        serviceTriggerConfig: normalized.serviceTriggerConfig,
         serviceOfferingId: normalized.serviceOfferingId,
         birthdayLocalTime: normalized.birthdayLocalTime,
         appointmentTargetStatus: normalized.appointmentTargetStatus,
@@ -969,6 +975,8 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           isEnabled: normalized.isEnabled,
           triggerType: normalized.triggerType,
           serviceStepId: normalized.serviceStepId,
+        serviceGroupId: normalized.serviceGroupId,
+        serviceTriggerConfig: normalized.serviceTriggerConfig,
           serviceOfferingId: normalized.serviceOfferingId,
           birthdayLocalTime: normalized.birthdayLocalTime,
           appointmentTargetStatus: normalized.appointmentTargetStatus,

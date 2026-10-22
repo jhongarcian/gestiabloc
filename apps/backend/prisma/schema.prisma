@@ -295,6 +295,10 @@ enum OpportunityResult {
 }
 
 enum AutomationTriggerType {
+  SERVICE_ENROLLED
+  SERVICE_STATUS_CHANGED
+  SERVICE_CHECKLIST_STATUS_CHANGED
+  SERVICE_PAYMENT_CHANGED
   SERVICE_STEP_ENTERED
   SERVICE_STEP_COMPLETED
   CONTACT_CREATED
@@ -452,6 +456,10 @@ enum AutomationRunStatus {
 }
 
 enum AutomationNodeEventSource {
+  SERVICE_ENROLLED
+  SERVICE_STATUS_CHANGED
+  SERVICE_CHECKLIST_STATUS_CHANGED
+  SERVICE_PAYMENT_CHANGED
   SERVICE_STEP_ENTERED
   SERVICE_STEP_COMPLETED
   MANUAL_ENROLLMENT
@@ -793,6 +801,7 @@ enum ServiceStepOccurrenceStatus {
 }
 
 model Service {
+  groupAutomations Automation[] @relation("ServiceGroupAutomations")
   id                         String                @id @default(uuid())
   tenantId                   String
   kind                       ServiceKind           @default(GROUP)
@@ -1003,6 +1012,8 @@ model ContactService {
   billingSnapshot           Json?
   configurationSnapshot     Json?
   assignedProfessionalSnapshot Json?
+  configurationChanges ContactServiceConfigurationChange[]
+  automationEventRevision Int @default(0)
   workflowKind              ServiceWorkflowKind @default(LEGACY_TEMPLATE)
   currency                  String               @default("USD")
   allowPartialPayments      Boolean              @default(false)
@@ -1039,6 +1050,25 @@ model ContactService {
   @@index([tenantId, assignedProfessionalId])
   @@index([tenantId, status, createdAt])
   @@index([tenantId, purchasedAt])
+}
+
+// Review receipts are scoped to one enrollment. Applied receipts also serve as immutable audit records.
+model ContactServiceConfigurationChange {
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  baselineDigest String
+  targetDigest String
+  preview Json
+  expiresAt DateTime
+  appliedAt DateTime?
+  appliedByUserId String?
+  appliedByName String?
+  createdAt DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade, map: "ContactServiceConfigurationChange_enrollment_fkey")
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, createdAt], map: "ContactServiceConfigurationChange_enrollment_idx")
 }
 
 model ContactServiceStep {
@@ -1714,6 +1744,9 @@ model Automation {
   name          String
   isEnabled     Boolean               @default(false)
   serviceStepId String?
+  serviceGroupId String?
+  serviceGroup Service? @relation("ServiceGroupAutomations", fields: [tenantId, serviceGroupId], references: [tenantId, id], onDelete: Restrict)
+  serviceTriggerConfig Json?
   serviceOfferingId String?
   serviceOffering Service? @relation("ServiceOfferingAutomations", fields: [tenantId, serviceOfferingId], references: [tenantId, id], onDelete: Restrict)
   serviceStep ServiceStep? @relation(fields: [tenantId, serviceStepId], references: [tenantId, id], onDelete: Cascade)
@@ -1752,6 +1785,7 @@ model Automation {
   @@index([tenantId, targetStageId])
   @@index([tenantId, targetResult])
   @@index([tenantId, folderId, librarySortOrder])
+  @@index([tenantId, serviceGroupId, triggerType, serviceOfferingId], map: "Automation_service_group_trigger_idx")
   @@index([tenantId, serviceStepId, triggerType, serviceOfferingId], map: "Automation_tenantId_serviceStepId_triggerType_serviceOffering_i")
 }
 
@@ -1995,6 +2029,7 @@ model AutomationEvent {
   contactName           String
   opportunityId         String?
   serviceContext Json?
+  serviceEventSnapshot Json?
   opportunitySnapshotId String?
   taskId                String?
   taskSnapshot          Json?

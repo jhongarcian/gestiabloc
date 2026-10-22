@@ -1,3 +1,4 @@
+import { isEnrollmentServiceTrigger, ENROLLMENT_SERVICE_TRIGGER_LABELS } from "@/lib/service-automation-trigger"
 import { isServiceAutomationAction, terminalServiceAction } from "@/lib/service-automation-action"
 import type { Edge, Node } from "@xyflow/react"
 
@@ -38,6 +39,8 @@ export type AutomationGraphBranchPath = Array<{ routingNodeKey: string; branchKe
 export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
 export type AutomationFlowDraft = {
+  serviceGroupId?: string
+  serviceOfferingId?: string | null
   triggerType: AutomationTriggerType | null
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
@@ -192,6 +195,8 @@ export function buildAutomationFlowGraph(
       ? "Click to choose what starts this automation"
       : draft.triggerType === "CONTACT_CREATED"
         ? "Starts when a new contact is added"
+      : isEnrollmentServiceTrigger(draft.triggerType)
+        ? `${catalog?.serviceStepServices?.find(group => group.id === draft.serviceGroupId)?.name ?? "Select a service"} / ${draft.serviceOfferingId === null ? "All sub-services" : catalog?.serviceActionOfferings?.find(offering => offering.id === draft.serviceOfferingId)?.name ?? "Select a sub-service"}`
       : draft.triggerType === "SERVICE_STEP_COMPLETED"
         ? "Starts when its saved service step is completed"
       : draft.triggerType === "SERVICE_STEP_ENTERED"
@@ -233,6 +238,8 @@ export function buildAutomationFlowGraph(
             ? "Select a trigger"
             : draft.triggerType === "CONTACT_CREATED"
               ? "Contact created"
+            : isEnrollmentServiceTrigger(draft.triggerType)
+              ? ENROLLMENT_SERVICE_TRIGGER_LABELS[draft.triggerType]
             : draft.triggerType === "SERVICE_STEP_COMPLETED"
               ? "Step completed"
             : draft.triggerType === "SERVICE_STEP_ENTERED"

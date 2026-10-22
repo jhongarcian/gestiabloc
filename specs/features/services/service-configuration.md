@@ -59,6 +59,25 @@ IDs cannot be saved into an offering's custom collections.
 
 ## Service-owned steps and enrollment snapshots (Chunks 7–8)
 
+Chunk 18 adds **Enrollment updates** to both service-group and sub-service settings. Admins review
+exact differences and choose which active service-step enrollments receive current configuration.
+Reviews expire after 15 minutes and are rejected if the enrollment, pending work, active-member choices
+or source configuration changes. Each selected enrollment applies atomically, one request at a time;
+completed/canceled and template enrollments are excluded. Applied reviews retain actor, time and the
+comparison in history and the enrollment activity log. Repeating an applied receipt is idempotent.
+
+Entered steps and order remain frozen. Future unentered steps may be added, edited, reordered or
+removed unless an owner or unfinished workflow depends on them. Checklist additions start at the
+default status without a change event; removals preserve saved records and all activity. Checklist
+details with prior work remain frozen. Existing billing, payments, coordinator/professional/owner
+assignments, deadlines and waiting actions/schedules remain unchanged. Finished work awaiting payment
+cannot receive new unfinished steps. Restore/customize operations create distinct source IDs; matching
+never uses labels, and replacing entered source IDs blocks propagation.
+
+New service-step purchases also freeze complete service automation definitions, filters and nested
+actions. Future events use those saved definitions until a reviewed application updates them. Older
+enrollments without saved definitions retain live behavior until adoption; no history is replayed.
+
 The Steps tab is available for both parent defaults and sub-services. A step has a stable ID,
 name, instructions, order, and a positive integer completion timeframe in minutes, hours, or days
 (up to ten years). Admins can add, edit, drag, move up/down, or remove a step without a template.
@@ -996,3 +1015,14 @@ Each request reads a consistent database snapshot and computes all timing from t
 The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters
 and pagination. Older or canceled requests cannot overwrite a newer queue response. No stored urgency
 flags, notifications, new triggers, schema changes or background data backfill are needed.
+
+## Enrollment actions and owners (Chunk 16)
+
+Automation Service actions resolve saved source IDs against the exact triggering enrollment. No
+missing step/checklist snapshot is created. Owners belong to enrolled step definitions and survive
+revisits; they are independent of the enrollment coordinator and assigned professional. Owner and
+coordinator controls accept active tenant members or Unassigned. Workspace responses and the
+follow-up queue expose the owner, and queue assignee filtering uses it. Archived professionals may
+remain assigned, while new assignments require an eligible saved professional. Archived checklist
+history remains usable. Completion/payment states remain derived. See the automation queue guide
+for checkpoint execution, isolation, audit attribution and migration ordering.

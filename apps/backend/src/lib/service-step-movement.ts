@@ -1,3 +1,4 @@
+import { updateServiceStatusTx } from "./service-automation-events.js"
 import { z } from "zod"
 import { Prisma } from "../generated/prisma/index.js"
 import { ServiceCollectionError } from "./service-configuration-collections.js"
@@ -249,10 +250,7 @@ export async function moveServiceStepTx(
   )
   let destinationId: string | null = null
   if (target) {
-    await tx.contactService.update({
-      where: { id: contactServiceId },
-      data: { status: "IN_PROGRESS", completedAt: null },
-    })
+    await updateServiceStatusTx(tx, { tenantId, contactServiceId, status: "IN_PROGRESS", completedAt: null, actor: { actorUserId: input.actorUserId, automationSource: input.automationSource }, chain: input.automationChain })
     const destination = await createServiceStepOccurrenceTx(tx, {
       tenantId,
       contactServiceId,
@@ -274,13 +272,7 @@ export async function moveServiceStepTx(
       _sum: { amountCents: true },
     })
     const settled = (paid._sum.amountCents ?? 0) >= enrollment.totalPriceCents
-    await tx.contactService.update({
-      where: { id: contactServiceId },
-      data: {
-        status: settled ? "COMPLETED" : "PENDING_PAYMENT",
-        completedAt: settled ? now : null,
-      },
-    })
+    await updateServiceStatusTx(tx, { tenantId, contactServiceId, status: settled ? "COMPLETED" : "PENDING_PAYMENT", completedAt: settled ? now : null, actor: { actorUserId: input.actorUserId, automationSource: input.automationSource }, chain: input.automationChain })
   }
   const actor = input.actorUserId ? await tx.user.findUnique({
     where: { id: input.actorUserId },

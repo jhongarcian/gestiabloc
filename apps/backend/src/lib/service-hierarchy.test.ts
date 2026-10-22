@@ -1027,7 +1027,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         where: { id: queued.automationEventId! },
         data: { status: "PROCESSING", leaseToken },
       })
-      await processClaimedAutomationEvent(db, { eventId: queued.automationEventId!, leaseToken })
+      await processTestClaimedEvent(db, { eventId: queued.automationEventId!, leaseToken })
     }
     const runs = await db.automationRun.findMany({
       where: { tenantId, automationId: automation.id },
@@ -1376,7 +1376,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         ),
       ),
     )
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 2)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 2)
     // Workflow edits after queueing do not alter pinned actions; step edits do not create events.
     assert.equal(
       (
@@ -1396,8 +1396,8 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         where: { id: eventId },
         data: { status: "PROCESSING", leaseToken },
       })
-      await processClaimedAutomationEvent(db, { eventId, leaseToken })
-      await processClaimedAutomationEvent(db, { eventId, leaseToken })
+      await processTestClaimedEvent(db, { eventId, leaseToken })
+      await processTestClaimedEvent(db, { eventId, leaseToken })
     }
     for (const event of events) await process(event.id)
     const notes = await db.contactNote.findMany({
@@ -1408,6 +1408,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const logs = await db.automationNodeExecution.findMany({ where: { tenantId, automationId } })
     assert.equal(logs.length, 4)
     assert.ok(logs.every((log) => (log.serviceContext as any).serviceStepId === source.id))
+    await reviewAndApplyConfiguration(enrollmentIds[0]!)
     await db.$transaction(async (tx) => {
       await tx.serviceStepOccurrence.update({
         where: { id: occurrence.id },
@@ -1451,7 +1452,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       }),
       /Roll back entry/,
     )
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 3)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 3)
     assert.equal(
       await db.serviceStepOccurrence.count({ where: { tenantId, entryKey: "rolled-back" } }),
       0,
@@ -1461,7 +1462,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       200,
     )
     await enroll()
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 3)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 3)
   })
 
   test("step entry filters match at entry and disabled or empty workflows create no dispatch", async () => {
@@ -1478,7 +1479,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
         contactId: contact.id,
       })
     assert.equal((await enroll()).status, 201)
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 0)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 0)
     const payload = {
       name: "Filtered entry",
       isEnabled: true,
@@ -1506,11 +1507,11 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     )
     assert.equal(updated.status, 200, JSON.stringify(updated.data))
     assert.equal((await enroll()).status, 201)
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 0)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 0)
     // Even a corrupt enabled-but-empty draft must not queue work.
     await db.automationAction.deleteMany({ where: { tenantId, automationId } })
     assert.equal((await enroll()).status, 201)
-    assert.equal(await db.automationEvent.count({ where: { tenantId } }), 0)
+    assert.equal(await db.automationEvent.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }), 0)
   })
 
   async function completionFixture(actions?: unknown[], conditions: unknown[] = []) {
@@ -1569,14 +1570,24 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     noteTitle: title,
     noteBody: "Saved completion instructions",
   })
+  async function processTestClaimedEvent(client: PrismaClient, params: { eventId: string; leaseToken: string }) {
+    const event = await client.automationEvent.findUniqueOrThrow({ where: { id: params.eventId } })
+    if (event.status === "PROCESSING" && event.leaseToken === params.leaseToken) await client.automationExecutionLease.upsert({
+      where: { kind_jobId: { kind: "EVENT", jobId: event.id } },
+      create: { kind: "EVENT", jobId: event.id, tenantId: event.tenantId, scopeKey: `${event.tenantId}:contact:${event.contactId ?? event.id}`, leaseToken: params.leaseToken, expiresAt: new Date(Date.now() + 120000) },
+      update: { leaseToken: params.leaseToken, expiresAt: new Date(Date.now() + 120000) },
+    })
+    try { return await processClaimedAutomationEvent(client, { ...params, wakeWorkers: false }) }
+    finally { await client.automationExecutionLease.deleteMany({ where: { kind: "EVENT", jobId: event.id, leaseToken: params.leaseToken } }) }
+  }
   async function processCompletionEvent(eventId: string) {
     const leaseToken = randomUUID()
     await db.automationEvent.update({
       where: { id: eventId },
       data: { status: "PROCESSING", leaseToken },
     })
-    await processClaimedAutomationEvent(db, { eventId, leaseToken })
-    await processClaimedAutomationEvent(db, { eventId, leaseToken })
+    await processTestClaimedEvent(db, { eventId, leaseToken })
+    await processTestClaimedEvent(db, { eventId, leaseToken })
   }
 
   test("automation catalog offers active services, sub-services, and their effective steps", async () => {
@@ -1816,6 +1827,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       })
       assert.equal(response.status, 201, JSON.stringify(response.data))
     }
+    await reviewAndApplyConfiguration(fixture.id)
     const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
     await processCompletionEvent(completed.data.occurrence.completionEventId)
     const path = `/api/services/${tenantId}/contact-services/${fixture.id}/step-occurrences/${fixture.occurrence.id}/completion-wait`
@@ -1901,6 +1913,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       actions: [noteAction("Never saved")],
     })
     assert.equal(created.status, 201)
+    await reviewAndApplyConfiguration(fixture.id)
     const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
     const eventId = completed.data.occurrence.completionEventId
     await db.automationDispatch.updateMany({
@@ -2034,6 +2047,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       conditions: [],
       actions: [noteAction("Next entry action")],
     })
+    await reviewAndApplyConfiguration(fixture.id)
     const response = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
     assert.equal(response.data.occurrence.progressionStatus, "WAITING_AUTOMATION")
     const eventId = response.data.occurrence.completionEventId
@@ -2744,6 +2758,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       })
       assert.equal(response.status, 201, JSON.stringify(response.data))
     }
+    await reviewAndApplyConfiguration(enrollment.id)
     const payload = movementPayload(enrollment.occurrence.id, steps[2]!.id)
     const moved = await request(movementPath(enrollment.id), "POST", payload)
     assert.equal(moved.status, 200, JSON.stringify(moved.data))
@@ -3950,7 +3965,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const reloaded = (await request(path)).data.automation.actions
     assert.deepEqual(reloaded.map((item: any) => item.serviceConfig), actions.map((item: any) => item.serviceConfig ?? null))
     const enrollment = await fixture.enroll()
-    const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
+    const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED", serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
     assert.deepEqual((event.dispatches[0]!.actionSnapshot as any[])[0].serviceConfig, (actions[0] as any).serviceConfig)
     // A later edit cannot change the pinned work.
     assert.equal((await request(path, "PATCH", { ...payload, actions: [action("SET_SERVICE_STEP_OWNER", { assignedToUserId: null })] })).status, 200)
@@ -4010,7 +4025,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       assert.equal((await request(path, "PATCH", { ...payload, trigger: { type: "CONTACT_CREATED" } })).status, 400)
       assert.equal((await request(path, "PATCH", payload)).status, 200)
       const enrollment = await fixture.enroll()
-      const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
+      const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED", serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
       // A corrupted/older snapshot still cannot execute an action after a terminal action.
       await db.automationDispatch.update({ where: { id: event.dispatches[0]!.id }, data: { actionSnapshot: [action, noteAction("Forbidden tail")] } })
       await processCompletionEvent(event.id)
@@ -4067,6 +4082,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const old = (await claimAutomationExecutionJobs(db, "RUN")).find(item => item.id === run.id)!
     await db.automationRun.update({ where: { id: run.id }, data: { leaseExpiresAt: new Date(0) } })
     await db.automationExecutionLease.update({ where: { kind_jobId: { kind: "RUN", jobId: run.id } }, data: { expiresAt: new Date(0) } })
+    assert.equal((await resumeAutomationRun(db, run.id, old.leaseToken)).status, "NOT_CLAIMED")
     const recovered = (await claimAutomationExecutionJobs(db, "RUN")).find(item => item.id === run.id)!
     assert.ok(recovered)
     assert.notEqual(recovered.leaseToken, old.leaseToken)
@@ -4090,6 +4106,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const fixture = await completionFixture()
     const actions = [{ nodeKey: randomUUID(), type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } }, { nodeKey: randomUUID(), type: "COMPLETE_SERVICE_STEP", serviceConfig: {} }]
     assert.equal((await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions })).status, 200)
+    await reviewAndApplyConfiguration(fixture.id)
     const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
     const eventId = completed.data.occurrence.completionEventId
     await processCompletionEvent(eventId)
@@ -4115,12 +4132,584 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       if (!event) break
       await processCompletionEvent(event.id)
     }
-    const events = await db.automationEvent.findMany({ where: { tenantId }, include: { dispatches: true } })
+    const events = await db.automationEvent.findMany({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" }, include: { dispatches: true } })
     assert.equal(new Set(events.map(event => event.chainId)).size, 1)
     assert.equal(events.length, 3)
     assert.ok(events.some(event => event.dispatches.some(dispatch => dispatch.decision === "SKIP_TRIGGER")))
     assert.equal(await db.serviceStepMovement.count({ where: { contactServiceId: enrollment.id } }), 2)
     assert.equal(await db.serviceStepOccurrence.count({ where: { contactServiceId: enrollment.id } }), 3)
+  })
+
+  test("initial events and continuations share atomic admission and rotate to waiting tenants", async () => {
+    const { claimAutomationExecutionJobs, releaseAutomationExecutionLease } = await import("./automation-execution-budget.js")
+    const extraTenants = await db.tenant.createManyAndReturn({ data: Array.from({ length: 4 }, () => ({ name: "Fair admission", slug: randomUUID() })), select: { id: true } })
+    const ids = [tenantId, ...extraTenants.map(tenant => tenant.id)]
+    try {
+      for (const [index, id] of ids.entries()) {
+        const rows = Array.from({ length: index === 0 ? 20 : 1 }, () => ({ tenantId: id, contactName: "Admission test", triggerType: "SERVICE_STEP_ENTERED" as const, updatedAt: new Date(index * 1000) }))
+        await db.automationEvent.createMany({ data: rows })
+        await db.automationRun.createMany({ data: rows.map(row => ({ ...row, automationName: "Continuation", attemptId: randomUUID(), eventSource: "SERVICE_STEP_ENTERED", status: "QUEUED", actionSnapshot: [] })) })
+      }
+      const passes = await Promise.all([claimAutomationExecutionJobs(db, "EVENT"), claimAutomationExecutionJobs(db, "RUN"), claimAutomationExecutionJobs(db, "EVENT"), claimAutomationExecutionJobs(db, "RUN")])
+      const claims = passes.flat()
+      assert.equal(claims.length, 4)
+      const counts = await db.automationExecutionLease.groupBy({ by: ["tenantId"], _count: true })
+      assert.equal(counts.reduce((sum, row) => sum + row._count, 0), 4)
+      assert.ok(counts.every(row => row._count <= 2))
+      assert.equal(new Set(claims.map(row => row.tenantId)).size, 4)
+      const waitingTenant = ids.find(id => !claims.some(claim => claim.tenantId === id))!
+      for (const lease of await db.automationExecutionLease.findMany({ where: { tenantId: { in: ids } } })) {
+        if (lease.kind === "EVENT") await db.automationEvent.update({ where: { id: lease.jobId }, data: { status: "COMPLETED", leaseToken: null, leaseExpiresAt: null } })
+        else await db.automationRun.update({ where: { id: lease.jobId }, data: { status: "SUCCEEDED", leaseToken: null, leaseExpiresAt: null } })
+        await releaseAutomationExecutionLease(db, lease.kind as "EVENT" | "RUN", lease.jobId, lease.leaseToken)
+      }
+      const next = await claimAutomationExecutionJobs(db, "RUN")
+      assert.ok(next.some(claim => claim.tenantId === waitingTenant), "Unserved tenants precede the large tenant's older backlog")
+      assert.ok(next.filter(claim => claim.tenantId === tenantId).length <= 2)
+    } finally {
+      await db.automationExecutionLease.deleteMany({ where: { tenantId: { in: ids } } })
+      await db.tenant.deleteMany({ where: { id: { in: extraTenants.map(tenant => tenant.id) } } })
+    }
+  })
+
+  test("transient resumed failures use all three delays before only that run fails", async () => {
+    const fixture = await completionFixture()
+    const context = await db.$transaction(tx => resolveAutomationServiceContextTx(tx, { tenantId, contactId: fixture.contact.id, contactServiceId: fixture.id, contactServiceStepId: fixture.occurrence.stepId, serviceStepOccurrenceId: fixture.occurrence.id }))
+    const run = await db.automationRun.create({ data: { tenantId, contactId: fixture.contact.id, contactName: "Retry", automationName: "Retry service action", attemptId: randomUUID(), eventSource: "SERVICE_STEP_ENTERED", triggerType: "SERVICE_STEP_ENTERED", serviceContext: context, actionSnapshot: [{ nodeKey: randomUUID(), type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } }], status: "QUEUED" } })
+    for (const [attempt, delay] of [5000, 30000, 120000, null].entries()) {
+      const token = randomUUID()
+      await db.automationRun.update({ where: { id: run.id }, data: { status: "RUNNING", leaseToken: token } })
+      let fail = true
+      const client = { automationRun: db.automationRun, tenant: db.tenant, $transaction: async (callback: any) => {
+        if (fail) { fail = false; throw Object.assign(new Error("Serialization conflict"), { code: "P2034" }) }
+        return db.$transaction(callback)
+      } }
+      const before = Date.now()
+      const result = await resumeAutomationRun(client, run.id, token)
+      const saved = await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })
+      assert.equal(result.status, delay === null ? "FAILED" : "QUEUED")
+      if (delay !== null) {
+        assert.equal(saved.retryCount, attempt + 1)
+        assert.ok(saved.availableAt.getTime() >= before + delay)
+        assert.ok(saved.availableAt.getTime() < Date.now() + delay + 1000)
+      }
+    }
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 0)
+    assert.equal((await db.contactServiceStep.findUniqueOrThrow({ where: { id: fixture.occurrence.stepId } })).assignedToUserId, null)
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })).status, "ACTIVE")
+  })
+
+  test("different workflows cannot repeat the same service transition in one chain", async () => {
+    const fixture = await completionFixture()
+    const { executeServiceActionTx } = await import("./service-automation-actions.js")
+    const steps = await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    const chainId = randomUUID()
+    const move = async (sourceIndex: number, targetIndex: number) => {
+      const occurrence = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+      const context = await db.$transaction(tx => resolveAutomationServiceContextTx(tx, { tenantId, contactId: fixture.contact.id, contactServiceId: fixture.id, contactServiceStepId: steps[sourceIndex]!.id, serviceStepOccurrenceId: occurrence.id }))
+      const run = await db.automationRun.create({ data: { tenantId, contactId: fixture.contact.id, contactName: "Loop check", automationName: randomUUID(), attemptId: randomUUID(), eventSource: "SERVICE_STEP_ENTERED", triggerType: "SERVICE_STEP_ENTERED", serviceContext: context, actionSnapshot: [], eventContext: { chainId } } })
+      return db.$transaction(tx => executeServiceActionTx(tx, { tenantId, contactId: fixture.contact.id, runId: run.id, automationId: null, automationName: run.automationName, actorUserId: null, eventContext: { chainId }, action: { nodeKey: randomUUID(), type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: steps[targetIndex]!.sourceStepId, reason: "Routing" } } }))
+    }
+    await move(0, 1)
+    await move(1, 0)
+    await assert.rejects(move(0, 1), /SERVICE_AUTOMATION_TRANSITION_LOOP/)
+    assert.equal(await db.serviceStepMovement.count({ where: { contactServiceId: fixture.id } }), 2)
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { contactServiceId: fixture.id } }), 2)
+  })
+
+  test("every service action saves and executes through a published branch with inherited configuration", async () => {
+    const config = await configureParent()
+    const fixture = await completionFixture()
+    const steps = await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    const cases = [
+      { type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: steps[1]!.sourceStepId, reason: "Branch move" } },
+      { type: "COMPLETE_SERVICE_STEP", serviceConfig: {} },
+      { type: "SKIP_SERVICE_STEP", serviceConfig: { reason: "Branch skip" } },
+      { type: "SCHEDULE_SERVICE_STEP", serviceConfig: { schedule: { mode: "DURATION", amount: 3, unit: "HOURS" } } },
+      { type: "SET_SERVICE_STEP_OWNER", serviceConfig: { assignedToUserId: userId } },
+      { type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: userId } },
+      { type: "SET_SERVICE_PROFESSIONAL", serviceConfig: { professionalId: config.professionals[0].id } },
+      { type: "SET_SERVICE_CHECKLIST_STATUS", serviceConfig: { checklistItemId: config.checklistItems[0].id, status: "RECEIVED" } },
+      { type: "SET_SERVICE_STATUS", serviceConfig: { status: "CANCELED" } },
+    ]
+    const path = `/api/account-settings/${tenantId}/automations`
+    for (const action of cases) {
+      const actions = [{ nodeKey: randomUUID(), type: "SPLIT", splitConfig: { actionName: "Service branch", routes: [1, 2].map(index => ({ branchKey: randomUUID(), name: `Route ${index}`, percentage: 50, actions: [{ ...action, nodeKey: randomUUID() }] })) } }]
+      const payload = { name: `Branch ${action.type}`, isEnabled: true, trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: fixture.source.id, serviceOfferingId: fixture.child.data.service.id }, conditions: [], actions }
+      const created = await request(path, "POST", payload)
+      assert.equal(created.status, 201, JSON.stringify(created.data))
+      const reloaded = (await request(`${path}/${created.data.automation.id}`)).data.automation
+      assert.deepEqual(reloaded.actions[0].splitConfig.routes[0].actions[0].serviceConfig, action.serviceConfig)
+      const enrollment = await fixture.enroll()
+      const event = await db.automationEvent.findFirstOrThrow({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED", serviceContext: { path: ["contactServiceId"], equals: enrollment.id } }, include: { dispatches: true } })
+      assert.deepEqual((event.dispatches[0]!.actionSnapshot as any[])[0].splitConfig.routes[1].actions[0].serviceConfig, action.serviceConfig)
+      await processCompletionEvent(event.id)
+      const run = await db.automationRun.findFirstOrThrow({ where: { dispatchId: event.dispatches[0]!.id } })
+      const exited = ["MOVE_SERVICE_STEP", "SKIP_SERVICE_STEP", "SET_SERVICE_STATUS"].includes(action.type)
+      assert.equal(run.status, exited ? "EXITED" : "SUCCEEDED", `${action.type}: ${run.failureMessage}`)
+      assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1, action.type)
+      assert.equal((await request(`${path}/${created.data.automation.id}`, "PATCH", { ...payload, isEnabled: false })).status, 200)
+    }
+  })
+
+  async function reviewAndApplyConfiguration(id: string) {
+    const path = `/api/services/${tenantId}/contact-services/${id}`
+    const reviewed = await request(`${path}/configuration-preview`, "POST")
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.data))
+    assert.equal(reviewed.data.preview.canApply, true, JSON.stringify(reviewed.data.preview))
+    const applied = await request(`${path}/configuration-apply`, "POST", { previewId: reviewed.data.preview.previewId })
+    assert.equal(applied.status, 200, JSON.stringify(applied.data))
+    return reviewed.data.preview
+  }
+
+  test("configuration review applies future changes while preserving entered work, IDs, billing, history and assignments", async () => {
+    const parent = await configureParent()
+    const fixture = await completionFixture()
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    const before = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id }, include: { serviceSteps: { orderBy: { sortOrder: "asc" } }, checklistItems: true } })
+    const first = before.serviceSteps[0]!, future = before.serviceSteps[1]!, item = before.checklistItems[0]!
+    assert.equal((await request(`${path}/service-steps/${future.id}/owner`, "PATCH", { assignedToUserId: userId })).status, 200)
+    assert.equal((await request(path, "PATCH", { assignedProfessionalId: parent.professionals[0].id })).status, 200)
+    assert.equal((await request(`${path}/follow-up-coordinator`, "PATCH", { assignedToUserId: userId })).status, 200)
+    assert.equal((await request(`${path}/checklist-items/${item.id}`, "PATCH", { status: "RECEIVED" })).status, 200)
+    const deadline = await db.$transaction(tx => changeServiceStepDeadlineTx(tx, { tenantId, contactServiceId: fixture.id, occurrenceId: fixture.occurrence.id, actorUserId: userId, requestId: randomUUID(), expectedDeadlineRevision: 0, schedule: { mode: "DURATION", amount: 20, unit: "DAYS" } }))
+    const savedItem = await db.contactServiceChecklistItem.findUniqueOrThrow({ where: { id: item.id } })
+    const changed = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      basePriceCents: 50000,
+      steps: [{ id: first.sourceStepId, title: "Changed entered title", instructions: "Keep original" }, { id: future.sourceStepId, title: "Updated future", completionDuration: 6, completionUnit: "HOURS" }, { title: "Verify" }],
+      checklistItems: [{ id: item.checklistItemId, label: "Changed completed checklist" }, { label: "New consent" }],
+      professionals: [{ id: parent.professionals[0].id, kind: "EXTERNAL", externalProfessionalName: "Updated specialist" }, { kind: "EXTERNAL", externalProfessionalName: "Another specialist" }],
+    })
+    assert.equal(changed.status, 200, JSON.stringify(changed.data))
+    const preview = await reviewAndApplyConfiguration(fixture.id)
+    assert.ok(preview.differences.some((diff: any) => diff.section === "Steps" && diff.kind === "PRESERVE"))
+    assert.ok(preview.differences.some((diff: any) => diff.section === "Billing" && diff.kind === "PRESERVE"))
+    const after = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id }, include: { serviceSteps: { orderBy: { sortOrder: "asc" } }, checklistItems: true } })
+    assert.deepEqual(after.serviceSteps[0], first)
+    assert.equal(after.serviceSteps[1]!.id, future.id)
+    assert.equal(after.serviceSteps[1]!.title, "Updated future")
+    assert.equal(after.serviceSteps[1]!.assignedToUserId, userId)
+    assert.equal(after.serviceSteps.length, 3)
+    assert.equal(after.totalPriceCents, before.totalPriceCents)
+    assert.deepEqual(after.billingSnapshot, before.billingSnapshot)
+    assert.equal(after.assignedProfessionalId, parent.professionals[0].id)
+    assert.equal((after.assignedProfessionalSnapshot as any).externalProfessionalName, parent.professionals[0].externalProfessionalName)
+    assert.equal(after.followUpCoordinatorUserId, userId)
+    assert.deepEqual(await db.contactServiceChecklistItem.findUniqueOrThrow({ where: { id: item.id } }), savedItem)
+    assert.equal(after.checklistItems.length, 2)
+    const occurrence = await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })
+    assert.equal(occurrence.dueAt.getTime(), new Date(deadline.dueAt).getTime())
+    assert.equal(occurrence.deadlineRevision, 1)
+    const retry = await request(`${path}/configuration-apply`, "POST", { previewId: preview.previewId })
+    assert.equal(retry.data.alreadyApplied, true)
+    const history = await request(`${path}/configuration-history`)
+    assert.equal(history.data.items.length, 1)
+    assert.equal(history.data.items[0].appliedByName, "Hierarchy tester")
+    assert.equal((await request(`${path}/configuration-preview`, "POST")).data.preview.hasChanges, false)
+  })
+
+  test("configuration previews reject stale configuration, enrollment changes, expired receipts and foreign enrollment IDs", async () => {
+    const fixture = await completionFixture()
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions: [noteAction()] })
+    const preview = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions: [noteAction("Changed")] })
+    assert.equal((await request(`${path}/configuration-apply`, "POST", { previewId: preview.previewId })).data.error, "CONFIGURATION_PREVIEW_STALE")
+    const second = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    await request(`${path}/service-steps/${fixture.occurrence.stepId}/owner`, "PATCH", { assignedToUserId: userId })
+    assert.equal((await request(`${path}/configuration-apply`, "POST", { previewId: second.previewId })).data.error, "CONFIGURATION_PREVIEW_STALE")
+    const third = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    await db.contactServiceConfigurationChange.update({ where: { id: third.previewId }, data: { expiresAt: new Date(0) } })
+    assert.equal((await request(`${path}/configuration-apply`, "POST", { previewId: third.previewId })).data.error, "CONFIGURATION_PREVIEW_EXPIRED")
+    const other = await fixture.enroll()
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/configuration-apply`, "POST", { previewId: preview.previewId })).status, 404)
+    assert.equal((await request(`/api/services/${randomUUID()}/contact-services/${fixture.id}/configuration-preview`, "POST")).status, 403)
+    assert.equal(await db.contactServiceConfigurationChange.count({ where: { contactServiceId: fixture.id, appliedAt: { not: null } } }), 0)
+  })
+
+  test("configuration propagation blocks entered-step replacement and preserves removed checklist history", async () => {
+    await configureParent()
+    const fixture = await completionFixture()
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    const saved = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id }, include: { checklistItems: true } })
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Replacement" }], checklistItems: [] })
+    const reviewed = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    assert.equal(reviewed.canApply, false)
+    assert.match(reviewed.blockers.join(" "), /entered work/)
+    assert.equal((await request(`${path}/configuration-apply`, "POST", { previewId: reviewed.previewId })).status, 409)
+    assert.equal(await db.contactServiceChecklistItem.count({ where: { contactServiceId: fixture.id } }), saved.checklistItems.length)
+    assert.deepEqual((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).configurationSnapshot, saved.configurationSnapshot)
+  })
+
+  test("configuration applies roll back atomically and serialize simultaneous receipts", async () => {
+    const fixture = await completionFixture()
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    const source = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [...source.map((step: any) => ({ id: step.id, title: step.title })), { title: "Added" }] })
+    const preview = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    const before = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })
+    const { applyServiceConfigurationTx } = await import("./service-configuration-review.js")
+    await assert.rejects(db.$transaction(async tx => {
+      await applyServiceConfigurationTx(tx, { tenantId, contactServiceId: fixture.id, previewId: preview.previewId, actorUserId: userId, actorName: "Tester" })
+      throw new Error("Rollback complete application")
+    }), /Rollback complete application/)
+    assert.equal(await db.contactServiceStep.count({ where: { contactServiceId: fixture.id } }), 2)
+    assert.deepEqual((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).configurationSnapshot, before.configurationSnapshot)
+    const competing = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    const results = await Promise.all([preview, competing].map(p => request(`${path}/configuration-apply`, "POST", { previewId: p.previewId })))
+    assert.deepEqual(results.map(result => result.status).sort(), [200, 409])
+    assert.equal(await db.contactServiceStep.count({ where: { contactServiceId: fixture.id } }), 3)
+  })
+
+  test("saved automation definitions survive library edits and deletion until an explicit reviewed update", async () => {
+    const fixture = await completionFixture([noteAction("Frozen completion")])
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions: [noteAction("Future completion")] })
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    const eventId = completed.data.occurrence.completionEventId
+    await request(fixture.automationPath, "DELETE")
+    await processCompletionEvent(eventId)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Frozen completion" } }), 1)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Future completion" } }), 0)
+    const first = await db.contactServiceStep.findFirstOrThrow({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    const current = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+    assert.equal((await request(movementPath(fixture.id), "POST", movementPayload(current.id, first.id))).status, 200)
+    const revisit = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+    const again = await request(completePath(fixture.id, revisit.id), "POST")
+    const deletedEvent = await db.automationEvent.findUniqueOrThrow({ where: { id: again.data.occurrence.completionEventId }, include: { dispatches: true } })
+    assert.equal(deletedEvent.dispatches[0]!.automationId, null)
+    assert.equal(deletedEvent.dispatches[0]!.automationSnapshotId, fixture.automation.id)
+    await processCompletionEvent(deletedEvent.id)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Frozen completion" } }), 2)
+    const history = await request(`${path}/configuration-history`)
+    assert.deepEqual(history.data.items, [])
+  })
+
+  test("reviewed updates preserve waiting runs and their schedules while later entries use updated definitions", async () => {
+    const fixture = await completionFixture([{ nodeKey: randomUUID(), type: "WAIT", waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" } }, noteAction("Original waiting actions")])
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    await processCompletionEvent(completed.data.occurrence.completionEventId)
+    const run = await db.automationRun.findFirstOrThrow({ where: { tenantId, status: "WAITING" } })
+    const steps = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ id: steps[0].id, title: steps[0].title }, { id: steps[1].id, title: "Updated after wait" }] })
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, actions: [noteAction("Future actions")] })
+    await reviewAndApplyConfiguration(fixture.id)
+    assert.deepEqual(await db.automationRun.findUniqueOrThrow({ where: { id: run.id } }), run)
+    assert.equal((await db.serviceStepOccurrence.findUniqueOrThrow({ where: { id: fixture.occurrence.id } })).progressionStatus, "WAITING_AUTOMATION")
+    await db.automationRun.update({ where: { id: run.id }, data: { resumeAt: new Date(0) } })
+    await resumeDueAutomationRuns(db)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Original waiting actions" } }), 1)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Future actions" } }), 0)
+    const current = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" }, include: { step: true } })
+    assert.equal(current.step.title, "Updated after wait")
+  })
+
+  test("updates cannot remove owned future steps or targets pinned by unfinished workflows", async () => {
+    const fixture = await completionFixture()
+    const future = await db.contactServiceStep.findFirstOrThrow({ where: { contactServiceId: fixture.id, sortOrder: 20 } })
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: true, actions: [{ nodeKey: randomUUID(), type: "WAIT", waitConfig: { mode: "DURATION", amount: 1, unit: "DAYS" } }, { nodeKey: randomUUID(), type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: future.sourceStepId, reason: "Move after wait" } }] })
+    await reviewAndApplyConfiguration(fixture.id)
+    const completed = await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    await processCompletionEvent(completed.data.occurrence.completionEventId)
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    await request(`${path}/service-steps/${future.id}/owner`, "PATCH", { assignedToUserId: userId })
+    // Disable the live workflow: the old waiting definition still refers to the removed source ID.
+    await request(fixture.automationPath, "PATCH", { ...fixture.payload, isEnabled: false, actions: [] })
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ id: fixture.source.id, title: fixture.source.title }] })
+    const preview = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    assert.equal(preview.canApply, false)
+    assert.match(preview.blockers.join(" "), /assigned owner/)
+    assert.match(preview.blockers.join(" "), /unfinished workflow targets a step/)
+    assert.equal((await request(`${path}/configuration-apply`, "POST", { previewId: preview.previewId })).status, 409)
+    assert.equal((await db.contactServiceStep.findUniqueOrThrow({ where: { id: future.id } })).assignedToUserId, userId)
+  })
+
+  test("review selection is paginated, tenant scoped, admin only, and excludes completed and legacy work", async () => {
+    const fixture = await completionFixture()
+    const other = await fixture.enroll()
+    await db.contactService.update({ where: { id: other.id }, data: { status: "COMPLETED" } })
+    const path = `/api/services/${tenantId}/configuration-updates/${parentId}/enrollments`
+    const list = await request(path)
+    assert.equal(list.status, 200)
+    assert.deepEqual(list.data.items.map((item: any) => item.id), [fixture.id])
+    const scoped = await request(`/api/services/${tenantId}/configuration-updates/${fixture.child.data.service.id}/enrollments`)
+    assert.deepEqual(scoped.data.items, list.data.items)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/configuration-preview`, "POST")).data.preview.canApply, false)
+    await db.membership.update({ where: { userId_tenantId: { tenantId, userId } }, data: { role: "TENANT_USER" } })
+    for (const [url, method] of [[path, "GET"], [`/api/services/${tenantId}/contact-services/${fixture.id}/configuration-preview`, "POST"], [`/api/services/${tenantId}/contact-services/${fixture.id}/configuration-apply`, "POST"]]) {
+      assert.equal((await request(url!, method!, method === "GET" ? undefined : { previewId: randomUUID() })).status, 403)
+    }
+  })
+
+  test("selective propagation reorders and removes only unentered future steps without replaying events", async () => {
+    await configureParent()
+    const fixture = await completionFixture()
+    const untouched = await fixture.enroll()
+    const untouchedBefore = await db.contactService.findUniqueOrThrow({ where: { id: untouched.id }, include: { serviceSteps: { orderBy: { sortOrder: "asc" } }, checklistItems: true } })
+    const configured = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    const added = (await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [...configured.map((step: any) => ({ id: step.id, title: step.title })), { title: "Verify" }] })).data.service.steps
+    await reviewAndApplyConfiguration(fixture.id)
+    const before = await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [added[0], added[2], added[1]].map((step: any) => ({ id: step.id, title: step.title })), checklistItems: [] })
+    const eventCount = await db.automationEvent.count({ where: { tenantId } })
+    await reviewAndApplyConfiguration(fixture.id)
+    const reordered = await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })
+    assert.deepEqual(reordered.map(step => step.id), [before[0]!.id, before[2]!.id, before[1]!.id])
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [added[0], added[1]].map((step: any) => ({ id: step.id, title: step.title })) })
+    await reviewAndApplyConfiguration(fixture.id)
+    assert.deepEqual((await db.contactServiceStep.findMany({ where: { contactServiceId: fixture.id }, orderBy: { sortOrder: "asc" } })).map(step => step.id), [before[0]!.id, before[1]!.id])
+    assert.equal(await db.contactServiceChecklistItem.count({ where: { contactServiceId: fixture.id } }), 1)
+    assert.equal(await db.automationEvent.count({ where: { tenantId } }), eventCount)
+    assert.deepEqual(await db.contactService.findUniqueOrThrow({ where: { id: untouched.id }, include: { serviceSteps: { orderBy: { sortOrder: "asc" } }, checklistItems: true } }), untouchedBefore)
+  })
+
+  test("finished unpaid work can adopt payment workflows without reopening steps or changing billing", async () => {
+    const fixture = await completionFixture()
+    await request(completePath(fixture.id, fixture.occurrence.id), "POST")
+    const last = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+    await request(completePath(fixture.id, last.id), "POST")
+    const before = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })
+    assert.equal(before.status, "PENDING_PAYMENT")
+    await publishEnrollmentTrigger("SERVICE_PAYMENT_CHANGED", { changes: ["ADDED"], paymentState: "PAID" }, [noteAction("Paid after adoption")])
+    await reviewAndApplyConfiguration(fixture.id)
+    const configured = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [...configured.map((step: any) => ({ id: step.id, title: step.title })), { title: "New work" }] })
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}`
+    const reviewed = (await request(`${path}/configuration-preview`, "POST")).data.preview
+    assert.equal(reviewed.canApply, false)
+    assert.match(reviewed.blockers.join(" "), /awaiting payment/)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).status, "PENDING_PAYMENT")
+    assert.equal(await db.serviceStepOccurrence.count({ where: { contactServiceId: fixture.id } }), 2)
+    assert.deepEqual((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).billingSnapshot, before.billingSnapshot)
+  })
+
+  test("service metadata changes appear in the review and purchased billing attribution stays frozen", async () => {
+    const fixture = await completionFixture()
+    const before = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })
+    await request(`${settingsPath()}/${fixture.child.data.service.id}`, "PATCH", { name: "Reviewed offering name", description: "Updated description", billingMode: "CUSTOM" })
+    const preview = await reviewAndApplyConfiguration(fixture.id)
+    assert.ok(preview.differences.some((item: any) => item.section === "Service" && item.after.service.name === "Reviewed offering name"))
+    const after = await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })
+    assert.equal((after.configurationSnapshot as any).service.name, "Reviewed offering name")
+    assert.deepEqual((after.configurationSnapshot as any).inheritance.billing, (before.configurationSnapshot as any).inheritance.billing)
+    assert.deepEqual(after.billingSnapshot, before.billingSnapshot)
+    assert.equal(after.totalPriceCents, before.totalPriceCents)
+  })
+
+  async function publishEnrollmentTrigger(type: string, config: Record<string, unknown>, actions: unknown[] = [noteAction(type)], scope: string | null = null, conditions: unknown[] = []) {
+    const payload = { name: `${type} ${randomUUID()}`, isEnabled: true, trigger: { type, serviceGroupId: parentId, serviceOfferingId: scope, serviceTriggerConfig: config }, conditions, actions }
+    const saved = await request(`/api/account-settings/${tenantId}/automations`, "POST", payload)
+    assert.equal(saved.status, 201, JSON.stringify(saved.data))
+    const loaded = await request(`/api/account-settings/${tenantId}/automations/${saved.data.automation.id}`)
+    assert.deepEqual(loaded.data.automation.trigger, payload.trigger)
+    return { payload, automation: saved.data.automation }
+  }
+  const serviceEvents = (id: string, triggerType?: any) => db.automationEvent.findMany({ where: { tenantId, ...(triggerType ? { triggerType } : {}), serviceContext: { path: ["contactServiceId"], equals: id } }, orderBy: { createdAt: "asc" }, include: { dispatches: true } })
+
+  test("enrollment triggers pin fully initialized records, initial payments, and future sub-services", async () => {
+    await configureParent()
+    const fixture = await completionFixture()
+    const enrolled = await publishEnrollmentTrigger("SERVICE_ENROLLED", {})
+    await publishEnrollmentTrigger("SERVICE_PAYMENT_CHANGED", { changes: ["ADDED"], paymentState: "PARTIAL" })
+    await publishEnrollmentTrigger("SERVICE_STATUS_CHANGED", { previousStatus: null, status: null })
+    await publishEnrollmentTrigger("SERVICE_CHECKLIST_STATUS_CHANGED", { checklistItemId: null, previousStatus: null, status: null })
+    const future = (await createChild("Future offering")).data.service
+    const created = await request(`/api/services/${tenantId}/contact-services`, "POST", { serviceId: future.id, contactId: fixture.contact.id, initialPaymentCents: 2000 })
+    assert.equal(created.status, 201, JSON.stringify(created.data))
+    const id = created.data.contactService.id
+    const events = await serviceEvents(id)
+    assert.deepEqual(events.map(event => event.triggerType).sort(), ["SERVICE_ENROLLED", "SERVICE_PAYMENT_CHANGED"])
+    const initial = events.find(event => event.triggerType === "SERVICE_PAYMENT_CHANGED")!
+    assert.equal((initial.serviceEventSnapshot as any).isInitialPayment, true)
+    assert.equal((initial.serviceEventSnapshot as any).financials.paidCents, 2000)
+    assert.equal((initial.serviceContext as any).serviceStepOccurrenceId, null)
+    assert.equal(await db.contactServiceChecklistItem.count({ where: { contactServiceId: id } }), 1)
+    const root = events.find(event => event.triggerType === "SERVICE_ENROLLED")!
+    assert.equal(root.dispatches.length, 1)
+    const changed = await request(`/api/account-settings/${tenantId}/automations/${enrolled.automation.id}`, "PATCH", { ...enrolled.payload, actions: [noteAction("Changed later")] })
+    assert.equal(changed.status, 200)
+    await processCompletionEvent(root.id)
+    await processCompletionEvent(root.id)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "SERVICE_ENROLLED", contactId: fixture.contact.id } }), 1)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Changed later" } }), 0)
+  })
+
+  test("new service triggers allow empty drafts and enrollment actions while rejecting step actions on every path", async () => {
+    const fixture = await completionFixture()
+    const path = `/api/account-settings/${tenantId}/automations`
+    const trigger = { type: "SERVICE_ENROLLED", serviceGroupId: parentId, serviceOfferingId: fixture.child.data.service.id, serviceTriggerConfig: {} }
+    const empty = { name: "Empty enrollment workflow", trigger, isEnabled: false, actions: [], conditions: [] }
+    const emptySaved = await request(path, "POST", empty)
+    assert.equal(emptySaved.status, 201, JSON.stringify(emptySaved.data))
+    assert.equal((await request(path, "POST", { ...empty, name: randomUUID(), isEnabled: true })).status, 400)
+    for (const type of ["MOVE_SERVICE_STEP", "COMPLETE_SERVICE_STEP", "SKIP_SERVICE_STEP", "SCHEDULE_SERVICE_STEP", "SET_SERVICE_STEP_OWNER"]) {
+      const action = type === "MOVE_SERVICE_STEP" ? { type, serviceConfig: { targetSourceStepId: fixture.source.id, reason: "Test" } } : type === "SKIP_SERVICE_STEP" ? { type, serviceConfig: { reason: "Test" } } : type === "SCHEDULE_SERVICE_STEP" ? { type, serviceConfig: { schedule: { mode: "DEFAULT" } } } : type === "SET_SERVICE_STEP_OWNER" ? { type, serviceConfig: { assignedToUserId: userId } } : { type, serviceConfig: {} }
+      const saved = await request(path, "POST", { ...empty, name: randomUUID(), isEnabled: true, actions: [{ type: "SPLIT", splitConfig: { actionName: "Routes", routes: [{ branchKey: randomUUID(), name: "A", percentage: 50, actions: [action] }, { branchKey: randomUUID(), name: "B", percentage: 50, actions: [] }] } }] })
+      assert.equal(saved.status, 400, type)
+    }
+    assert.equal((await request(path, "POST", { ...empty, name: randomUUID(), trigger: { ...trigger, serviceGroupId: randomUUID() }, actions: [noteAction()] })).status, 400)
+    assert.equal((await request(path, "POST", { ...empty, name: randomUUID(), trigger: { ...trigger, serviceOfferingId: randomUUID() }, actions: [noteAction()] })).status, 400)
+    const published = await publishEnrollmentTrigger("SERVICE_ENROLLED", {}, [{ nodeKey: randomUUID(), type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: userId } }, noteAction("After checkpoint")])
+    const enrollment = await fixture.enroll()
+    const event = (await serviceEvents(enrollment.id, "SERVICE_ENROLLED"))[0]!
+    await processCompletionEvent(event.id)
+    const run = await db.automationRun.findFirstOrThrow({ where: { dispatchId: event.dispatches[0]!.id } })
+    assert.equal(run.status, "QUEUED")
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: enrollment.id } })).followUpCoordinatorUserId, userId)
+    await db.$transaction(tx => moveServiceStepTx(tx, { tenantId, contactServiceId: enrollment.id, expectedOccurrenceId: enrollment.occurrence.id, requestId: randomUUID(), kind: "SKIP", reason: "Move while enrollment workflow is queued", actorUserId: userId }))
+    assert.equal((await db.automationRun.findUniqueOrThrow({ where: { id: run.id } })).status, "QUEUED")
+    await resumeDueAutomationRuns(db)
+    assert.equal(await db.contactNote.count({ where: { tenantId, contactId: fixture.contact.id, title: "After checkpoint" } }), 1)
+    assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
+    const catalog = await request(`/api/account-settings/${tenantId}/automations/catalog`)
+    assert.equal(catalog.data.catalog.workflowAutomations.some((item: any) => item.id === published.automation.id), false)
+  })
+
+  test("payment events compare all saved details, retain deleted snapshots, and serialize competing charges", async () => {
+    const fixture = await completionFixture()
+    await db.contactService.update({ where: { id: fixture.id }, data: { allowPartialPayments: true } })
+    const paymentPath = `/api/services/${tenantId}/contact-services/${fixture.id}/payments`
+    const created = await request(paymentPath, "POST", { amountCents: 2000, paidAt: "2026-10-01T12:00:00.000Z", paymentMethod: "CASH", note: "First" })
+    assert.equal(created.status, 201, JSON.stringify(created.data))
+    const id = created.data.payment.id
+    const before = await db.contactServicePayment.findUniqueOrThrow({ where: { id } })
+    assert.equal((await request(`${paymentPath}/${id}`, "PATCH", { amountCents: 2000, paidAt: "2026-10-01T12:00:00.000Z", paymentMethod: "CASH", note: "  First  " })).status, 200)
+    assert.equal((await db.contactServicePayment.findUniqueOrThrow({ where: { id } })).updatedAt.getTime(), before.updatedAt.getTime())
+    for (const patch of [{ note: "Revised" }, { paymentMethod: "CARD" }, { paidAt: "2026-10-02T12:00:00.000Z" }, { amountCents: 3000 }]) assert.equal((await request(`${paymentPath}/${id}`, "PATCH", patch)).status, 200)
+    const events = await serviceEvents(fixture.id, "SERVICE_PAYMENT_CHANGED")
+    assert.equal(events.length, 5)
+    assert.ok(events.every(event => event.status === "COMPLETED" && !event.dispatches.length))
+    assert.equal((await request(`${paymentPath}/${id}`, "DELETE")).status, 200)
+    const removed = (await serviceEvents(fixture.id, "SERVICE_PAYMENT_CHANGED")).at(-1)!
+    assert.equal((removed.serviceEventSnapshot as any).previous.note, "Revised")
+    assert.equal((removed.serviceEventSnapshot as any).previous.amountCents, 3000)
+    assert.equal((removed.serviceEventSnapshot as any).next, null)
+    const competing = await Promise.all([request(paymentPath, "POST", { amountCents: 7000 }), request(paymentPath, "POST", { amountCents: 7000 })])
+    assert.deepEqual(competing.map(result => result.status).sort(), [201, 400])
+    assert.equal((await db.contactServicePayment.aggregate({ where: { contactServiceId: fixture.id }, _sum: { amountCents: true } }))._sum.amountCents, 7000)
+    const revisions = (await serviceEvents(fixture.id)).map(event => (event.serviceEventSnapshot as any)?.revision).filter(Boolean)
+    assert.equal(new Set(revisions).size, revisions.length)
+  })
+
+  test("checklist triggers preserve archived source references and automation chain attribution", async () => {
+    const config = await configureParent()
+    const fixture = await completionFixture()
+    const sourceId = config.checklistItems[0].id
+    const trigger = await publishEnrollmentTrigger("SERVICE_CHECKLIST_STATUS_CHANGED", { checklistItemId: sourceId, previousStatus: null, status: "RECEIVED" }, [{ type: "SET_SERVICE_CHECKLIST_STATUS", nodeKey: randomUUID(), serviceConfig: { checklistItemId: sourceId, status: "MISSING" } }])
+    const missing = await publishEnrollmentTrigger("SERVICE_CHECKLIST_STATUS_CHANGED", { checklistItemId: sourceId, previousStatus: "RECEIVED", status: "MISSING" }, [noteAction("Automation changed checklist")])
+    await reviewAndApplyConfiguration(fixture.id)
+    const item = await db.contactServiceChecklistItem.findFirstOrThrow({ where: { contactServiceId: fixture.id } })
+    const path = `/api/services/${tenantId}/contact-services/${fixture.id}/checklist-items/${item.id}`
+    assert.equal((await request(path, "PATCH", { status: "RECEIVED" })).status, 200)
+    const original = (await serviceEvents(fixture.id, "SERVICE_CHECKLIST_STATUS_CHANGED"))[0]!
+    await processCompletionEvent(original.id)
+    const generated = (await serviceEvents(fixture.id, "SERVICE_CHECKLIST_STATUS_CHANGED"))[1]!
+    assert.equal(generated.chainId, original.chainId)
+    assert.equal(generated.sourceAutomationId, trigger.automation.id)
+    assert.equal(generated.actorUserId, null)
+    await processCompletionEvent(generated.id)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Automation changed checklist", contactId: fixture.contact.id } }), 1)
+    assert.equal((await request(`${settingsPath()}/${parentId}`, "PATCH", { checklistItems: [] })).status, 200)
+    assert.equal((await request(`/api/account-settings/${tenantId}/automations/${missing.automation.id}`, "PATCH", missing.payload)).status, 200)
+    assert.equal((await request(path, "PATCH", { status: "RECEIVED" })).status, 200)
+    const count = (await serviceEvents(fixture.id, "SERVICE_CHECKLIST_STATUS_CHANGED")).length
+    assert.equal((await request(path, "PATCH", { status: "RECEIVED" })).status, 200)
+    assert.equal((await serviceEvents(fixture.id, "SERVICE_CHECKLIST_STATUS_CHANGED")).length, count)
+    assert.ok((await db.contactServiceChecklistItem.findUniqueOrThrow({ where: { id: item.id } })).completedAt)
+  })
+
+  test("status events follow finished-work payment rules and payment failure rolls back events", async () => {
+    const fixture = await completionFixture()
+    await publishEnrollmentTrigger("SERVICE_STATUS_CHANGED", { previousStatus: null, status: null })
+    const paymentPath = `/api/services/${tenantId}/contact-services/${fixture.id}/payments`
+    assert.equal((await request(completePath(fixture.id, fixture.occurrence.id), "POST")).status, 200)
+    const last = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+    assert.equal((await request(completePath(fixture.id, last.id), "POST")).status, 200)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).status, "PENDING_PAYMENT")
+    const paid = await request(paymentPath, "POST", { amountCents: 10000 })
+    assert.equal(paid.status, 201)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).status, "COMPLETED")
+    assert.equal((await request(`${paymentPath}/${paid.data.payment.id}`, "DELETE")).status, 200)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).status, "PENDING_PAYMENT")
+    assert.deepEqual((await serviceEvents(fixture.id, "SERVICE_STATUS_CHANGED")).map(event => (event.serviceEventSnapshot as any).next.status), ["PENDING_PAYMENT", "COMPLETED", "PENDING_PAYMENT"])
+    const { mutateServicePaymentTx } = await import("./service-payment-mutations.js")
+    const beforeCount = (await serviceEvents(fixture.id)).length
+    await assert.rejects(db.$transaction(async tx => { await mutateServicePaymentTx(tx, { tenantId, contactServiceId: fixture.id, operation: "ADDED", actorUserId: userId, payload: { amountCents: 10000 } }); throw new Error("Rollback test") }))
+    assert.equal((await serviceEvents(fixture.id)).length, beforeCount)
+    assert.equal(await db.contactServicePayment.count({ where: { contactServiceId: fixture.id } }), 0)
+    const other = await fixture.enroll()
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}`, "PATCH", { status: "CANCELED" })).status, 200)
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/payments`, "POST", { amountCents: 10000 })).status, 201)
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: other.id } })).status, "CANCELED")
+    await db.contactService.update({ where: { id: other.id }, data: { workflowKind: "LEGACY_TEMPLATE" } })
+    const count = (await serviceEvents(other.id)).length
+    const payment = await db.contactServicePayment.findFirstOrThrow({ where: { contactServiceId: other.id } })
+    assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/payments/${payment.id}`, "PATCH", { note: "Legacy edit" })).status, 200)
+    assert.equal((await serviceEvents(other.id)).length, count)
+  })
+
+  test("new trigger filters pin contact fields, custom fields, and tags and scope enrollments exactly", async () => {
+    const fixture = await completionFixture()
+    const tag = await db.tenantTag.create({ data: { tenantId, name: "Qualified", bgColor: "#fff", textColor: "#000" } })
+    const field = await db.contactCustomField.create({ data: { tenantId, key: "service_test", label: "Service test", fieldType: "TEXT", options: [] } })
+    await db.contactTag.create({ data: { tenantId, contactId: fixture.contact.id, tagId: tag.id } })
+    await db.contactCustomFieldValue.create({ data: { tenantId, contactId: fixture.contact.id, fieldId: field.id, value: "Eligible" } })
+    const conditions = [{ source: "CONTACT_FIELD", fieldKey: "first_name", operator: "EQUALS", compareValue: "Inheritance" }, { source: "CONTACT_CUSTOM_FIELD", customFieldId: field.id, operator: "EQUALS", compareValue: "Eligible" }, { source: "CONTACT_TAGS", tagId: tag.id, operator: "EQUALS" }]
+    const published = await publishEnrollmentTrigger("SERVICE_ENROLLED", {}, [noteAction("Captured service filter")], fixture.child.data.service.id, conditions)
+    const entered = await fixture.enroll()
+    const queued = (await serviceEvents(entered.id, "SERVICE_ENROLLED"))[0]!
+    assert.equal(queued.dispatches.length, 1)
+    await db.contact.update({ where: { id: fixture.contact.id }, data: { firstName: "Changed after event" } })
+    await db.contactTag.deleteMany({ where: { contactId: fixture.contact.id } })
+    await processCompletionEvent(queued.id)
+    assert.equal(await db.contactNote.count({ where: { tenantId, title: "Captured service filter" } }), 1)
+    const miss = await fixture.enroll()
+    assert.equal((await serviceEvents(miss.id, "SERVICE_ENROLLED"))[0]!.dispatches.length, 0)
+    const other = (await createChild("Other offering")).data.service
+    const enrollment = await request(`/api/services/${tenantId}/contact-services`, "POST", { contactId: fixture.contact.id, serviceId: other.id })
+    assert.equal((await serviceEvents(enrollment.data.contactService.id, "SERVICE_ENROLLED"))[0]!.dispatches.length, 0)
+    assert.ok(published.automation.id)
+  })
+
+  test("derived completion keeps the initiating chain even when no completion workflow matches", async () => {
+    const fixture = await completionFixture()
+    assert.equal((await request(completePath(fixture.id, fixture.occurrence.id), "POST")).status, 200)
+    const last = await db.serviceStepOccurrence.findFirstOrThrow({ where: { contactServiceId: fixture.id, status: "ACTIVE" } })
+    const chainId = randomUUID(), automationId = randomUUID()
+    const { completeServiceStepOccurrenceTx } = await import("./service-step-progression.js")
+    await db.$transaction(tx => completeServiceStepOccurrenceTx(tx, { tenantId, contactServiceId: fixture.id, occurrenceId: last.id, actorUserId: null, automationChain: { chainId, sourceAutomationId: automationId, sourceAutomationName: "Automatic completion", sourceNodeKey: "complete", chainDepth: 3 } }))
+    const event = (await serviceEvents(fixture.id, "SERVICE_STATUS_CHANGED"))[0]!
+    assert.equal(event.chainId, chainId)
+    assert.equal(event.chainDepth, 3)
+    assert.equal(event.sourceAutomationId, automationId)
+    assert.equal(event.actorUserId, null)
+  })
+
+  test("all enrollment trigger kinds execute published branches with four supported enrollment actions", async () => {
+    const config = await configureParent()
+    const fixture = await completionFixture()
+    const cases = [
+      { type: "SERVICE_ENROLLED", config: {}, action: { type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: userId } } },
+      { type: "SERVICE_PAYMENT_CHANGED", config: { changes: ["ADDED"], paymentState: null }, action: { type: "SET_SERVICE_PROFESSIONAL", serviceConfig: { professionalId: config.professionals[0].id } } },
+      { type: "SERVICE_CHECKLIST_STATUS_CHANGED", config: { checklistItemId: null, previousStatus: null, status: "RECEIVED" }, action: { type: "SET_SERVICE_CHECKLIST_STATUS", serviceConfig: { checklistItemId: config.checklistItems[0].id, status: "MISSING" } } },
+      { type: "SERVICE_STATUS_CHANGED", config: { previousStatus: null, status: "CANCELED" }, action: { type: "SET_SERVICE_STATUS", serviceConfig: { status: "CANCELED" } } },
+    ]
+    for (const entry of cases) {
+      const branch = { type: "SPLIT", nodeKey: randomUUID(), splitConfig: { actionName: entry.type, routes: [1, 2].map(index => ({ name: `Route ${index}`, percentage: 50, actions: [{ ...entry.action, nodeKey: randomUUID() }] })) } }
+      await publishEnrollmentTrigger(entry.type, entry.config, [branch])
+      const enrolled = await fixture.enroll()
+      if (entry.type === "SERVICE_PAYMENT_CHANGED") assert.equal((await request(`/api/services/${tenantId}/contact-services/${enrolled.id}/payments`, "POST", { amountCents: 10000 })).status, 201)
+      if (entry.type === "SERVICE_CHECKLIST_STATUS_CHANGED") {
+        const item = await db.contactServiceChecklistItem.findFirstOrThrow({ where: { contactServiceId: enrolled.id } })
+        assert.equal((await request(`/api/services/${tenantId}/contact-services/${enrolled.id}/checklist-items/${item.id}`, "PATCH", { status: "RECEIVED" })).status, 200)
+      }
+      if (entry.type === "SERVICE_STATUS_CHANGED") assert.equal((await request(`/api/services/${tenantId}/contact-services/${enrolled.id}`, "PATCH", { status: "CANCELED" })).status, 200)
+      const event = (await serviceEvents(enrolled.id, entry.type))[0]!
+      await processCompletionEvent(event.id)
+      const run = await db.automationRun.findFirstOrThrow({ where: { dispatchId: event.dispatches[0]!.id } })
+      assert.equal(run.status, entry.type === "SERVICE_STATUS_CHANGED" ? "EXITED" : "SUCCEEDED", `${entry.type}: ${run.failureMessage}`)
+      assert.equal(await db.serviceAutomationActionResult.count({ where: { runId: run.id } }), 1)
+    }
   })
 
   test("migration groups old services without changing IDs, names, prices, or enrollment links", async () => {

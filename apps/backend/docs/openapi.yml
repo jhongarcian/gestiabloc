@@ -4393,6 +4393,83 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/configuration-updates/{serviceId}/enrollments:
+    get:
+      tags: [Services]
+      summary: List active service-step enrollments eligible for configuration review
+      description: Tenant admins only. A group includes its offerings; an offering includes only itself. Returns at most 20 records ordered by ID, with nextCursor for continuation. Completed, canceled, template and no-step enrollments are excluded.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { in: path, name: tenantId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: serviceId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: cursor, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Enrollment page with contactName, serviceName, lastApplied and nextCursor
+        "401": { description: Not authenticated }
+        "403": { description: Active tenant admin required }
+        "404": { description: Scoped service not found }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/configuration-preview:
+    post:
+      tags: [Services]
+      summary: Review current configuration against one enrollment
+      description: Produces a 15-minute durable review receipt without mutating enrolled work or generating business events. Includes exact before/after differences, preserved work and blockers. Locks enrollment before configuration. Tenant admins only.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { in: path, name: tenantId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Review receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  preview: { $ref: "#/components/schemas/ServiceConfigurationPreview" }
+        "401": { description: Not authenticated }
+        "403": { description: Active tenant admin or allowed origin required }
+        "404": { description: Scoped enrollment not found }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/configuration-apply:
+    post:
+      tags: [Services]
+      summary: Apply one reviewed configuration update atomically
+      description: Requires the exact unexpired preview for this tenant and enrollment. Rechecks enrollment, work, waiting/queued actions, active members and current effective configuration. Applies future steps, safe checklist details/additions, professional choices and saved service workflow definitions. Preserves entered work, checklist history, billing, assignments, deadlines and pinned execution. Same-preview retries return the original receipt. No workflow execution is drained in this request.
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { in: path, name: tenantId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [previewId]
+              properties:
+                previewId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Applied receipt with appliedAt, previewId and alreadyApplied
+        "400": { description: Invalid request }
+        "401": { description: Not authenticated }
+        "403": { description: Active tenant admin or allowed origin required }
+        "404": { description: Scoped enrollment or preview not found }
+        "409": { description: CONFIGURATION_PREVIEW_STALE, CONFIGURATION_PREVIEW_EXPIRED or CONFIGURATION_UPDATE_BLOCKED; refresh and review before applying }
+  /api/services/{tenantId}/contact-services/{contactServiceId}/configuration-history:
+    get:
+      tags: [Services]
+      summary: Read the last 20 applied configuration reviews for an enrollment
+      security: [{ cookieAuth: [] }]
+      parameters:
+        - { in: path, name: tenantId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: contactServiceId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Applied receipts with actor attribution, time and reviewed differences }
+        "401": { description: Not authenticated }
+        "403": { description: Active tenant admin required }
   /api/services/{tenantId}/options:
     get:
       tags: [Services]
@@ -5343,11 +5420,56 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/service-steps/{stepId}/owner:
+    patch:
+      tags: [Services]
+      summary: Assign or unassign an enrolled step owner
+      description: >-
+        Tenant admin or MEDIUM/MAX member. Owner belongs to the saved enrollment step and
+        survives revisits. Tenant/enrollment ownership and active membership are validated under
+        the enrollment lock. Canceled/completed enrollments reject changes. Unchanged saves
+        create no audit entry. The follow-up queue assignee filter uses this owner.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema: { type: string, format: uuid }
+        - in: path
+          name: stepId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [assignedToUserId]
+              properties:
+                assignedToUserId: { type: string, format: uuid, nullable: true }
+      responses:
+        "200":
+          description: Canonical saved step including assignedToUserId and assignedTo
+          content:
+            application/json:
+              schema: { type: object, properties: { ok: { type: boolean }, step: { $ref: "#/components/schemas/EnrolledServiceStep" } } }
+        "400":
+          description: Invalid or inactive assignee
+        "403":
+          description: Insufficient security level
+        "404":
+          description: Enrollment or saved step not found in this tenant
+        "409":
+          description: Enrollment is canceled or completed
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-coordinator:
     patch:
       tags: [Services]
       summary: Change the overall coordinator for a service follow-up
-      description: Updates only the enrollment-level coordinator. Existing step assignees are not changed.
+      description: Updates only the enrollment-level coordinator for template follow-ups or unfinished service-owned steps, including completion gates. Existing step assignees are not changed. Active tenant member or Unassigned; canceled and completed service-step enrollments are locked.
       security:
         - cookieAuth: []
       parameters:
@@ -6106,7 +6228,10 @@ paths:
             Pipelines, stages, contact and task statuses, services, members, tags, eligible custom
             fields with immutable keys, and the safe regular contact fields and formatting options
             supported by automation templates. serviceStepServices contains active parent services with
-            subServices, each exposing its effective active steps as id/title pairs.
+            subServices, each exposing its effective active steps as id/title pairs. serviceActionOfferings
+            contains active offering IDs/names plus effective steps, checklistItems and professionals as
+            id/name pairs. Internal professionals require active membership. Shared trigger pickers
+            intersect these options across all eligible offerings.
           content:
             application/json:
               schema:
@@ -6858,10 +6983,42 @@ components:
               type: integer
             totalPages:
               type: integer
+    ServiceAutomationEventSnapshot:
+      type: object
+      nullable: true
+      description: Immutable change-time details, including deleted payments. Null for older and unrelated events.
+      required: [schemaVersion, revision, occurredAt, serviceGroupId, serviceGroupName, serviceOfferingId, serviceOfferingName, contactServiceId, financials]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        revision: { type: integer, minimum: 1 }
+        occurredAt: { type: string, format: date-time }
+        serviceGroupId: { type: string, format: uuid }
+        serviceGroupName: { type: string }
+        serviceOfferingId: { type: string, format: uuid }
+        serviceOfferingName: { type: string }
+        contactServiceId: { type: string, format: uuid }
+        recordId: { type: string, format: uuid, nullable: true }
+        checklistItemId: { type: string, format: uuid, nullable: true }
+        itemLabel: { type: string, nullable: true }
+        change: { type: string, nullable: true, enum: [ADDED, UPDATED, REMOVED, null] }
+        isInitialPayment: { type: boolean }
+        previous: { type: object, nullable: true, additionalProperties: true }
+        next: { type: object, nullable: true, additionalProperties: true }
+        automationSource: { type: object, nullable: true, additionalProperties: true }
+        financials:
+          type: object
+          properties:
+            totalPriceCents: { type: integer }
+            paidCents: { type: integer }
+            remainingCents: { type: integer }
+            paymentState: { type: string, enum: [UNPAID, PARTIAL, PAID] }
+            currency: { type: string }
     AutomationEventStatusResponse:
       type: object
       required: [id, status, total, queued, running, completed, skipped, failed, createdAt]
       properties:
+        serviceEventSnapshot:
+          $ref: "#/components/schemas/ServiceAutomationEventSnapshot"
         serviceContext:
           $ref: "#/components/schemas/AutomationServiceContext"
         id:
@@ -7133,6 +7290,86 @@ components:
       oneOf:
         - type: object
           additionalProperties: false
+          required: [type, serviceGroupId, serviceOfferingId, serviceTriggerConfig]
+          description: >-
+            Enrollment-only context for SERVICE_STEPS enrollments. Null sub-service scope includes
+            current and future eligible offerings in the group. Contact fields, supported custom fields,
+            and tags use event-time values. Only coordinator, professional, checklist and service-status
+            actions are available; these workflows do not add completion gates.
+          properties:
+            type: { type: string, enum: [SERVICE_ENROLLED] }
+            serviceGroupId: { type: string, format: uuid }
+            serviceOfferingId: { type: string, format: uuid, nullable: true }
+            serviceTriggerConfig:
+              type: object
+              additionalProperties: false
+              properties: {}
+        - type: object
+          additionalProperties: false
+          required: [type, serviceGroupId, serviceOfferingId, serviceTriggerConfig]
+          description: >-
+            Enrollment-only context for SERVICE_STEPS enrollments. Null sub-service scope includes
+            current and future eligible offerings in the group. Contact fields, supported custom fields,
+            and tags use event-time values. Only coordinator, professional, checklist and service-status
+            actions are available; these workflows do not add completion gates.
+          properties:
+            type: { type: string, enum: [SERVICE_STATUS_CHANGED] }
+            serviceGroupId: { type: string, format: uuid }
+            serviceOfferingId: { type: string, format: uuid, nullable: true }
+            serviceTriggerConfig:
+              type: object
+              additionalProperties: false
+              required: [previousStatus, status]
+              properties:
+                previousStatus: { type: string, nullable: true, enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED, null] }
+                status: { type: string, nullable: true, enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED, null] }
+        - type: object
+          additionalProperties: false
+          required: [type, serviceGroupId, serviceOfferingId, serviceTriggerConfig]
+          description: >-
+            Enrollment-only context for SERVICE_STEPS enrollments. Null sub-service scope includes
+            current and future eligible offerings in the group. Contact fields, supported custom fields,
+            and tags use event-time values. Only coordinator, professional, checklist and service-status
+            actions are available; these workflows do not add completion gates.
+          properties:
+            type: { type: string, enum: [SERVICE_CHECKLIST_STATUS_CHANGED] }
+            serviceGroupId: { type: string, format: uuid }
+            serviceOfferingId: { type: string, format: uuid, nullable: true }
+            serviceTriggerConfig:
+              type: object
+              additionalProperties: false
+              required: [checklistItemId, previousStatus, status]
+              properties:
+                checklistItemId: { type: string, format: uuid, nullable: true, description: Stable source item ID; null matches any enrolled item. }
+                previousStatus: { type: string, nullable: true, enum: [NOT_RECEIVED, INFORMED, MISSING, RECEIVED, null] }
+                status: { type: string, nullable: true, enum: [NOT_RECEIVED, INFORMED, MISSING, RECEIVED, null] }
+        - type: object
+          additionalProperties: false
+          required: [type, serviceGroupId, serviceOfferingId, serviceTriggerConfig]
+          description: >-
+            Enrollment-only context for SERVICE_STEPS enrollments. Null sub-service scope includes
+            current and future eligible offerings in the group. Contact fields, supported custom fields,
+            and tags use event-time values. Only coordinator, professional, checklist and service-status
+            actions are available; these workflows do not add completion gates.
+          properties:
+            type: { type: string, enum: [SERVICE_PAYMENT_CHANGED] }
+            serviceGroupId: { type: string, format: uuid }
+            serviceOfferingId: { type: string, format: uuid, nullable: true }
+            serviceTriggerConfig:
+              type: object
+              additionalProperties: false
+              required: [changes, paymentState]
+              properties:
+                changes:
+                  type: array
+                  minItems: 1
+                  maxItems: 3
+                  uniqueItems: true
+                  items: { type: string, enum: [ADDED, UPDATED, REMOVED] }
+                  description: Added includes positive initial payments. Updated compares amount, paidAt, method and note after normalization.
+                paymentState: { type: string, nullable: true, enum: [UNPAID, PARTIAL, PAID, null], description: Resulting payment balance; independent of service completion. }
+        - type: object
+          additionalProperties: false
           required: [type, serviceStepId]
           description: >-
             Select an active sub-service and one of its effective active steps. Multiple automations
@@ -7342,7 +7579,7 @@ components:
           type: array
           minItems: 0
           maxItems: 100
-          description: At most 100 action nodes across the complete tree. Only a disabled SERVICE_STEP_ENTERED or SERVICE_STEP_COMPLETED draft may have zero actions. Publishing always requires at least one action. Linked step triggers cannot be changed or deleted; disable them instead.
+          description: At most 100 action nodes across the complete tree. Disabled service-trigger drafts may have zero actions. Publishing always requires at least one action.
           items:
             $ref: "#/components/schemas/AutomationActionRequest"
     AutomationFolderNameRequest:
@@ -7430,10 +7667,21 @@ components:
             - DELETE_OPPORTUNITY
             - WAIT
             - DELETE_CONTACT
+            - MOVE_SERVICE_STEP
+            - COMPLETE_SERVICE_STEP
+            - SKIP_SERVICE_STEP
+            - SCHEDULE_SERVICE_STEP
+            - SET_SERVICE_STEP_OWNER
+            - SET_SERVICE_COORDINATOR
+            - SET_SERVICE_PROFESSIONAL
+            - SET_SERVICE_CHECKLIST_STATUS
+            - SET_SERVICE_STATUS
           description: >-
             DELETE_CONTACT permanently removes the contact from the tenant account and
             must be the final action in the automation. GO_TO must be final in its source
             path and may only reference a destination that keeps the workflow acyclic.
+        serviceConfig:
+          $ref: "#/components/schemas/AutomationServiceActionConfig"
         customFieldId:
           type: string
         customFieldUpdates:
@@ -7542,6 +7790,59 @@ components:
                   type: string
                   minLength: 1
                   maxLength: 200
+    AutomationServiceActionConfig:
+      description: >-
+        Configuration selected by the action type. All service triggers support coordinator,
+        professional, checklist and service-status actions. Movement, completion, skipping, scheduling
+        and step ownership require step-entry/completion context and its exact saved occurrence.
+        Execution always requires the triggering enrollment. Source IDs resolve against saved records; missing
+        snapshots are rejected. Shared triggers accept only choices common to eligible sub-services.
+        Move, Skip, Complete and CANCELED end their execution path and must be placed last.
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [targetSourceStepId, reason]
+          properties:
+            targetSourceStepId: { type: string, format: uuid }
+            reason: { type: string, minLength: 1, maxLength: 1000 }
+        - type: object
+          additionalProperties: false
+          maxProperties: 0
+          description: COMPLETE_SERVICE_STEP; completing an already-completed entry emits no event.
+        - type: object
+          additionalProperties: false
+          required: [reason]
+          properties:
+            reason: { type: string, minLength: 1, maxLength: 1000 }
+        - type: object
+          additionalProperties: false
+          required: [schedule]
+          properties:
+            schedule:
+              $ref: "#/components/schemas/ServiceStepDeadlineSchedule"
+        - type: object
+          additionalProperties: false
+          required: [assignedToUserId]
+          description: Step owner or coordinator. Active tenant member, or null for Unassigned.
+          properties:
+            assignedToUserId: { type: string, format: uuid, nullable: true }
+        - type: object
+          additionalProperties: false
+          required: [professionalId]
+          properties:
+            professionalId: { type: string, format: uuid, nullable: true }
+        - type: object
+          additionalProperties: false
+          required: [checklistItemId, status]
+          properties:
+            checklistItemId: { type: string, format: uuid, description: Stable source checklist ID }
+            status: { type: string, enum: [NOT_RECEIVED, INFORMED, MISSING, RECEIVED] }
+        - type: object
+          additionalProperties: false
+          required: [status]
+          description: IN_PROGRESS requires unfinished steps. Completion and payment statuses remain derived.
+          properties:
+            status: { type: string, enum: [IN_PROGRESS, CANCELED] }
     AutomationGoToConfig:
       type: object
       required: [targetNodeKey]
@@ -11381,6 +11682,14 @@ components:
         - type: object
           properties:
             sourceStepId: { type: string }
+            assignedToUserId: { type: string, format: uuid, nullable: true }
+            assignedTo:
+              type: object
+              nullable: true
+              properties:
+                id: { type: string, format: uuid }
+                name: { type: string }
+                email: { type: string }
             occurrences:
               type: array
               items:
@@ -11389,10 +11698,61 @@ components:
     ServiceWorkflowKind:
       type: string
       enum: [LEGACY_TEMPLATE, SERVICE_STEPS, NONE]
+    ServiceConfigurationPreview:
+      type: object
+      required: [previewId, expiresAt, contactServiceId, serviceId, serviceName, contactName, canApply, hasChanges, blockers, differences, preserved, references]
+      properties:
+        previewId: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        contactServiceId: { type: string, format: uuid }
+        serviceId: { type: string, format: uuid }
+        serviceName: { type: string }
+        contactName: { type: string }
+        canApply: { type: boolean }
+        hasChanges: { type: boolean }
+        blockers: { type: array, items: { type: string } }
+        preserved: { type: array, items: { type: string } }
+        references: { type: object, additionalProperties: { type: string }, description: Display names keyed by stable source IDs; identity matching always uses IDs. }
+        differences:
+          type: array
+          items:
+            type: object
+            required: [section, label, kind, before, after]
+            properties:
+              section: { type: string, enum: [Service, Steps, Checklist, Professionals, Automations, Billing] }
+              label: { type: string }
+              kind: { type: string, enum: [ADD, UPDATE, REMOVE, PRESERVE] }
+              before: { nullable: true, description: Full saved definition or null }
+              after: { nullable: true, description: Full proposed definition or null; PRESERVE keeps the saved value }
+              explanation: { type: string }
+    SavedServiceAutomations:
+      type: object
+      required: [schemaVersion, definitions]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        definitions:
+          type: array
+          items:
+            type: object
+            required: [id, name, isEnabled, triggerType, conditions, actions]
+            properties:
+              id: { type: string, format: uuid }
+              name: { type: string }
+              isEnabled: { type: boolean }
+              triggerType: { type: string, enum: [SERVICE_STEP_ENTERED, SERVICE_STEP_COMPLETED, SERVICE_ENROLLED, SERVICE_STATUS_CHANGED, SERVICE_CHECKLIST_STATUS_CHANGED, SERVICE_PAYMENT_CHANGED] }
+              serviceStepId: { type: string, nullable: true }
+              serviceGroupId: { type: string, nullable: true }
+              serviceOfferingId: { type: string, nullable: true }
+              serviceTriggerConfig: { type: object, nullable: true }
+              sortOrder: { type: integer }
+              conditions: { type: array, items: { type: object } }
+              actions: { type: array, items: { type: object }, description: Full typed action definitions, including nested branches and waits }
     EnrollmentConfigurationSnapshot:
       type: object
       readOnly: true
       properties:
+        serviceAutomations:
+          $ref: "#/components/schemas/SavedServiceAutomations"
         schemaVersion: { type: integer, enum: [1] }
         service: { type: object }
         inheritance: { type: object }

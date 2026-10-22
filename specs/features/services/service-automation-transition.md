@@ -1,8 +1,8 @@
-Status: Chunks 1–15 implemented. Chunk 16 is next.
+Status: Chunks 1–18 implemented. Chunk 19 is next.
 
 # Build the transition in small, reviewable chunks
 
-Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 16.**
+Keep each chunk focused on one behavior, include its relevant tests, and finish its acceptance check before moving on. **Next: Chunk 19.**
 
 The agreed direction stays the same: parent services group enrollable sub-services; configuration inherits by section; Automations handles actions; active enrollments receive reviewed updates. No customer-data backfill is needed.
 
@@ -145,12 +145,55 @@ legacy work, moves, revisits, completion, cancellation, filters and tenant acces
 ### 16. Add service actions
 Expose movement, completion, skipping, scheduling, step-owner assignment, coordinator assignment, professional assignment, checklist updates, and valid service-status changes.
 
+**Implemented:** The builder has all nine Service actions, with typed `serviceConfig` preserved through
+saves, reloads and pinned action snapshots. Step-entry/completion triggers supply the exact enrollment;
+manual bulk enrollment without that context cannot mutate a service. Source IDs resolve only against
+saved enrollment records. Shared triggers offer the intersection of eligible sub-service choices.
+Move, Skip, Complete and cancellation end the path in validation, canvas and runtime.
+
+Shared enrollment-first transaction helpers serve manual and automated controls. Saved step owners
+survive revisits and feed workspace/queue assignment filters. Coordinators support unfinished
+service-owned steps. Archived checklist history remains usable; archived professionals can remain
+assigned but cannot receive new assignments. Status changes respect unfinished work and derived
+payment/completion rules. Audits record the automation, run, node, enrollment, occurrence and values
+without inventing a human actor.
+
+Event and resumed workers share atomic PostgreSQL admission: 4 global, 2 per tenant by default,
+validated against pool capacity with four reserved connections. Durable leases, contact serialization,
+tenant rotation, fencing and per-run/node results prevent overlapping mutations and duplicate history.
+Service-context runs checkpoint after each service mutation or 10 nodes / 500 ms, preserving cursor,
+variables, routing, logs and outbox together. Queued continuations retain completion gates. Retries use
+5/30/120 seconds; chain depth and repeated-transition guards stop loops across different workflows.
+
+Regression, browser and 5,000-job verification is documented in
+[`service-actions-verification.md`](../../../apps/backend/docs/service-actions-verification.md).
+The additive service-actions and fairness migrations must precede deployment. No new bulk-selection
+interface, Chunk 17 triggers or Chunk 18 propagation was introduced.
+
 **Done when:** These actions work through the existing editor with tenant validation, enrollment isolation, and readable logs.
 
 ### 17. Add the remaining service triggers
-Add enrollment, service-status, checklist-item, and payment-change triggers. Include initial payments, payment edits, and removals.
+Implemented enrollment-created, service-status, checklist-status and payment-change triggers in the
+builder. Select a service and one or all sub-services. Shared selectors use stable source IDs common
+to eligible offerings. Contact fields, safe custom fields and tags match event-time values. Only
+SERVICE_STEPS enrollments participate; there is no historical replay or new completion gate.
 
-**Done when:** Actual changes produce one event; unchanged saves produce none. Finishing unpaid work still results in Pending payment.
+Enrollment-only context supports coordinator, professional, checklist and service-status actions.
+Step actions retain occurrence context; service workflows cannot be generic workflow targets or
+contextless manual bulk starts. Saved archived checklist trigger references remain usable.
+
+Enrollment-first transactions persist changes, history, payment reconciliation and revision-keyed
+immutable events together. Initial positive payments count as Added; edits compare amount, date,
+method and note; removals retain the deleted snapshot. No-op saves produce no event or timestamp
+rewrite. Zero-match events finish without background work. Actual service status changes are emitted
+from cancellation, movement, completion and payments. Unfinished work cannot be completed by payment;
+finished unpaid work stays Pending payment. Generated events preserve their causal chain.
+
+Execution reuses the bounded queue and checkpoint rules from Chunk 16. Verification is recorded in
+`apps/backend/docs/service-triggers-verification.md`.
+
+**Done when:** Actual changes produce one event of each applicable type; unchanged saves produce none.
+Finishing unpaid work still results in Pending payment.
 
 ## Phase 4 — Make changes manageable and replace templates
 
@@ -158,6 +201,24 @@ Add enrollment, service-status, checklist-item, and payment-change triggers. Inc
 First build the comparison preview; then add selective application to active enrollments. Include saved service-automation definitions in configuration snapshots.
 
 Preserve completed work, billing, assignments, and manual scheduling overrides. Reject stale previews and changes that invalidate current or waiting work.
+
+**Implemented:** Service and sub-service configuration now includes an Enrollment updates tab. Admins
+review saved versus proposed steps, checklist, professional options and complete service workflow
+definitions, then select individual active enrollments. Pages contain at most 20 enrollments; preview
+and apply requests run one enrollment at a time. Each apply is an enrollment-locked transaction with
+a durable, 15-minute review receipt, exact state/configuration digests, idempotent retries and audit history.
+
+Entered step definitions and their order are protected. Only unentered future steps may change;
+owned future steps and targets of unfinished workflows cannot be removed. Checklist records are never
+deleted, and items with activity retain their details. Billing, payments, existing assignments, manual
+deadlines and queued/waiting actions stay intact. Finished work awaiting payment cannot gain new steps.
+Stale, expired, incompatible and cross-tenant previews cannot apply.
+
+New service-step enrollments capture complete workflow definitions, filters and nested actions. Later
+events use those saved definitions, including after library deletion. Existing enrollments without this
+snapshot retain compatibility behavior until explicitly reviewed; there is no replay or backfill.
+Apply `20261021130000_service_configuration_review` before deploying. Verification is recorded in
+`apps/backend/docs/service-configuration-review-verification.md`.
 
 **Done when:** Admins can review exactly what will change and update selected enrollments safely.
 

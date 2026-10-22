@@ -986,3 +986,12 @@ describe("buildAutomationFlowGraph", () => {
     }
   })
 })
+
+for (const type of ["MOVE_SERVICE_STEP", "COMPLETE_SERVICE_STEP", "SKIP_SERVICE_STEP", "SET_SERVICE_STATUS"] as const) {
+  test(`${type} has no insertion control after its terminal node`, () => {
+    const graph = buildAutomationFlowGraph({ triggerType: "SERVICE_STEP_ENTERED", pipelineId: "", targetStageId: "", conditions: [], actions: [{ nodeKey: "terminal-service", type, serviceConfig: { status: "CANCELED" } }] }, null, labels)
+    assert.ok(graph.nodes.some(node => node.id === "add-0"))
+    assert.equal(graph.nodes.some(node => node.id === "add-1"), false)
+    assert.equal(graph.nodes.find(node => node.id === "complete")?.data.subtitle, "Workflow ended by service action")
+  })
+}

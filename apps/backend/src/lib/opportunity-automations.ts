@@ -1,3 +1,4 @@
+import { EnrollmentServiceTriggerSchemas, isEnrollmentServiceTrigger, isServiceTrigger, isEnrollmentServiceAction, SERVICE_TRIGGER_TYPES, type ServiceEventSnapshot } from "./service-automation-triggers.js"
 import { claimAutomationExecutionJobs, releaseAutomationExecutionLease, transientAutomationFailure, TRANSIENT_AUTOMATION_RETRY_DELAYS } from "./automation-execution-budget.js"
 import { ServiceAutomationActionSchema, SERVICE_ACTION_TYPES, isServiceAction, isTerminalServiceAction, serviceActionCatalog, serviceActionOptions, validateServiceActionSelection, executeServiceActionTx } from "./service-automation-actions.js"
 import { lockServiceStepRuntimeTx } from "./service-step-runtime.js"
@@ -92,6 +93,7 @@ import { getTaskPriorityFromDueDate, isCompletedStatusName } from "./task-priori
 import { evaluateWorkflowOperator } from "./service-followup-runtime.js"
 
 export const AUTOMATION_TRIGGER_TYPES = [
+  "SERVICE_ENROLLED", "SERVICE_STATUS_CHANGED", "SERVICE_CHECKLIST_STATUS_CHANGED", "SERVICE_PAYMENT_CHANGED",
   "SERVICE_STEP_ENTERED",
   "SERVICE_STEP_COMPLETED",
   "CONTACT_CREATED",
@@ -740,6 +742,7 @@ export const AutomationUpsertSchema = z
     folderId: idSchema.nullable().optional(),
     isEnabled: z.boolean().default(false),
     trigger: z.discriminatedUnion("type", [
+      ...EnrollmentServiceTriggerSchemas,
       z.object({ type: z.enum(["SERVICE_STEP_ENTERED", "SERVICE_STEP_COMPLETED"]), serviceStepId: z.uuid(), serviceOfferingId: z.uuid().nullable().optional() }).strict(),
       z.object({ type: z.literal("CONTACT_CREATED") }).strict(),
       z.object({ type: z.literal("CONTACT_CHANGED"), changes: z.array(AutomationContactChangeRuleSchema).min(1).max(20) }).strict(),
@@ -777,7 +780,7 @@ export const AutomationUpsertSchema = z
     conditions: z.array(AutomationConditionInputSchema).max(20).default([]),
     actions: z.array(AutomationActionInputSchema).max(MAX_AUTOMATION_ACTION_NODES),
   }).superRefine((input, context) => {
-    if (!input.actions.length && (input.isEnabled || !["SERVICE_STEP_ENTERED", "SERVICE_STEP_COMPLETED"].includes(input.trigger.type))) {
+    if (!input.actions.length && (input.isEnabled || !isServiceTrigger(input.trigger.type))) {
       context.addIssue({ code: "custom", path: ["actions"], message: "Add at least one action before enabling this automation." })
     }
   })
@@ -1420,7 +1423,7 @@ export async function validateAutomationConfiguration(
   input: AutomationInput,
   options: { sourceAutomationId?: string | null } = {},
 ) {
-  const contactTrigger = (input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED") || input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
+  const contactTrigger = isServiceTrigger(input.trigger.type) || input.trigger.type === "CONTACT_CREATED" || input.trigger.type === "CONTACT_CHANGED" || input.trigger.type === "CONTACT_TAG" || input.trigger.type === "CONTACT_NOTE_ADDED" || input.trigger.type === "TASK_ADDED" || input.trigger.type === "TASK_COMPLETED" || input.trigger.type === "APPOINTMENT_CREATED" || input.trigger.type === "APPOINTMENT_STATUS_CHANGED" || input.trigger.type === "BIRTHDAY_REMINDER"
   if ((input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED")) {
     const selectedStepId = input.trigger.serviceStepId
     if (input.trigger.serviceOfferingId) {
@@ -1497,7 +1500,7 @@ export async function validateAutomationConfiguration(
       : Promise.resolve([]),
     prismaClient.automation?.findMany
       ? prismaClient.automation.findMany({
-          where: { tenantId, isEnabled: true, serviceStepId: null },
+          where: { tenantId, isEnabled: true, triggerType: { notIn: [...SERVICE_TRIGGER_TYPES] } },
           select: {
             id: true,
             name: true,
@@ -1598,7 +1601,7 @@ export async function validateAutomationConfiguration(
   )
 
   const conditions = input.conditions.map((condition, index) => {
-    if (((input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED") || input.trigger.type === "CONTACT_NOTE_ADDED") && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
+    if ((isServiceTrigger(input.trigger.type) || input.trigger.type === "CONTACT_NOTE_ADDED") && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
       throw new AutomationConfigurationError("INVALID_CONDITION_SOURCE", "Note added filters can use contact fields, custom fields, or tags.")
     }
     if (input.trigger.type === "TASK_COMPLETED" && !["CONTACT_FIELD", "CONTACT_CUSTOM_FIELD", "CONTACT_TAGS"].includes(condition.source)) {
@@ -2168,10 +2171,24 @@ export async function validateAutomationConfiguration(
   const hasServiceActions = (actions: AutomationActionInput[]): boolean => actions.some(action => isServiceAction(action.type)
     || (action.type === "IF_ELSE" && action.ifElseConfig.branches.some(branch => hasServiceActions(branch.actions)))
     || (action.type === "SPLIT" && action.splitConfig.routes.some(route => hasServiceActions(route.actions))))
-  const serviceTrigger = input.trigger.type === "SERVICE_STEP_ENTERED" || input.trigger.type === "SERVICE_STEP_COMPLETED" ? input.trigger : null
-  if (hasServiceActions(input.actions) && !serviceTrigger) throw new AutomationConfigurationError("SERVICE_TRIGGER_REQUIRED", "Service actions require a service step trigger and its enrollment context.")
-  const serviceOptions = hasServiceActions(input.actions) && serviceTrigger
-    ? serviceActionOptions(await serviceActionCatalog(prismaClient, tenantId), serviceTrigger.serviceStepId, serviceTrigger.serviceOfferingId) : null
+  const serviceTrigger = isServiceTrigger(input.trigger.type) ? input.trigger : null
+  if (hasServiceActions(input.actions) && !serviceTrigger) throw new AutomationConfigurationError("SERVICE_TRIGGER_REQUIRED", "Service actions require a service trigger and its enrollment context.")
+  let serviceOptions: ReturnType<typeof serviceActionOptions> | null = null
+  if (serviceTrigger && "serviceStepId" in serviceTrigger && hasServiceActions(input.actions)) serviceOptions = serviceActionOptions(await serviceActionCatalog(prismaClient, tenantId), serviceTrigger.serviceStepId, serviceTrigger.serviceOfferingId)
+  if ("serviceGroupId" in input.trigger) {
+    const trigger = input.trigger
+    const group = await prismaClient.service.findFirst({ where: { tenantId, id: trigger.serviceGroupId, kind: "GROUP", isActive: true }, select: { id: true } })
+    const catalog = (await serviceActionCatalog(prismaClient, tenantId)).filter(offering => offering.serviceGroupId === trigger.serviceGroupId && (!trigger.serviceOfferingId || offering.id === trigger.serviceOfferingId) && offering.steps.length > 0)
+    if (!group || !catalog.length) throw new AutomationConfigurationError("INVALID_SERVICE_SCOPE", "Select an active service and eligible sub-service.")
+    const common = (key: "checklistItems" | "professionals") => catalog[0]![key].filter(item => catalog.every(offering => offering[key].some(option => option.id === item.id)))
+    serviceOptions = { steps: [], checklistItems: common("checklistItems"), professionals: common("professionals") }
+    if (trigger.type === "SERVICE_CHECKLIST_STATUS_CHANGED" && trigger.serviceTriggerConfig.checklistItemId && !serviceOptions.checklistItems.some(item => item.id === trigger.serviceTriggerConfig.checklistItemId)) {
+      const existing = options.sourceAutomationId ? await prismaClient.automation.findFirst({ where: { tenantId, id: options.sourceAutomationId, triggerType: trigger.type, serviceGroupId: trigger.serviceGroupId, serviceOfferingId: trigger.serviceOfferingId }, select: { serviceTriggerConfig: true } }) : null
+      const selected = trigger.serviceTriggerConfig.checklistItemId
+      const archived = existing?.serviceTriggerConfig?.checklistItemId === selected ? await prismaClient.serviceChecklistItem.findFirst({ where: { tenantId, id: selected, archivedAt: { not: null } }, select: { id: true } }) : null
+      if (!archived) throw new AutomationConfigurationError("INVALID_SERVICE_CHECKLIST_ITEM", "Choose a checklist item common to this trigger scope.")
+    }
+  }
 
   const normalizeActionPath = (
     actionInputs: AutomationActionInput[],
@@ -2202,6 +2219,7 @@ export async function validateAutomationConfiguration(
       ? { tenantId, nodeKey, type: action.type, sortOrder: (index + 1) * 10 }
       : { nodeKey, type: action.type }
     if (isServiceAction(action.type)) {
+      if (isEnrollmentServiceTrigger(input.trigger.type) && !isEnrollmentServiceAction(action.type)) throw new AutomationConfigurationError("SERVICE_STEP_TRIGGER_REQUIRED", "This action requires a step-entry or step-completion trigger.")
       const serviceAction = ServiceAutomationActionSchema.parse(action)
       if (isTerminalServiceAction(serviceAction) && index !== actionInputs.length - 1) throw new AutomationConfigurationError("SERVICE_ACTION_MUST_BE_LAST", "Move, skip, complete and cancellation end their workflow path. Place them last.")
       try { validateServiceActionSelection(serviceAction, serviceOptions!, activeUserIds as Set<string>) }
@@ -2896,6 +2914,8 @@ export async function validateAutomationConfiguration(
   return {
     name: input.name,
     isEnabled: input.isEnabled,
+    serviceGroupId: "serviceGroupId" in input.trigger ? input.trigger.serviceGroupId : null,
+    serviceTriggerConfig: "serviceTriggerConfig" in input.trigger ? input.trigger.serviceTriggerConfig : Prisma.DbNull,
     serviceStepId: "serviceStepId" in input.trigger ? input.trigger.serviceStepId : null,
     serviceOfferingId: "serviceOfferingId" in input.trigger ? input.trigger.serviceOfferingId ?? null : null,
     triggerType: input.trigger.type === "OPPORTUNITY_STAGE_CHANGED" ? "OPPORTUNITY_CHANGED" as const : input.trigger.type,
@@ -2918,7 +2938,7 @@ export type OpportunityAutomationEvent = {
   serviceContext?: AutomationServiceContext | null
   tenantId: string
   actorUserId: string | null
-  triggerType: Exclude<AutomationTriggerType, "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
+  triggerType: Exclude<AutomationTriggerType, "SERVICE_ENROLLED" | "SERVICE_STATUS_CHANGED" | "SERVICE_CHECKLIST_STATUS_CHANGED" | "SERVICE_PAYMENT_CHANGED" | "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER">
   opportunityId: string
   contactId: string
   pipelineId: string
@@ -4941,7 +4961,7 @@ async function applyAutomationActionInner(
           tenantId,
           id: config.targetAutomationId,
           isEnabled: true,
-          serviceStepId: null,
+          triggerType: { notIn: [...SERVICE_TRIGGER_TYPES] },
         },
         select: {
           id: true,
@@ -5551,6 +5571,7 @@ export function selectAutomationSplitRoute(
 }
 
 type AutomationOpportunityEventContext = {
+  serviceEventSnapshot?: ServiceEventSnapshot | null
   serviceContext?: AutomationServiceContext | null
   pipelineId?: string | null
   valueCents?: number | null
@@ -5601,6 +5622,7 @@ function normalizeOpportunityEventContext(value: unknown): AutomationOpportunity
       })
     : []
   return {
+    serviceEventSnapshot: record.serviceEventSnapshot && typeof record.serviceEventSnapshot === "object" ? record.serviceEventSnapshot as ServiceEventSnapshot : null,
     pipelineId: typeof record.pipelineId === "string" ? record.pipelineId : null,
     valueCents: typeof record.valueCents === "number" && Number.isFinite(record.valueCents) ? record.valueCents : null,
     sourceStageId: typeof record.sourceStageId === "string" ? record.sourceStageId : null,
@@ -7744,7 +7766,7 @@ export async function resumeAutomationRun(
       const run = await transaction.automationRun.findFirst({
         where: { id: runId, status: "RUNNING", leaseToken },
       })
-      if (!run) {
+      if (!run || (run.leaseExpiresAt && run.leaseExpiresAt.getTime() <= Date.now())) {
         return {
           status: "NOT_CLAIMED" as const,
           notificationIds: [] as string[],
@@ -7833,10 +7855,6 @@ export async function resumeAutomationRun(
       console.error("Could not emit automation notification", error)
     })
     await deleteAutomationContactFileObjects(result.fileCleanupCandidates)
-    if (result.queuedRunCount > 0) {
-      const { kickAutomationEventWorker } = await import("./automation-event-worker.js")
-      kickAutomationEventWorker()
-    }
     return { status: result.status }
   } catch (error) {
     if (transientAutomationFailure(error)) {

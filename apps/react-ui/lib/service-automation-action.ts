@@ -1,3 +1,4 @@
+import { isServiceTrigger, isEnrollmentServiceTrigger, isEnrollmentServiceAction } from "./service-automation-trigger"
 import type { StepDeadlineSchedule } from "./service-step-deadline"
 
 export const SERVICE_ACTION_LABELS = {
@@ -13,13 +14,13 @@ export type ServiceActionConfig = {
   status?: "NOT_RECEIVED" | "INFORMED" | "MISSING" | "RECEIVED" | "IN_PROGRESS" | "CANCELED"
 }
 export type ServiceActionOffering = {
-  id: string; name: string; steps: Array<{ id: string; name: string }>
+  id: string; name: string; serviceGroupId?: string; steps: Array<{ id: string; name: string }>
   checklistItems: Array<{ id: string; name: string }>; professionals: Array<{ id: string; name: string }>
 }
 export type ServiceActionOptions = Pick<ServiceActionOffering, "steps" | "checklistItems" | "professionals">
 export const isServiceAutomationAction = (type: string): type is ServiceActionType => Object.hasOwn(SERVICE_ACTION_LABELS, type)
-export function serviceActionPickerOptions(offerings: ServiceActionOffering[], stepId?: string, offeringId?: string | null): ServiceActionOptions {
-  const eligible = offerings.filter(offering => (!offeringId || offering.id === offeringId) && offering.steps.some(step => step.id === stepId))
+export function serviceActionPickerOptions(offerings: ServiceActionOffering[], stepId?: string, offeringId?: string | null, groupId?: string): ServiceActionOptions {
+  const eligible = offerings.filter(offering => (!offeringId || offering.id === offeringId) && (stepId ? offering.steps.some(step => step.id === stepId) : Boolean(groupId && offering.serviceGroupId === groupId && offering.steps.length)))
   const common = (key: keyof ServiceActionOptions) => (eligible[0]?.[key] ?? []).filter(item => eligible.every(offering => offering[key].some(option => option.id === item.id)))
   return { steps: common("steps"), checklistItems: common("checklistItems"), professionals: common("professionals") }
 }
@@ -41,7 +42,7 @@ export function serializeServiceConfig(type: string, config: ServiceActionConfig
   }
 }
 export function serviceActionReady(action: { type: string; serviceConfig?: ServiceActionConfig | null }, options: ServiceActionOptions, triggerType?: string | null) {
-  if (!triggerType?.startsWith("SERVICE_STEP_") || !action.serviceConfig) return false
+  if (!isServiceTrigger(triggerType) || (isEnrollmentServiceTrigger(triggerType) && !isEnrollmentServiceAction(action.type)) || !action.serviceConfig) return false
   const config = action.serviceConfig
   if (action.type === "MOVE_SERVICE_STEP") return Boolean(options.steps.some(step => step.id === config.targetSourceStepId) && config.reason?.trim())
   if (action.type === "SKIP_SERVICE_STEP") return Boolean(config.reason?.trim())

@@ -52,6 +52,7 @@ export function captureEnrollmentConfiguration(input: {
   billing: unknown
   workflowKind: string
   followUpTemplateVersionId: string | null
+  serviceAutomations?: unknown
 }): Prisma.InputJsonValue {
   return JSON.parse(
     JSON.stringify({
@@ -69,6 +70,7 @@ export function captureEnrollmentConfiguration(input: {
       checklistItems: input.service.checklistItems,
       professionals: input.service.professionals,
       steps: input.service.steps,
+      ...(input.serviceAutomations ? { serviceAutomations: input.serviceAutomations } : {}),
     }),
   ) as Prisma.InputJsonValue
 }

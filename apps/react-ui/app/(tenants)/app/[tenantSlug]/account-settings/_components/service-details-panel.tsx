@@ -77,6 +77,7 @@ import { ServiceSectionInheritance, type ServiceSectionMode } from "./service-se
 import { ServicesConfigPanel } from "./services-config-panel"
 
 import { ServiceStepsPanel, type ServiceStepItem } from "./service-steps-panel"
+import { ServiceConfigurationUpdates } from "./service-configuration-updates"
 
 export type ServiceDetailsPanelProps = {
   tenantId: string
@@ -415,6 +416,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     | "professionals"
     | "sub-services"
     | "steps"
+    | "updates"
   >(service.kind === "GROUP" ? "sub-services" : "overview")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const saveInFlight = useRef(false)
@@ -1294,7 +1296,8 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               | "follow-up-templates"
               | "professionals"
               | "sub-services"
-              | "steps",
+              | "steps"
+              | "updates",
           )
         }
         className="space-y-5"
@@ -1323,6 +1326,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               Checklists
             </TabsTrigger>
             <TabsTrigger value="steps">Steps</TabsTrigger>
+            <TabsTrigger value="updates">Enrollment updates</TabsTrigger>
             {!isGroup ? (
               <TabsTrigger
                 value="follow-up-templates"
@@ -1359,6 +1363,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
             initialMode={service.stepsMode}
             onSaved={setConfiguredSteps}
           />
+        </TabsContent>
+        <TabsContent value="updates">
+          <ServiceConfigurationUpdates tenantId={tenantId} serviceId={service.id} />
         </TabsContent>
         <TabsContent value="overview" className="mt-0 space-y-5">
           <section className="rounded-[20px] border border-slate-200 bg-white p-5">

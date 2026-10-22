@@ -1,3 +1,4 @@
+import { SERVICE_TRIGGER_TYPES } from "../lib/service-automation-triggers.js"
 import { type NextFunction, type Response, Router } from "express"
 import { z } from "zod"
 
@@ -1643,7 +1644,7 @@ router.get("/:tenantId/automations", requireAuth, async (req, res, next) => {
     if (!membership) return
 
     const automations = await prismaWithContacts.automation.findMany({
-      where: { tenantId, isEnabled: true },
+      where: { tenantId, isEnabled: true, triggerType: { notIn: [...SERVICE_TRIGGER_TYPES] } },
       orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       select: {
         id: true,

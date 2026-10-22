@@ -1,4 +1,4 @@
-import { claimAutomationExecutionJobs, releaseAutomationExecutionLease } from "./automation-execution-budget.js"
+import { AUTOMATION_EXECUTION_BUDGET, claimAutomationExecutionJobs, releaseAutomationExecutionLease } from "./automation-execution-budget.js"
 import { randomUUID } from "node:crypto"
 
 import { prisma } from "./prisma.js"
@@ -31,10 +31,10 @@ function percentage(name: string, fallback: number) {
 
 export const AUTOMATION_EVENT_WORKER_CONFIG = {
   pollMs: positiveInteger("AUTOMATION_EVENT_POLL_MS", 1_000, 60_000),
-  concurrency: positiveInteger("AUTOMATION_EVENT_CONCURRENCY", 8, 64),
-  perTenantConcurrency: positiveInteger("AUTOMATION_EVENT_TENANT_CONCURRENCY", 4, 32),
+  concurrency: AUTOMATION_EXECUTION_BUDGET.global,
+  perTenantConcurrency: AUTOMATION_EXECUTION_BUDGET.tenant,
   claimSize: positiveInteger("AUTOMATION_EVENT_CLAIM_SIZE", 16, 100),
-  leaseMs: positiveInteger("AUTOMATION_EVENT_LEASE_MS", 120_000, 900_000),
+  leaseMs: 120_000,
   metricsMs: positiveInteger("AUTOMATION_EVENT_METRICS_MS", 60_000, 900_000),
   failureAlertPercent: percentage("AUTOMATION_EVENT_FAILURE_ALERT_PERCENT", 10),
 }
@@ -234,7 +234,7 @@ export async function runAutomationSideEffectWorkerOnce() {
 
 export async function reportAutomationQueueMetrics() {
   const fiveMinutesAgo = new Date(Date.now() - 300_000)
-  const [queued, failed, terminal, retried, executionLeases, queuedRuns] = await Promise.all([
+  const [queued, failed, retried, terminal, executionLeases, queuedRuns, runRetries] = await Promise.all([
     prisma.automationEvent.aggregate({
       where: { status: "QUEUED" },
       _count: { _all: true },
@@ -254,6 +254,7 @@ export async function reportAutomationQueueMetrics() {
     }),
     prisma.automationExecutionLease.groupBy({ by: ["tenantId"], where: { expiresAt: { gt: new Date() } }, _count: { _all: true } }),
     prisma.automationRun.aggregate({ where: { status: "QUEUED" }, _count: { _all: true }, _min: { availableAt: true } }),
+    prisma.automationRun.aggregate({ where: { retryCount: { gt: 0 }, updatedAt: { gte: fiveMinutesAgo } }, _sum: { retryCount: true } }),
   ])
   const oldestAgeMs = queued._min.createdAt ? Date.now() - queued._min.createdAt.getTime() : 0
   const failureRatePercent = terminal > 0 ? (failed / terminal) * 100 : 0
@@ -268,7 +269,9 @@ export async function reportAutomationQueueMetrics() {
     permanentFailuresLast5m: failed,
     failureRatePercent,
     runsPerMinute: terminal / 5,
-    retriesLast5m: retried,
+    retriesLast5m: retried + (runRetries._sum.retryCount ?? 0),
+    resumedRunRetriesLast5m: runRetries._sum.retryCount ?? 0,
+    executionLimits: AUTOMATION_EXECUTION_BUDGET,
   }
   if (oldestAgeMs > 120_000 || failureRatePercent > AUTOMATION_EVENT_WORKER_CONFIG.failureAlertPercent) console.warn(JSON.stringify(payload))
   else console.info(JSON.stringify(payload))

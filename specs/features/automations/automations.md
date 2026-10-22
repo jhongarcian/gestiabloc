@@ -883,3 +883,36 @@ Each request reads a consistent database snapshot and computes all timing from t
 The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters
 and pagination. Older or canceled requests cannot overwrite a newer queue response. No stored urgency
 flags, notifications, new triggers, schema changes or background data backfill are needed.
+
+## Service actions (Chunk 16)
+
+The Service actions group is available to step-entry/completion workflows. Its nine typed actions
+operate only on the triggering enrollment's saved records. Scoped triggers use that offering's
+choices; shared triggers use common effective choices. Move, Skip, Complete and cancellation end
+the path. The editor explains this and refuses a trailing action; execution also stops a corrupt tail.
+Service mutations are checkpointed in the shared bounded queue, with terminal results, owner
+assignments and audit history retained through retries. Configuration and rollout details are in
+[the queue documentation](../../../apps/backend/docs/automation-event-queue.md#service-actions-and-shared-admission-chunk-16).
+
+
+## Enrollment service triggers (Chunk 17)
+
+The sidebar's Service triggers group offers Enrollment created, Service status changed, Checklist
+status changed and Payment changed, alongside Service step. Choose a service and one sub-service or
+All sub-services. All includes future sub-services; only SERVICE_STEPS enrollments participate.
+Status triggers support optional From/To filters. Checklist triggers select a common source item or
+Any item and optional From/To statuses. Payment triggers select Added/Edited/Removed and an optional
+resulting Unpaid/Partly paid/Paid in full balance. Initial positive payments are Added; edits to amount,
+date, method or note count, while equivalent normalized saves do not.
+
+These triggers preserve an exact enrollment with no step occurrence. They allow coordinator,
+professional, checklist and service-status actions, including branches, and cannot be generic Add to
+workflow targets or manual contact enrollment choices. Shared selections are intersections of stable
+source IDs, never labels. Existing archived checklist references still match saved enrollment items.
+
+Trigger filters and action definitions are pinned when the change commits. Immutable revision-keyed
+events retain before/after details, deleted payment data and actor/automation attribution. Events with
+no matching published workflow finish immediately. Each actual payment and resulting status change
+has its own event. Default checklist seeding and initial service status do not generate change events.
+These workflows run independently of step gates and survive step movement. Completion and payment
+statuses remain derived. Template/no-step enrollments and historical replay are excluded.

@@ -1,4 +1,4 @@
-import { isServiceAutomationAction, serializeServiceConfig } from "./service-automation-action.js"
+import { isServiceAutomationAction, serializeServiceConfig } from "@/lib/service-automation-action"
 import type { AutomationAction } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 export function serializeAutomationAction(action: AutomationAction): AutomationAction {

@@ -1,5 +1,6 @@
+import type { EnrollmentServiceTriggerType, EnrollmentServiceTrigger } from "@/lib/service-automation-trigger"
 import type { ServiceActionConfig, ServiceActionOffering, ServiceActionOptions, ServiceActionType } from "@/lib/service-automation-action"
-export type AutomationTriggerType = "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
+export type AutomationTriggerType = EnrollmentServiceTriggerType | "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED"
 export type AppointmentAutomationStatus = "SCHEDULED" | "CONFIRMED" | "SHOW" | "NO_SHOW" | "CANCELED" | "COMPLETED"
 
 export type AutomationContactChangeRule =
@@ -467,6 +468,7 @@ export type AutomationRecord = {
   serviceOffering?: { id: string; name: string; parentServiceId: string | null } | null
   serviceStep?: { id: string; title: string; serviceId: string; service: { name: string } } | null
   trigger:
+    | EnrollmentServiceTrigger
     | { type: "SERVICE_STEP_ENTERED"; serviceStepId: string; serviceOfferingId?: string | null }
   | { type: "SERVICE_STEP_COMPLETED"; serviceStepId: string; serviceOfferingId?: string | null }
     | { type: "CONTACT_CREATED" }
@@ -507,6 +509,7 @@ export type AutomationFolder = {
 }
 
 export type AutomationCatalog = {
+  serviceChecklistReferences?: Array<{ id: string; name: string }>
   serviceActionOfferings?: ServiceActionOffering[]
   serviceActionOptions?: ServiceActionOptions
   pipelines: Array<{
@@ -587,7 +590,7 @@ export type AutomationNodeExecution = {
   serviceContext?: AutomationServiceContext | null
   id: string
   attemptId: string
-  eventSource: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
+  eventSource: EnrollmentServiceTriggerType | "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "MANUAL_ENROLLMENT" | "CONTACT_CREATED" | "CONTACT_CHANGED" | "CONTACT_TAG" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER" | "OPPORTUNITY_CREATED" | "OPPORTUNITY_STAGE_CHANGED" | "OPPORTUNITY_CHANGED" | "AUTOMATION_ACTION"
   contact: {
     id: string | null
     name: string

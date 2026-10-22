@@ -1,5 +1,26 @@
 # Opportunity automation event queue
 
+## Reviewed service configuration (Chunk 18)
+
+New service-step enrollments save complete service workflow definitions (publication state, trigger
+selectors, contact filters, nested actions and waits) in `configurationSnapshot.serviceAutomations`.
+Future service events match these saved definitions. Library edits and deletion cannot replace them;
+a deleted workflow keeps its snapshot ID/name while nullable library foreign keys remain null.
+Contact filters still evaluate when the business event occurs. Existing queued dispatches and waiting
+runs retain their pinned actions, variables, routing, leases and schedules across configuration updates.
+
+Older enrollments with no saved workflow collection retain their existing live-definition behavior.
+An explicit configuration review adopts current definitions; an empty saved collection means no workflows,
+while malformed saved data fails rather than falling back live. Configuration application never replays
+enrollment, entry, checklist, payment or status events and never drains automation execution in a request.
+The shared 4-global/2-tenant queue limits, fencing, retries and checkpoints continue to apply.
+
+Apply `20261021130000_service_configuration_review` before application deployment. It adds durable
+15-minute preview receipts and applied audit records, without rewriting existing enrollments. Admin
+review/apply requests address one enrollment, lock it before configuration, and reject state or source
+changes. UI pages are capped at 20 and issue requests sequentially. Applied receipts are retained as
+history; expired unapplied receipts can be removed by a future retention task without affecting work.
+
 Opportunity automations can be dispatched through the durable PostgreSQL queue by setting:
 
 ```env
@@ -13,10 +34,10 @@ The flag defaults to `false` so the additive migration and worker can be deploye
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `AUTOMATION_EVENT_POLL_MS` | `1000` | Queue and outbox polling interval |
-| `AUTOMATION_EVENT_CONCURRENCY` | `8` | Maximum events claimed per backend pass |
-| `AUTOMATION_EVENT_TENANT_CONCURRENCY` | `4` | Maximum active events selected for one tenant |
+| `AUTOMATION_EXECUTION_CONCURRENCY` | `4` | Shared database-wide active event and run limit |
+| `AUTOMATION_EXECUTION_TENANT_CONCURRENCY` | `2` | Shared active execution limit per tenant |
 | `AUTOMATION_EVENT_CLAIM_SIZE` | `16` | Maximum candidates considered per claim |
-| `AUTOMATION_EVENT_LEASE_MS` | `120000` | Event lease duration |
+| Execution lease | `120000 ms` | Shared event/run lease duration |
 | `AUTOMATION_EVENT_METRICS_MS` | `60000` | Queue-health reporting interval |
 | `AUTOMATION_EVENT_FAILURE_ALERT_PERCENT` | `10` | Five-minute permanent-failure alert threshold |
 | `PRISMA_POOL_MAX` | `20` | PostgreSQL connections per backend instance |
@@ -238,3 +259,111 @@ Each request reads a consistent database snapshot and computes all timing from t
 The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters
 and pagination. Older or canceled requests cannot overwrite a newer queue response. No stored urgency
 flags, notifications, new triggers, schema changes or background data backfill are needed.
+
+## Service actions and shared admission (Chunk 16)
+
+Service-step entry/completion workflows offer **Service actions**. Every action operates on the exact
+triggering enrollment, saved step and occurrence. Contextless manual/bulk enrollment fails before a
+service mutation. There is no fallback to another enrollment and no creation of missing snapshot items.
+
+| Action | `serviceConfig` |
+| --- | --- |
+| `MOVE_SERVICE_STEP` | `targetSourceStepId`, required `reason` |
+| `COMPLETE_SERVICE_STEP` | `{}` |
+| `SKIP_SERVICE_STEP` | required `reason` |
+| `SCHEDULE_SERVICE_STEP` | `schedule`: duration from entry, offset-aware fixed date, or default restore |
+| `SET_SERVICE_STEP_OWNER` | `assignedToUserId`: active member UUID or null |
+| `SET_SERVICE_COORDINATOR` | `assignedToUserId`: active member UUID or null |
+| `SET_SERVICE_PROFESSIONAL` | `professionalId`: eligible saved professional UUID or null |
+| `SET_SERVICE_CHECKLIST_STATUS` | stable source `checklistItemId`, `status`: NOT_RECEIVED, INFORMED, MISSING, RECEIVED |
+| `SET_SERVICE_STATUS` | `status`: IN_PROGRESS or CANCELED |
+
+The catalog's `serviceActionOfferings` supplies effective choices per active offering. A scoped trigger
+uses that offering; a shared trigger uses the intersection across eligible offerings. Runtime validation
+resolves source IDs against saved enrollment records. Archived checklist history stays usable. An already
+assigned archived professional can remain, but cannot be newly assigned. Internal professionals and owners
+require active membership. Payment/completion statuses remain derived from finished work and payments.
+
+Move, Skip, Complete and cancellation end their path. The builder hides the trailing Add action control,
+save validation rejects a trailing action, and runtime stops even if a corrupt older snapshot has one.
+Completion is successful, including an already-completed entry (no duplicate completion event). Movement,
+skipping and cancellation intentionally exit; completion/destination-entry automations handle subsequent
+work. Scheduling uses the same active-entry and deadline rules as the manual control and changes no Wait.
+
+`ContactServiceStep.assignedToUserId` belongs to the saved step, retains its value across revisits, and
+feeds workspace responses, queue rows and the existing assignee filter. The owner endpoint is
+`PATCH /api/services/:tenantId/contact-services/:contactServiceId/service-steps/:stepId/owner`, with
+`{assignedToUserId: uuid | null}`. Coordinator controls also support unfinished service-owned steps.
+
+All mutations lock the enrollment first, then occurrence/configuration/runtime rows. The shared helpers
+preserve manual behavior. A unique `ServiceAutomationActionResult(tenantId, runId, nodeKey)` stores each
+result with its mutation and audit entry. Automation attribution names the automation and records its run,
+node, enrollment, affected occurrence and old/new values; automated changes use no invented human actor.
+
+### Capacity and recovery
+
+`AUTOMATION_EXECUTION_CONCURRENCY` defaults to **4 globally**, and
+`AUTOMATION_EXECUTION_TENANT_CONCURRENCY` to **2 per tenant**. Both queues share these limits across
+backend instances. Values must be positive integers, tenant capacity cannot exceed global capacity, and
+global capacity must leave at least four connections in `PRISMA_POOL_MAX`. A smaller pool lowers defaults.
+Legacy event-only concurrency variables are superseded. Execution leases last 120 seconds.
+
+Admission takes a short PostgreSQL advisory lock covering event and continuation claims together. Durable
+leases reserve global/tenant capacity and one contact scope, which also serializes enrollments for that
+contact. Tenant rotation persists `lastAdmittedAt`; the least recently admitted tenants receive the next
+bounded claims. Expired leases can be reclaimed; token checks fence execution, retry and failure writes.
+A process cannot overlap its own run-worker passes. Requests only persist work and wake background workers.
+
+Service-context execution yields after each service mutation, or after **10 visited nodes / 500 ms** at
+the next node boundary. Cursor, variables, routing decisions, logs, result ledger, mutations and outbox
+commit together. The run stays QUEUED, releases its lease and is admitted again. A yielded completion
+workflow remains unfinished and cannot release the completion gate. Unrelated workflows retain their
+existing transaction behavior. Transient retries remain **5, 30 and 120 seconds**; permanent failures stop
+only their run. Movement/completion events retain chain identity and depth; the result ledger rejects repeated
+transitions within a chain even when different workflows attempt them. Existing repeated-workflow guards
+also remain in place.
+
+`automation_queue_health` includes active executions, per-tenant usage, execution limits, queued
+continuations, oldest continuation/event age, initial-dispatch retries and resumed-run retries.
+
+### Verification and rollout
+
+Apply `20261021010000_service_automation_actions` and `20261021011000_service_execution_fairness` before
+starting the new workers. Owners default to Unassigned. Existing workflow snapshots remain valid.
+
+The repeatable load harness uses only `SERVICE_CONFIGURATION_TEST_DATABASE_URL`; point it at an isolated
+staging database containing these migrations:
+
+```bash
+DATABASE_URL="$SERVICE_CONFIGURATION_TEST_DATABASE_URL" node --import tsx scripts/service-automation-load.ts
+```
+
+It creates 5,000 workflows across ten tenants (2,500 initial events and 2,500 queued runs), executes real
+service mutations and continuations through simultaneous workers, probes the real follow-up API against
+a baseline, asserts shared capacity, exactly-once outcomes and terminal accounting, then removes fixtures.
+The report defaults to `/private/tmp/gestiabloc-chunk16-load-report.json`. See
+[the verification report](service-actions-verification.md) for measured results and environment limits.
+
+
+## Enrollment service events (Chunk 17)
+
+`SERVICE_ENROLLED`, `SERVICE_STATUS_CHANGED`, `SERVICE_CHECKLIST_STATUS_CHANGED` and
+`SERVICE_PAYMENT_CHANGED` use the same event/run admission, fairness, contact serialization, lease
+fencing, checkpointing and retries as service-step workflows. There is no second queue or new worker.
+
+All manual and automated service mutations lock the enrollment first. A real change increments
+`ContactService.automationEventRevision` and commits one immutable `serviceEventSnapshot` and a
+`service-change:<tenant>:<enrollment>:<revision>` causation key. No-match events are immediately COMPLETED
+with zero dispatches. Matching definitions and contact-filter decisions are pinned under shared
+configuration locks. Same-run/node ledgers make worker replay inert. Generated events carry chain
+identity and attribution, including derived final status changes with no matching completion workflow.
+
+The new context has no occurrence IDs. Runtime enrollment locking applies to it, but step movement only
+supersedes occurrence-bound work. These roots do not join completion gates. Service actions revalidate
+saved enrollment choices and business rules. Generic Add to workflow and contextless manual enrollment
+exclude all service-trigger types, rather than using the presence of `serviceStepId` as a proxy.
+
+Payment create/edit/delete, financial validation, status reconciliation and event emission share one
+transaction. Payment Added includes positive initial payments; Updated compares normalized amount,
+date, method and note; Removed retains its before snapshot. No-ops preserve payment timestamps. A
+payment may emit a separate status event, but never bypasses active work or existing completion gates.

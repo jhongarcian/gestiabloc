@@ -1,3 +1,5 @@
+import { updateServiceStatusTx } from "./service-automation-events.js"
+import type { ServiceActionActor, ServiceActionChain } from "./service-automation-actions.js"
 import { Prisma } from "../generated/prisma/index.js"
 import { ServiceCollectionError } from "./service-configuration-collections.js"
 import { createServiceStepOccurrenceTx } from "./service-steps.js"
@@ -17,6 +19,7 @@ export async function reconcileServiceStepEnrollmentTx(
   tx: Prisma.TransactionClient,
   tenantId: string,
   contactServiceId: string,
+  source: { actor?: ServiceActionActor; chain?: ServiceActionChain } = {},
 ) {
   const enrollment = await lockEnrollment(tx, tenantId, contactServiceId)
   if (enrollment.workflowKind !== "SERVICE_STEPS" || enrollment.status === "CANCELED")
@@ -46,19 +49,14 @@ export async function reconcileServiceStepEnrollmentTx(
   const paid = (payments._sum.amountCents ?? 0) >= enrollment.totalPriceCents
   const status = paid ? "COMPLETED" : "PENDING_PAYMENT"
   if (enrollment.status === status && Boolean(enrollment.completedAt) === paid) return enrollment
-  return tx.contactService.update({
-    where: { id: contactServiceId, tenantId },
-    data: {
-      status,
-      completedAt: paid ? (enrollment.completedAt ?? new Date()) : null,
-    },
-  })
+  return updateServiceStatusTx(tx, { tenantId, contactServiceId, status, completedAt: paid ? (enrollment.completedAt ?? new Date()) : null, ...source })
 }
 
 async function advanceTx(
   tx: Prisma.TransactionClient,
   occurrence: Awaited<ReturnType<typeof tx.serviceStepOccurrence.findFirstOrThrow>>,
   now: Date,
+  incomingChain?: ServiceActionChain,
 ) {
   const { tenantId, contactServiceId } = occurrence
   const enrollment = await lockEnrollment(tx, tenantId, contactServiceId)
@@ -95,6 +93,8 @@ async function advanceTx(
     orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
   })
   const next = steps[steps.findIndex((step) => step.id === current.stepId) + 1]
+  const completionEvent = current.completionEventId ? await tx.automationEvent.findUnique({ where: { id: current.completionEventId } }) : null
+  const chain: ServiceActionChain | undefined = completionEvent ? { chainId: completionEvent.chainId, parentEventId: completionEvent.id, chainDepth: completionEvent.chainDepth + 1, sourceAutomationId: completionEvent.sourceAutomationId, sourceAutomationName: completionEvent.sourceAutomationName, sourceNodeKey: completionEvent.sourceNodeKey } : incomingChain
   if (next) {
     await createServiceStepOccurrenceTx(tx, {
       tenantId,
@@ -103,10 +103,7 @@ async function advanceTx(
       entryKey: `after:${current.id}`,
       enteredAt: now,
       enteredByUserId: current.completedByUserId,
-      automationChain: current.completionEventId ? await (async () => {
-        const event = await tx.automationEvent.findUnique({ where: { id: current.completionEventId! } })
-        return event ? { chainId: event.chainId, parentEventId: event.id, chainDepth: event.chainDepth + 1 } : undefined
-      })() : undefined,
+      automationChain: chain,
     })
   }
   const updated = await tx.serviceStepOccurrence.update({
@@ -117,7 +114,9 @@ async function advanceTx(
       progressionMessage: null,
     },
   })
-  if (!next) await reconcileServiceStepEnrollmentTx(tx, tenantId, contactServiceId)
+  if (!next) {
+    await reconcileServiceStepEnrollmentTx(tx, tenantId, contactServiceId, { actor: { actorUserId: current.completedByUserId }, chain })
+  }
   return updated
 }
 
@@ -173,7 +172,7 @@ export async function completeServiceStepOccurrenceTx(
     },
   })
   // A filtered-out workflow has no actions to finish and queues no event.
-  return queued.matchedCount > 0 ? completed : advanceTx(tx, completed, now)
+  return queued.matchedCount > 0 ? completed : advanceTx(tx, completed, now, input.automationChain)
 }
 
 // Only the linked root event may release progression; independent child workflows cannot do so.
