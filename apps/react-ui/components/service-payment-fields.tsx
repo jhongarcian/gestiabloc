@@ -1,6 +1,8 @@
 "use client"
 
 import { useEffect, useId, useState } from "react"
+import { addDays, format } from "date-fns"
+import { CalendarIcon } from "lucide-react"
 import { api } from "@/lib/api"
 import {
   billingDate,
@@ -17,6 +19,8 @@ import {
   sanitizeTransactionMoneyInput,
 } from "@/lib/transaction-inputs"
 import { Button } from "@/components/ui/button"
+import { Calendar } from "@/components/ui/calendar"
+import { parseStoredDate } from "@/components/ui/date-input"
 import {
   Field,
   FieldDescription,
@@ -24,6 +28,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import {
   Select,
   SelectContent,
@@ -38,6 +43,7 @@ type Preview = {
   permissions: { canRecord: boolean }
   totalPriceCents: number
   currency: string
+  today: string
   configurationVersion: string
   settings: PaymentSettings
   plan: PaymentTerms & {
@@ -65,6 +71,7 @@ export function ServicePaymentFields({
   const [preview, setPreview] = useState<Preview | null>(null)
   const [error, setError] = useState("")
   const [retry, setRetry] = useState(0)
+  const [isDueDateOpen, setIsDueDateOpen] = useState(false)
   useEffect(() => {
     onChange(null)
     const controller = new AbortController()
@@ -88,15 +95,19 @@ export function ServicePaymentFields({
         if (!active) return
         setPreview(data)
         setError("")
-        if (!terms) {
+        const defaultFirstDueDate =
+          data.plan.firstDueDate && data.plan.firstDueDate <= data.today
+            ? format(addDays(parseStoredDate(data.today)!, 1), "yyyy-MM-dd")
+            : data.plan.firstDueDate
+        if (!terms || (!terms.firstDueDate && defaultFirstDueDate !== data.plan.firstDueDate)) {
           setTerms({
             type: data.plan.type,
             installmentCount: data.plan.installmentCount,
             ...(data.plan.monthlyAnchorDay
               ? { monthlyAnchorDay: data.plan.monthlyAnchorDay }
               : {}),
-            ...(data.plan.firstDueDate
-              ? { firstDueDate: data.plan.firstDueDate }
+            ...(defaultFirstDueDate
+              ? { firstDueDate: defaultFirstDueDate }
               : {}),
           })
           return
@@ -128,6 +139,8 @@ export function ServicePaymentFields({
     }
   }, [tenantId, serviceId, terms, amount, method, note, onChange, retry])
   const type = terms?.type ?? preview?.settings.defaultType
+  const firstDueDate = terms?.firstDueDate ?? preview?.plan.firstDueDate
+  const selectedDueDate = parseStoredDate(firstDueDate ?? null)
   const future =
     preview?.dues.filter((due) => due.label !== "Payment at enrollment") ?? []
   const frequency =
@@ -267,19 +280,46 @@ export function ServicePaymentFields({
                   ? "First future payment due"
                   : "Balance due date"}
               </FieldLabel>
-              <Input
-                id={`${id}-due`}
-                type="date"
-                value={terms?.firstDueDate ?? preview.plan.firstDueDate ?? ""}
-                disabled={disabled}
-                onChange={(event) =>
-                  setTerms((current) => ({
-                    ...current!,
-                    firstDueDate: event.target.value,
-                    monthlyAnchorDay: undefined,
-                  }))
-                }
-              />
+              <div className="flex min-w-0">
+                <Popover open={isDueDateOpen} onOpenChange={setIsDueDateOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      id={`${id}-due`}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={disabled}
+                      className="h-8 w-fit min-w-0 max-w-full justify-start rounded-full text-xs font-medium"
+                    >
+                      <CalendarIcon data-icon="inline-start" className="text-muted-foreground" />
+                      <span className="truncate">
+                        {firstDueDate ? billingDate(firstDueDate) : "Choose a date"}
+                      </span>
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent align="start" className="w-auto max-w-[calc(100vw-2rem)] p-0">
+                    <Calendar
+                      mode="single"
+                      required
+                      selected={selectedDueDate}
+                      defaultMonth={selectedDueDate}
+                      disabled={(date) => Boolean(disabled) || format(date, "yyyy-MM-dd") <= preview.today}
+                      today={parseStoredDate(preview.today)}
+                      autoFocus
+                      onSelect={(date) => {
+                        if (disabled || format(date, "yyyy-MM-dd") <= preview.today) return
+                        setTerms((current) => ({
+                          ...current!,
+                          firstDueDate: format(date, "yyyy-MM-dd"),
+                          monthlyAnchorDay: undefined,
+                        }))
+                        setIsDueDateOpen(false)
+                      }}
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+              <FieldDescription>Choose a date after today.</FieldDescription>
             </Field>
           ) : null}
           {(parseTransactionMoneyToCents(amount) ?? 0) > 0 ? (
