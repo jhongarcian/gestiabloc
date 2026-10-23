@@ -4914,6 +4914,64 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(invalidAppointment.data.error, "SERVICE_NOT_FOUND")
   })
 
+  test("enrollment survives a database wait beyond five seconds and commits one complete account", async () => {
+    const child = (await createChild()).data.service
+    await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      basePriceCents: 100000,
+      steps: [{ title: "Review" }, { title: "Submit" }],
+      paymentSettings: { schemaVersion: 1, enabledTypes: ["SINGLE_PAYMENT", "INSTALLMENTS"], defaultType: "INSTALLMENTS", suggestedDepositCents: 20000, installmentCount: 4, installmentFrequency: "MONTHLY" },
+    })
+    const contact = await createContact()
+    const paymentTerms = { type: "INSTALLMENTS", firstDueDate: "2027-01-31" }
+    const preview = await request(`/api/services/${tenantId}/billing-preview`, "POST", { serviceId: child.id, paymentTerms, initialPaymentCents: 20000 })
+    assert.equal(preview.status, 200)
+    const body = { serviceId: child.id, contactId: contact.id, initialPaymentCents: 20000, paymentTerms, requestKey: randomUUID(), configurationVersion: preview.data.configurationVersion }
+    const pool = new Pool({ connectionString: databaseUrl! })
+    const blocker = await pool.connect()
+    let enrolled: Awaited<ReturnType<typeof request>>
+    try {
+      await blocker.query("BEGIN")
+      await blocker.query('SELECT id FROM "Service" WHERE "tenantId"=$1 AND id=$2 FOR UPDATE', [tenantId, parentId])
+      const pending = request(`/api/services/${tenantId}/contact-services`, "POST", body)
+      let blocked = false
+      for (let attempt = 0; attempt < 50; attempt++) {
+        const result = await blocker.query("SELECT EXISTS (SELECT 1 FROM pg_locks waiting JOIN pg_locks held ON waiting.transactionid = held.transactionid WHERE NOT waiting.granted AND held.granted AND held.pid = pg_backend_pid() AND held.locktype = 'transactionid') AS blocked")
+        if (result.rows[0].blocked) { blocked = true; break }
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      // Wait only after PostgreSQL confirms that enrollment is inside its
+      // transaction waiting for this hierarchy lock. The old 5s limit expires.
+      if (blocked) await blocker.query("SELECT pg_sleep(5.1)")
+      await blocker.query("COMMIT")
+      enrolled = await pending
+      assert.equal(enrolled.status, 201, JSON.stringify(enrolled.data))
+      assert.ok(blocked, "Enrollment must use the hierarchy lock")
+    } finally {
+      await blocker.query("ROLLBACK")
+      blocker.release()
+      await pool.end()
+    }
+    assert.equal(enrolled.status, 201, JSON.stringify(enrolled.data))
+    const id = enrolled.data.contactService.id
+    const account = await db.contactService.findUniqueOrThrow({ where: { id }, include: { payments: true, paymentDues: true, serviceSteps: { include: { occurrences: true } }, financialChanges: true } })
+    assert.equal(account.status, "IN_PROGRESS")
+    assert.equal(account.totalPriceCents, preview.data.totalPriceCents)
+    assert.equal(account.paidCents, 20000)
+    assert.equal(account.payments.length, 1)
+    assert.equal(account.paymentDues.length, 5)
+    assert.equal(account.serviceSteps.length, 2)
+    assert.equal(account.serviceSteps.flatMap(step => step.occurrences).length, 1)
+    assert.equal(account.financialChanges.length, 1)
+    const events = await db.automationEvent.findMany({ where: { tenantId } })
+    assert.deepEqual(events.map(event => event.triggerType).sort(), ["SERVICE_ENROLLED", "SERVICE_PAYMENT_CHANGED"])
+    assert.ok(events.every(event => (event.serviceEventSnapshot as any).financials.paidCents === 20000))
+    const retry = await request(`/api/services/${tenantId}/contact-services`, "POST", body)
+    assert.equal(retry.status, 201)
+    assert.equal(retry.data.contactService.id, id)
+    assert.equal(await db.contactService.count({ where: { tenantId } }), 1)
+    assert.equal(await db.automationEvent.count({ where: { tenantId } }), events.length)
+  })
+
   test("parent and offering filters scope catalog totals, transactions, enrollments and the follow-up queue", async () => {
     const fixture = await completionFixture()
     const second = (await createChild("Part B")).data.service

@@ -100,8 +100,8 @@ export async function createServiceStepOccurrenceTx(
   },
 ) {
   const { tenantId, contactServiceId, stepId, entryKey, enteredAt } = input
-  const locked = await tx.$queryRaw<Array<{ workflowKind: string; status: string }>>(Prisma.sql`
-    SELECT "workflowKind", "status" FROM "ContactService" WHERE "tenantId"=${tenantId} AND "id"=${contactServiceId} FOR UPDATE
+  const locked = await tx.$queryRaw<Array<{ workflowKind: string; status: string; contactId: string; serviceId: string }>>(Prisma.sql`
+    SELECT "workflowKind", "status", "contactId", "serviceId" FROM "ContactService" WHERE "tenantId"=${tenantId} AND "id"=${contactServiceId} FOR UPDATE
   `)
   if (!locked.length) throw new ServiceCollectionError("CONTACT_SERVICE_NOT_FOUND", 404)
   if (locked[0].workflowKind !== "SERVICE_STEPS")
@@ -151,24 +151,21 @@ export async function createServiceStepOccurrenceTx(
     },
   })
   const { queueServiceStepEnteredAutomationEvent } = await import("./automation-event-queue.js")
-  const { resolveAutomationServiceContextTx } = await import("./automation-service-context.js")
-  const enrollment = await tx.contactService.findFirstOrThrow({
-    where: { tenantId, id: contactServiceId },
-    select: { contactId: true },
-  })
-  const serviceContext = await resolveAutomationServiceContextTx(tx, {
-    tenantId,
-    contactId: enrollment.contactId,
-    contactServiceId,
-    contactServiceStepId: stepId,
-    serviceStepOccurrenceId: occurrence.id,
-  })
+  // These rows were just locked/read/created above. The queue validates their
+  // attribution once before saving the event; do not resolve the same IDs twice.
+  const enrollment = locked[0]
   await queueServiceStepEnteredAutomationEvent(tx, {
     tenantId,
     contactId: enrollment.contactId,
     actorUserId: input.enteredByUserId ?? null,
     ...input.automationChain,
-    serviceContext,
+    serviceContext: {
+      contactServiceId,
+      serviceId: enrollment.serviceId,
+      contactServiceStepId: step.id,
+      serviceStepId: step.sourceStepId,
+      serviceStepOccurrenceId: occurrence.id,
+    },
   })
   return occurrence
 }

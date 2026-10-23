@@ -163,7 +163,7 @@ export function ServiceStepCompletionWait({
     return (
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-sm text-muted-foreground">Could not load the completion wait.</p>
-        <Button variant="outline" size="sm" onClick={() => void loadWait()}>
+        <Button variant="outline" size="sm" className="rounded-full text-xs font-semibold" onClick={() => void loadWait()}>
           Refresh wait
         </Button>
       </div>
@@ -189,7 +189,7 @@ export function ServiceStepCompletionWait({
             {canManage ? (
               <div className="flex flex-wrap gap-2">
                 <Button
-                  size="sm"
+                  size="sm" className="rounded-full text-xs font-semibold"
                   disabled={saving !== null || ready}
                   onClick={() => void changeWait(wait)}
                 >
@@ -197,7 +197,7 @@ export function ServiceStepCompletionWait({
                 </Button>
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="sm" className="rounded-full text-xs font-semibold"
                   disabled={saving !== null}
                   onClick={() => {
                     setEditingWait(wait)
@@ -312,12 +312,14 @@ export function ServiceStepCompletionWait({
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
+                className="rounded-full text-xs font-semibold"
                 disabled={saving !== null}
                 onClick={() => setEditingWait(null)}
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving !== null}>
+              <Button type="submit" size="sm" className="rounded-full text-xs font-semibold" disabled={saving !== null}>
                 {saving === "RESCHEDULE" ? "Saving…" : "Save schedule"}
               </Button>
             </DialogFooter>

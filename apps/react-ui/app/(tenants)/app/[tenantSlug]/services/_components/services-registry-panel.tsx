@@ -104,7 +104,7 @@ import {
 } from "@/lib/transaction-inputs"
 import { cn } from "@/lib/utils"
 import { ServiceOfferingPicker, ServiceScopeFields } from "@/components/service-scope-fields"
-import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { ServiceWorkflowTimeline } from "@/components/service-workflow-timeline"
 import { serviceOfferingLabel, serviceWorkflowError, type ServiceOfferingOption } from "@/lib/service-hierarchy"
 import type { ServiceStepItem } from "../../account-settings/_components/service-steps-panel"
 
@@ -1388,16 +1388,10 @@ export function PurchaseTransactionDialog({
 
           {step === 3 ? (
             <section className="space-y-3">
-              <div className="rounded-2xl border border-violet-100 bg-violet-50/70 p-3.5">
-                <p className="text-sm font-semibold text-violet-950">
-                  Review the service workflow
-                </p>
-                <p className="mt-1 text-sm leading-5 text-violet-900/80">
-                  Review the sub-service steps and choose who should coordinate the enrollment.
-                </p>
-              </div>
-
-              <ServiceWorkflowSummary steps={serviceDetails?.steps ?? []} tenantSlug={tenantSlug} serviceId={serviceId} />
+              <ServiceWorkflowTimeline
+                steps={serviceDetails?.steps ?? []}
+                serviceName={serviceDetails?.name}
+              />
 
               <FlowStepCard
                 stepNumber="2"

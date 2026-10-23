@@ -4,6 +4,7 @@ import { paymentOptionsLabel, type PaymentSettings, type EnrollmentBillingValue 
 
 import { ServicePaymentFields } from "@/components/service-payment-fields"
 import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { ServiceWorkflowTimeline } from "@/components/service-workflow-timeline"
 import { serviceWorkflowError, serviceOfferingLabel } from "@/lib/service-hierarchy"
 import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
 
@@ -1152,16 +1153,7 @@ function CreateTransactionDialog({
 
           {step === 2 ? (
             <section className="space-y-3">
-              <div className="rounded-2xl border border-violet-100 bg-violet-50/70 p-3.5">
-                <p className="text-sm font-semibold text-violet-950">
-                  Review the service workflow
-                </p>
-                <p className="mt-1 text-sm leading-5 text-violet-900/80">
-                  Review the saved steps, optionally assign a professional, and choose an enrollment coordinator.
-                </p>
-              </div>
-
-              <ServiceWorkflowSummary steps={service.steps} tenantSlug={tenantSlug} serviceId={service.id} />
+              <ServiceWorkflowTimeline steps={service.steps} serviceName={service.name} />
 
               <FlowStepCard
                 stepNumber="2"

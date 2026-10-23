@@ -62,9 +62,10 @@ Status
 
 Visual rules:
 
-- Use `h-11` and `rounded-xl` so Status matches Assignee and standard text inputs.
-- Use `w-full` so the control fills its field column.
-- Use `px-3` and `shadow-none` for the trigger.
+- On record pages, timelines, and inline editors, match the header: `h-8`, `rounded-full`, `px-3 py-1`, `text-xs font-semibold`, and `shadow-sm`.
+- Keep compact triggers content-sized with a 220px maximum, capped to the container. Pair them with `<AssigneeInput size="compact" />`.
+- In full creation forms with tall adjacent inputs, use `h-11`, `rounded-xl`, `w-full`, `px-3`, and `shadow-none`.
+- Use the same height for Status and Assignee within each context.
 - Use the configured background and text colors for a selected status.
 - Use a neutral slate background and text color for `No status` or missing color data.
 - Keep menu items at `py-2.5` with `rounded-xl` hit areas.
@@ -144,9 +145,9 @@ Assignee is the primary identity choice and Status is the compact workflow choic
 
 Layout rules:
 
-- Stack Assignee and Status on narrow screens.
-- Place them on one row at `sm` widths and above.
-- Keep both triggers exactly `h-11`.
+- For compact record controls, use a wrapping flex row with `w-fit` fields instead of stretching the controls across grid columns.
+- For full-form controls, stack on narrow screens and place them on one row at `sm` widths and above.
+- Keep both triggers at `h-8` for compact controls or `h-11` for full-form controls.
 - Use `minmax(0, ...)` tracks to allow long names and labels to truncate safely.
 - Do not force Status to match the wider Assignee column.
 

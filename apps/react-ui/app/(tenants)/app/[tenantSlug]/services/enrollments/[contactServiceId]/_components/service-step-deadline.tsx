@@ -206,7 +206,7 @@ export function ServiceStepDeadline({
         <div className="flex flex-wrap gap-2">
           <Button
             variant="outline"
-            size="sm"
+            size="sm" className="rounded-full text-xs font-semibold"
             disabled={disabled || saving}
             onClick={() => {
               if (mutationRef.current) return
@@ -234,7 +234,7 @@ export function ServiceStepDeadline({
           {displayed.deadlineOverride ? (
             <Button
               variant="outline"
-              size="sm"
+              size="sm" className="rounded-full text-xs font-semibold"
               disabled={disabled || saving}
               onClick={() => void change(structuredClone(displayed), { mode: "DEFAULT" })}
             >
@@ -346,12 +346,14 @@ export function ServiceStepDeadline({
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
+                className="rounded-full text-xs font-semibold"
                 disabled={saving}
                 onClick={() => setOpen(false)}
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={saving || !preview}>
+              <Button type="submit" size="sm" className="rounded-full text-xs font-semibold" disabled={saving || !preview}>
                 {saving ? "Saving…" : "Save deadline"}
               </Button>
             </DialogFooter>

@@ -32,6 +32,7 @@ type AssigneeInputProps = {
   options: AssigneeOption[]
   disabled?: boolean
   ariaInvalid?: boolean
+  size?: "default" | "compact"
 }
 
 function getInitials(name: string) {
@@ -52,6 +53,7 @@ export function AssigneeInput({
   options,
   disabled = false,
   ariaInvalid = false,
+  size = "default",
 }: AssigneeInputProps) {
   const [open, setOpen] = useState(false)
   const selectedAssignee = useMemo(
@@ -71,20 +73,29 @@ export function AssigneeInput({
           id={id}
           type="button"
           variant="outline"
+          size="sm"
           disabled={disabled}
           aria-invalid={ariaInvalid}
           aria-expanded={open}
-          className="h-11 w-full justify-between rounded-full border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
+          className={cn(
+            "min-w-0 justify-between rounded-full border-blue-100 bg-white hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100",
+            size === "compact"
+              ? "h-8 w-fit max-w-[min(100%,260px)] gap-2 px-3 py-1 text-xs shadow-sm has-[>svg]:px-3"
+              : "h-11 w-full px-3 shadow-none",
+          )}
         >
-          <span className="flex min-w-0 items-center gap-2.5">
-            <Avatar size="sm" className="ring-2 ring-blue-50">
+          <span className={cn("flex min-w-0 items-center", size === "compact" ? "gap-2" : "gap-2.5")}>
+            <Avatar
+              size={size === "compact" ? "default" : "sm"}
+              className={cn("ring-2 ring-blue-50", size === "compact" ? "size-5" : undefined)}
+            >
               {selectedAssignee?.image ? (
                 <AvatarImage
                   src={selectedAssignee.image}
                   alt={`${selectedAssignee.label} profile photo`}
                 />
               ) : null}
-              <AvatarFallback className="bg-blue-950 font-semibold text-white">
+              <AvatarFallback className={cn("bg-blue-950 font-semibold text-white", size === "compact" ? "text-[10px]" : undefined)}>
                 {selectedAssignee ? getInitials(selectedAssignee.label) : "—"}
               </AvatarFallback>
             </Avatar>
@@ -92,12 +103,15 @@ export function AssigneeInput({
               {selectedAssignee?.label ?? "Not assigned"}
             </span>
           </span>
-          <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
+          <ChevronDown data-icon="inline-end" className={cn("text-slate-400", size === "compact" ? "ml-1" : undefined)} />
         </Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
-        className="w-[var(--radix-popover-trigger-width)] p-0"
+        className={cn(
+          "max-w-[calc(100vw-2rem)] p-0",
+          size === "compact" ? "w-80" : "w-[var(--radix-popover-trigger-width)]",
+        )}
       >
         <Command>
           <CommandInput placeholder="Search team members..." disabled={disabled} />

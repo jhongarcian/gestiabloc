@@ -13,10 +13,15 @@ export async function emitServiceAutomationEventTx(tx: Prisma.TransactionClient,
   actor?: ServiceActionActor; chain?: ServiceActionChain
 }) {
   await tx.$queryRaw(Prisma.sql`SELECT id FROM "ContactService" WHERE "tenantId"=${input.tenantId} AND id=${input.contactServiceId} FOR UPDATE`)
-  const enrollment = await tx.contactService.findFirst({ where: { tenantId: input.tenantId, id: input.contactServiceId }, include: { service: { include: { parentService: true } } } })
+  const enrollment = await tx.contactService.findFirst({ where: { tenantId: input.tenantId, id: input.contactServiceId } })
   if (!enrollment || enrollment.workflowKind !== "SERVICE_STEPS") return null
   const saved = enrollment.configurationSnapshot as Record<string, any> | null
-  const group = saved?.service?.parentService ?? enrollment.service.parentService
+  // New enrollments already saved their names and parent. Only historical rows
+  // without that snapshot need to fetch the current service hierarchy again.
+  const service = !saved?.service?.parentService || !saved?.service?.name
+    ? await tx.service.findFirstOrThrow({ where: { tenantId: input.tenantId, id: enrollment.serviceId }, select: { name: true, parentService: { select: { id: true, name: true } } } })
+    : null
+  const group = saved?.service?.parentService ?? service?.parentService
   if (!group?.id) throw new Error("The enrolled sub-service has no service group.")
   const updated = await tx.contactService.update({ where: { id: enrollment.id }, data: { automationEventRevision: { increment: 1 } }, select: { automationEventRevision: true } })
   const paid = await tx.contactServicePayment.aggregate({ where: { voidedAt: null, tenantId: input.tenantId, contactServiceId: enrollment.id }, _sum: { amountCents: true } })
@@ -24,7 +29,7 @@ export async function emitServiceAutomationEventTx(tx: Prisma.TransactionClient,
   const snapshot: ServiceEventSnapshot = JSON.parse(JSON.stringify({
     schemaVersion: 1, revision: updated.automationEventRevision, occurredAt: new Date().toISOString(),
     serviceGroupId: group.id, serviceGroupName: group.name,
-    serviceOfferingId: enrollment.serviceId, serviceOfferingName: saved?.service?.name ?? enrollment.service.name,
+    serviceOfferingId: enrollment.serviceId, serviceOfferingName: saved?.service?.name ?? service?.name,
     contactServiceId: enrollment.id, recordId: input.recordId ?? null, checklistItemId: input.checklistItemId ?? null, itemLabel: input.itemLabel ?? null,
     change: input.change ?? null, isInitialPayment: input.isInitialPayment ?? false,
     previous: input.previous ?? null, next: input.next ?? null,

@@ -12,14 +12,17 @@ import {
   type ServicePaymentTerms,
 } from "./service-billing.js"
 
+type BillingPreviewInput = {
+  terms?: ServicePaymentTerms
+  initialPaymentCents: number
+  purchasedAt?: string | null
+}
+
 export async function previewServiceBillingTx(
   tx: Prisma.TransactionClient,
-  input: {
+  input: BillingPreviewInput & {
     tenantId: string
     serviceId: string
-    terms?: ServicePaymentTerms
-    initialPaymentCents: number
-    purchasedAt?: string | null
   },
 ) {
   const [service, tenant] = await Promise.all([
@@ -34,6 +37,21 @@ export async function previewServiceBillingTx(
       },
     }),
   ])
+  return previewServiceBilling(service, tenant, input)
+}
+
+// Enrollment already holds the hierarchy locks and has these settings loaded.
+// Share the calculation with the preview without fetching the hierarchy again.
+export function previewServiceBilling(
+  service: Parameters<typeof pickBilling>[0],
+  tenant: {
+    timezone: string | null
+    taxEnabled: boolean
+    taxLabel: string | null
+    defaultTaxRateBps: number | null
+  },
+  input: BillingPreviewInput,
+) {
   const totalPriceCents =
     service.basePriceCents +
     (tenant.taxEnabled &&

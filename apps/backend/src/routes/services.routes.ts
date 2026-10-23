@@ -1,7 +1,7 @@
 import { createServiceBillingRouter } from "./service-billing.routes.js"
 import { FinancialWriteSchema, FinancialReasonSchema, ServicePaymentTermsSchema, resolvePaymentSettings, summarizeServiceBilling, tenantDateOnly } from "../lib/service-billing.js"
 import { billingAccountSelect, getBillingSummaryTx, replacePaymentPlanTx, replayFinancialWriteTx, saveFinancialChangeTx } from "../lib/service-billing-account.js"
-import { previewServiceBillingTx } from "../lib/service-billing-preview.js"
+import { previewServiceBilling } from "../lib/service-billing-preview.js"
 import { lockSavedFollowUpEnrollment, patchSavedFollowUpTx, syncContactServiceActiveStep } from "../lib/service-saved-followups.js"
 import { retiredTemplate, retiredTemplateVersion, retiredWorkflowSummary } from "../lib/service-retired-workflows.js"
 import { serviceScopeWhere, offeringSteps, enrolledStepProgress, unfinishedServiceWorkWhere } from "../lib/service-presentation.js"
@@ -3196,32 +3196,6 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         select: {
           id: true,
           kind: true,
-          basePriceCents: true,
-          currency: true,
-          isTaxExempt: true,
-          allowPartialPayments: true,
-          minimumPartialPaymentCents: true,
-          installmentCount: true,
-          installmentFrequency: true,
-          tenant: {
-            select: {
-              timezone: true,
-              taxEnabled: true,
-              taxLabel: true,
-              defaultTaxRateBps: true,
-            },
-          },
-          professionals: {
-            where: { archivedAt: null },
-            select: {
-              id: true,
-            },
-          },
-          checklistItems: {
-            where: { archivedAt: null },
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: { id: true },
-          }
         },
       }),
     ])
@@ -3269,9 +3243,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       await assertServiceEnrollableTx(tx, tenantId, payload.serviceId)
       const effective = await loadEffectiveServiceConfiguration(tx, tenantId, payload.serviceId)
       const tenantBilling = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId },
-        select: { taxEnabled: true, taxLabel: true, defaultTaxRateBps: true } })
-      const totalPriceCents = getServiceTotalWithTaxCents({ ...effective, ...tenantBilling })
-      const billingPreview = await previewServiceBillingTx(tx, { tenantId, serviceId: payload.serviceId, terms: payload.paymentTerms, initialPaymentCents, purchasedAt: payload.purchasedAt })
+        select: { timezone: true, taxEnabled: true, taxLabel: true, defaultTaxRateBps: true } })
+      const billingPreview = previewServiceBilling(effective, tenantBilling, { terms: payload.paymentTerms, initialPaymentCents, purchasedAt: payload.purchasedAt })
+      const totalPriceCents = billingPreview.totalPriceCents
       if (billingPreview.configurationVersion !== payload.configurationVersion) throw new ServiceCollectionError("BILLING_CONFIGURATION_CHANGED", 409)
       if (payload.assignedProfessionalId && !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
         throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
@@ -3346,12 +3320,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       const first = definitions.sort((a, b) => a.sortOrder - b.sortOrder)[0]
       await createServiceStepOccurrenceTx(tx, { tenantId, contactServiceId: contactService.id,
         stepId: first.id, entryKey: "enrollment", enteredAt: new Date(), enteredByUserId: authed.user.id })
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaTx,
-        tenantId,
-        contactService.id,
-        authed.user.id,
-      )
+      // The first occurrence is active; a new enrollment cannot be finished yet.
 
       {
         await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_ENROLLED", next: { status: "IN_PROGRESS" }, actor: { actorUserId: authed.user.id } })
@@ -3360,7 +3329,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       const result = { contactService }
       await saveFinancialChangeTx(tx, { tenantId, contactServiceId: contactService.id, requestKey: payload.requestKey, command: enrollmentCommand, kind: "ACCOUNT_CREATED", revision: 1, actorUserId: authed.user.id, next: { plan: billingPreview.plan, schedule: billingPreview.dues, initialPayment }, result })
       return result
-    })
+    }, { maxWait: 5_000, timeout: 20_000 })
 
     return res.status(201).json({
       ok: true,

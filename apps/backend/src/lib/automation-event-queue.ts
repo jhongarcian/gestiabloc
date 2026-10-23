@@ -15,6 +15,7 @@ import {
 } from "./automation-service-context.js"
 import { contactSnapshotsDiffer, matchesContactChangeRules, type ContactChangeSnapshot } from "./contact-change-rules.js"
 import { birthdayLocalClock, isBirthdayOnLocalDate, isBirthdayReminderDue } from "./automation-birthday.js"
+import type { SavedServiceAutomations } from "./service-automation-snapshots.js"
 
 import {
   AutomationExecutionError,
@@ -468,8 +469,10 @@ async function queueContactSnapshotAutomationEvent(
   prismaTx: any,
   event: ContactCreatedAutomationEvent & { taskId?: string; appointmentId?: string; completedAt?: Date; previousStatus?: string; status?: string; changedAt?: Date; automationId?: string; automationIds?: string[]; serviceStepId?: string; serviceOfferingId?: string; occurrenceYear?: number; localDate?: string; timezone?: string; scheduledLocalTime?: string; clockAt?: Date },
   triggerType: "SERVICE_ENROLLED" | "SERVICE_STATUS_CHANGED" | "SERVICE_CHECKLIST_STATUS_CHANGED" | "SERVICE_PAYMENT_CHANGED" | "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" | "CONTACT_CREATED" | "CONTACT_NOTE_ADDED" | "TASK_ADDED" | "TASK_COMPLETED" | "APPOINTMENT_CREATED" | "APPOINTMENT_STATUS_CHANGED" | "BIRTHDAY_REMINDER",
+  preparedStep?: { savedAutomations: SavedServiceAutomations | null },
 ): Promise<QueuedAutomationResult> {
-  await validateAutomationServiceContextTx(prismaTx, event)
+  // Only the private step wrapper supplies this after validating the same event.
+  if (!preparedStep) await validateAutomationServiceContextTx(prismaTx, event)
   if (triggerType !== "CONTACT_CREATED" && typeof prismaTx.automation?.findMany !== "function") return {
     automationEventId: null,
     automationStatus: "NOT_APPLICABLE",
@@ -498,7 +501,7 @@ async function queueContactSnapshotAutomationEvent(
     }
   }
   const savedDefinitions = isServiceTrigger(triggerType) && event.serviceContext
-    ? await (await import("./service-automation-snapshots.js")).savedServiceAutomationsTx(prismaTx, event.tenantId, event.serviceContext.contactServiceId)
+    ? preparedStep ? preparedStep.savedAutomations : await (await import("./service-automation-snapshots.js")).savedServiceAutomationsTx(prismaTx, event.tenantId, event.serviceContext.contactServiceId)
     : null
   const foundAutomations = savedDefinitions ? savedDefinitions.definitions.filter(automation =>
     automation.isEnabled && automation.triggerType === triggerType &&
@@ -525,7 +528,7 @@ async function queueContactSnapshotAutomationEvent(
       where: { tenantId: event.tenantId, id: event.contactId },
       select: CONTACT_AUTOMATION_SNAPSHOT_SELECT,
     }),
-    getAutomationRuntimeCatalog(prismaTx, event.tenantId),
+    getAutomationRuntimeCatalog(prismaTx, event.tenantId, { snapshotOnly: automations.length === 0 }),
   ])
   if (!contact && triggerType === "BIRTHDAY_REMINDER") return {
     automationEventId: null, automationStatus: "NOT_APPLICABLE", queuedAutomationCount: 0,
@@ -773,7 +776,7 @@ async function queueServiceStepAutomationEvent(
     serviceStepId: context.serviceStepId,
     serviceOfferingId: context.serviceId,
     causationKey: `service-step-${triggerType === "SERVICE_STEP_ENTERED" ? "entry" : "completion"}:${event.tenantId}:${context.serviceStepOccurrenceId}`,
-  }, triggerType)
+  }, triggerType, { savedAutomations: saved })
 }
 
 export const queueServiceStepEnteredAutomationEvent = (tx: any, event: ContactCreatedAutomationEvent & { serviceContext: AutomationServiceContext }) => queueServiceStepAutomationEvent(tx, event, "SERVICE_STEP_ENTERED")

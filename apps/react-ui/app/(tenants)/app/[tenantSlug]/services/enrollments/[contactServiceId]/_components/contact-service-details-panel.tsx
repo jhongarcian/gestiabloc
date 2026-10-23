@@ -6,7 +6,7 @@ import { billingDate, type BillingSummary } from "@/lib/service-billing"
 
 import { RetiredServiceWorkflowNotice, type RetiredServiceWorkflow } from "@/components/retired-service-workflow-notice"
 
-import { enrolledServiceStepLabel, enrolledServiceStepProgress, serviceOfferingLabel } from "@/lib/service-hierarchy"
+import { enrolledServiceStepProgress, serviceOfferingLabel } from "@/lib/service-hierarchy"
 
 import type { StepMovement } from "@/lib/service-step-movement"
 
@@ -2725,6 +2725,34 @@ export function ContactServiceDetailsPanel({
     )
   }
 
+  const savedServiceSteps = (
+    <ServiceStepSnapshot
+      assignees={followUpAssigneeOptions}
+      steps={serviceData.serviceSteps ?? []}
+      movements={serviceData.stepMovements ?? []}
+      serviceName={serviceOfferingLabel(serviceData.service)}
+      startedAt={serviceData.startedAt ?? serviceData.purchasedAt}
+      timezone={serviceData.timezone}
+      tenantId={tenantId}
+      contactServiceId={contactServiceId}
+      canComplete={
+        (membershipRole === "TENANT_ADMIN" || canManageSensitiveServiceActions) &&
+        serviceData.status !== "CANCELED" && serviceData.status !== "COMPLETED"
+      }
+      onRefresh={() => refreshData(Boolean(item))}
+      detailsHref={
+        activeView === "overview"
+          ? getServiceEnrollmentFollowUpHref({ tenantSlug, contactServiceId, returnTo })
+          : undefined
+      }
+      className={
+        activeView === "overview"
+          ? "xl:sticky xl:top-[calc(var(--tenant-shell-header-height)+1rem)]"
+          : "mb-5"
+      }
+    />
+  )
+
   return (
     <TooltipProvider>
       <section className="flex h-full min-h-0 flex-col gap-4">
@@ -2900,7 +2928,7 @@ export function ContactServiceDetailsPanel({
               </PopoverContent>
             </Popover>
 
-            {activeView === "follow-up" && canChangeFollowUpCoordinator ? (
+            {(activeView === "follow-up" || activeView === "overview") && canChangeFollowUpCoordinator ? (
               <Popover
                 open={followUpCoordinatorOpen}
                 onOpenChange={(open) => {
@@ -3020,7 +3048,7 @@ export function ContactServiceDetailsPanel({
                   </Command>
                 </PopoverContent>
               </Popover>
-            ) : activeView === "follow-up" && followUpSteps.length > 0 ? (
+            ) : (activeView === "follow-up" || activeView === "overview") && overviewFollowUpTotalCount > 0 ? (
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
@@ -3310,8 +3338,7 @@ export function ContactServiceDetailsPanel({
           className="min-h-0 min-w-0 flex-1 scroll-mt-[calc(var(--tenant-shell-header-height)+10.5rem)] bg-background px-4 py-5 md:px-5 md:py-6"
         >
         <RetiredServiceWorkflowNotice workflow={serviceData.retiredWorkflow} timezone={serviceData.timezone} />
-        {serviceData.workflowKind === "SERVICE_STEPS" && activeView === "follow-up" ?
-          <ServiceStepSnapshot assignees={followUpAssigneeOptions} steps={serviceData.serviceSteps ?? []} movements={serviceData.stepMovements ?? []} timezone={serviceData.timezone} tenantId={tenantId} contactServiceId={contactServiceId} canComplete={(membershipRole === "TENANT_ADMIN" || canManageSensitiveServiceActions) && serviceData.status !== "CANCELED" && serviceData.status !== "COMPLETED"} onRefresh={() => refreshData(Boolean(item))} /> : null}
+        {serviceData.workflowKind === "SERVICE_STEPS" && activeView === "follow-up" ? savedServiceSteps : null}
         {activeView === "overview" ? (
           <section aria-labelledby="service-overview-title">
             <h2 id="service-overview-title" className="sr-only">Service overview</h2>
@@ -3435,6 +3462,7 @@ export function ContactServiceDetailsPanel({
               </section>
 
               <aside className="order-2 min-w-0 xl:col-span-5 xl:col-start-8 xl:row-span-2 xl:row-start-1">
+                {serviceData.workflowKind === "SERVICE_STEPS" ? savedServiceSteps : (
                 <section
                   aria-labelledby="overview-follow-up-title"
                   className="rounded-[26px] border border-slate-200 bg-white shadow-sm xl:sticky xl:top-[calc(var(--tenant-shell-header-height)+1rem)]"
@@ -3477,9 +3505,6 @@ export function ContactServiceDetailsPanel({
                           <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 font-medium shadow-sm">
                             {overviewFollowUpTotalCount} total {overviewFollowUpTotalCount === 1 ? "step" : "steps"}
                           </span>
-                          <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 shadow-sm">
-                            Coordinator: {getFollowUpAssigneeLabel(followUpCoordinator)}
-                          </span>
                           {serviceData.nextFollowUp?.at ? (
                             <span className="rounded-full border border-white/80 bg-white/75 px-2.5 py-1 shadow-sm">
                               Next: {formatDateTimeForDisplay(serviceData.nextFollowUp.at, serviceData.timezone)}
@@ -3492,7 +3517,7 @@ export function ContactServiceDetailsPanel({
 
 
 
-                  {serviceData.workflowKind === "SERVICE_STEPS" ? <ol aria-label="Saved service steps" className="flex flex-col gap-3 p-5">{serviceData.serviceSteps?.map((step, index) => { return <li key={step.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span className="text-sm">{index + 1}. {step.title}</span><Badge variant="secondary">{enrolledServiceStepLabel(step, serviceData.stepMovements ?? [])}</Badge></li> })}</ol> : followUpSteps.length ? (
+                  {followUpSteps.length ? (
                     <ol aria-label="Follow-up workflow steps" className="p-5">
                       {followUpSteps.map((step, index) => {
                         const status = step.status ?? "PENDING"
@@ -3594,6 +3619,7 @@ export function ContactServiceDetailsPanel({
                     </div>
                   )}
                 </section>
+                )}
               </aside>
 
               <section

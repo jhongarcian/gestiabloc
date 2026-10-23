@@ -99,7 +99,7 @@ import {
 } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import { ServiceOfferingPicker } from "@/components/service-scope-fields"
-import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { ServiceWorkflowTimeline } from "@/components/service-workflow-timeline"
 import { serviceOfferingLabel, serviceWorkflowError, type ServiceOfferingOption } from "@/lib/service-hierarchy"
 import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
 import {
@@ -2106,17 +2106,10 @@ export function ContactServicesPanel({
 
             {createStep === 2 ? (
               <section className="mt-6 flex flex-col gap-5">
-                <div className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold text-blue-700">Service workflow</p>
-                  <h3 className="text-base font-semibold text-slate-950">
-                    Set up the service follow-up
-                  </h3>
-                  <p className="text-sm leading-6 text-slate-600">
-                    Review the sub-service steps and choose who should coordinate the follow-up work.
-                  </p>
-                </div>
-
-                <ServiceWorkflowSummary steps={createServiceDetails?.steps ?? []} tenantSlug={tenantSlug} serviceId={createServiceId} />
+                <ServiceWorkflowTimeline
+                  steps={createServiceDetails?.steps ?? []}
+                  serviceName={createServiceDetails?.name}
+                />
 
                 <FlowStepCard
                   stepNumber="2"

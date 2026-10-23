@@ -3201,7 +3201,11 @@ export type AutomationRuntimeCatalog = {
 export async function getAutomationRuntimeCatalog(
   prismaTx: any,
   tenantId: string,
+  options: { snapshotOnly?: boolean } = {},
 ): Promise<AutomationRuntimeCatalog> {
+  // Unmatched service events still preserve contact/actor history, but have no
+  // conditions or actions requiring statuses, tags, pipelines, or tenant time.
+  const snapshotOnly = options.snapshotOnly === true
   const [fields, statuses, taskStatuses, memberships, tags, pipelines, tenant] = await Promise.all([
     prismaTx.contactCustomField.findMany({
       where: { tenantId, isActive: true, isEncrypted: false, isSensitive: false },
@@ -3217,11 +3221,11 @@ export async function getAutomationRuntimeCatalog(
         options: true,
       },
     }),
-    prismaTx.contactStatusConfig.findMany({
+    snapshotOnly ? [] : prismaTx.contactStatusConfig.findMany({
       where: { tenantId, isActive: true },
       select: { id: true, name: true },
     }),
-    prismaTx.taskStatusConfig?.findMany
+    !snapshotOnly && prismaTx.taskStatusConfig?.findMany
       ? prismaTx.taskStatusConfig.findMany({
           where: { tenantId, isActive: true },
           select: { id: true, name: true },
@@ -3231,15 +3235,15 @@ export async function getAutomationRuntimeCatalog(
       where: { tenantId, status: "ACTIVE" },
       select: { userId: true, user: { select: { name: true, email: true } } },
     }),
-    prismaTx.tenantTag.findMany({
+    snapshotOnly ? [] : prismaTx.tenantTag.findMany({
       where: { tenantId },
       select: { id: true, name: true },
     }),
-    prismaTx.opportunityPipeline.findMany({
+    snapshotOnly ? [] : prismaTx.opportunityPipeline.findMany({
       where: { tenantId },
       select: { id: true, name: true, stages: { select: { id: true, name: true } } },
     }),
-    prismaTx.tenant?.findUnique
+    !snapshotOnly && prismaTx.tenant?.findUnique
       ? prismaTx.tenant.findUnique({
           where: { id: tenantId },
           select: { timezone: true },
