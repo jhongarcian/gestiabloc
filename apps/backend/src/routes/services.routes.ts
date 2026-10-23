@@ -1,3 +1,7 @@
+import { createServiceBillingRouter } from "./service-billing.routes.js"
+import { FinancialWriteSchema, FinancialReasonSchema, ServicePaymentTermsSchema, resolvePaymentSettings, summarizeServiceBilling, tenantDateOnly } from "../lib/service-billing.js"
+import { billingAccountSelect, getBillingSummaryTx, replacePaymentPlanTx, replayFinancialWriteTx, saveFinancialChangeTx } from "../lib/service-billing-account.js"
+import { previewServiceBillingTx } from "../lib/service-billing-preview.js"
 import { lockSavedFollowUpEnrollment, patchSavedFollowUpTx, syncContactServiceActiveStep } from "../lib/service-saved-followups.js"
 import { retiredTemplate, retiredTemplateVersion, retiredWorkflowSummary } from "../lib/service-retired-workflows.js"
 import { serviceScopeWhere, offeringSteps, enrolledStepProgress, unfinishedServiceWorkWhere } from "../lib/service-presentation.js"
@@ -92,7 +96,6 @@ import {
   ServiceTransactionSortSchema,
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
-  getServiceTransactionPaymentValidationError,
   sanitizeServiceTransactionSearch,
 } from "../lib/service-transactions.js"
 import {
@@ -106,6 +109,7 @@ import {
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
+router.use(createServiceBillingRouter(requireActiveMembership))
 const prismaWithServices = prisma as any
 
 const normalizeSearchValue = (value: string | null | undefined) =>
@@ -516,6 +520,7 @@ const ServiceTransactionsListQuerySchema = z
         typeof value === "string" ? sanitizeServiceTransactionSearch(value) : value,
       z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional(),
     ),
+    paymentFilter: z.enum(["ALL", "BALANCE_DUE", "DUE_TODAY", "OVERDUE", "PAID", "NEEDS_REVIEW"]).default("ALL"),
     sort: ServiceTransactionSortSchema.default("PURCHASED_DESC"),
     serviceGroupId: ServiceTransactionIdSchema.optional(),
     serviceId: ServiceTransactionIdSchema.optional(),
@@ -582,6 +587,11 @@ const CreateContactServiceSchema = z
     startedAt: z.string().datetime().nullable().optional(),
     notes: ServiceTransactionNotesSchema,
     initialPaymentCents: ServiceTransactionAmountCentsSchema.optional(),
+    paymentTerms: ServicePaymentTermsSchema.optional(),
+    initialPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"]).nullable().optional(),
+    initialPaymentNote: ServiceTransactionPaymentNoteSchema,
+    configurationVersion: z.string().length(64),
+    requestKey: z.uuid(),
   })
   .strict()
 
@@ -595,6 +605,7 @@ const ServiceTransactionPaymentMethodSchema = z.enum([
 
 const CreateContactServicePaymentSchema = z
   .object({
+    ...FinancialWriteSchema.shape,
     amountCents: ServiceTransactionPositiveAmountCentsSchema,
     paidAt: z.string().datetime().optional(),
     paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
@@ -604,6 +615,8 @@ const CreateContactServicePaymentSchema = z
 
 const UpdateContactServicePaymentSchema = z
   .object({
+    ...FinancialWriteSchema.shape,
+    reason: FinancialReasonSchema,
     amountCents: ServiceTransactionPositiveAmountCentsSchema.optional(),
     paidAt: z.string().datetime().optional(),
     paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
@@ -806,6 +819,7 @@ function serializeSavedFollowUpMetadata(item: any, _timezone: string) {
 }
 
 const contactServiceWorkspaceBaseSelect = {
+  ...billingAccountSelect,
   id: true,
   tenantId: true,
   workflowKind: true,
@@ -943,6 +957,7 @@ async function serializeContactServiceWorkspaceBase(item: any, paidCents: number
     purchasedAt: item.purchasedAt,
     completedAt: item.completedAt,
     canceledAt: item.canceledAt,
+    billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant.timezone)) }),
     totalPriceCents: item.totalPriceCents,
     paidCents,
     remainingCents: Math.max(0, item.totalPriceCents - paidCents),
@@ -966,6 +981,7 @@ async function serializeContactServiceWorkspaceBase(item: any, paidCents: number
       minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
       installmentCount: item.service.installmentCount,
       installmentFrequency: item.service.installmentFrequency,
+      paymentSettings: resolvePaymentSettings(item.service),
       professionals: item.service.professionals,
     },
     tenantBilling: {
@@ -1217,49 +1233,6 @@ function getServiceTransactionsRange(
     },
     timezone,
   )
-}
-
-async function summarizeContactServicePayments(
-  prismaTx: any,
-  tenantId: string,
-  contactServiceId: string,
-) {
-  const [contactService, payments] = await Promise.all([
-    prismaTx.contactService.findFirst({
-      where: {
-        id: contactServiceId,
-        tenantId,
-      },
-      select: {
-        id: true,
-        totalPriceCents: true,
-      },
-    }),
-    prismaTx.contactServicePayment.findMany({
-      where: {
-        tenantId,
-        contactServiceId,
-      },
-      select: {
-        amountCents: true,
-      },
-    }),
-  ])
-
-  if (!contactService) {
-    return null
-  }
-
-  const paidCents = payments.reduce(
-    (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-    0,
-  )
-
-  return {
-    totalPriceCents: contactService.totalPriceCents,
-    paidCents,
-    remainingCents: Math.max(0, contactService.totalPriceCents - paidCents),
-  }
 }
 
 function getServiceTotalWithTaxCents({
@@ -1662,7 +1635,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  const paymentSummary = await summarizeContactServicePayments(
+  const paymentSummary = await getBillingSummaryTx(
     prismaTx,
     tenantId,
     contactServiceId,
@@ -1932,6 +1905,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         minimumPartialPaymentCents: service.minimumPartialPaymentCents,
         installmentCount: service.installmentCount,
         installmentFrequency: service.installmentFrequency,
+        paymentSettings: resolvePaymentSettings(service),
         isActive: service.isActive,
         checklistItems: service.checklistItems,
         steps: offeringSteps(service.steps, service.id),
@@ -2038,7 +2012,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
           },
         }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: {
+          where: { voidedAt: null,
             tenantId,
             contactService: {
               tenantId, ...scope,
@@ -2171,7 +2145,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
           },
         }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: {
+          where: { voidedAt: null,
             tenantId,
             contactService: {
               tenantId,
@@ -2267,6 +2241,16 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
       ...(query.status ? { status: query.status } : {}),
       ...(andClauses.length ? { AND: andClauses } : {}),
     }
+    const today = tenantDateOnly(timezone)
+    const dueDate = new Date(`${today}T00:00:00Z`)
+    const paymentFilter: Prisma.ContactServiceWhereInput = query.paymentFilter === "PAID"
+      ? { totalPriceCents: { lte: prisma.contactService.fields.paidCents } }
+      : query.paymentFilter === "BALANCE_DUE" || query.paymentFilter === "NEEDS_REVIEW"
+        ? { totalPriceCents: { gt: prisma.contactService.fields.paidCents }, status: { not: "CANCELED" }, ...(query.paymentFilter === "NEEDS_REVIEW" ? { paymentType: null } : {}) }
+        : query.paymentFilter === "DUE_TODAY" || query.paymentFilter === "OVERDUE"
+          ? { status: { not: "CANCELED" }, paymentDues: { some: { remainingCents: { gt: 0 }, dueDate: query.paymentFilter === "DUE_TODAY" ? dueDate : { lt: dueDate } } } }
+          : {}
+    if (query.paymentFilter !== "ALL") Object.assign(where, { AND: [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), paymentFilter] })
     const financialWhere = {
       AND: [where, { status: { not: "CANCELED" as const } }],
     }
@@ -2306,6 +2290,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
           status: true,
           purchasedAt: true,
           createdAt: true,
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           contact: {
@@ -2326,6 +2311,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
             },
@@ -2351,7 +2337,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
             _sum: { totalPriceCents: true },
           }),
           prismaWithServices.contactServicePayment.aggregate({
-            where: {
+            where: { voidedAt: null,
               tenantId,
               contactService: {
                 is: currencyWhere,
@@ -2376,6 +2362,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
+      permissions: { canRecord: canManageContactServices(membership) },
       items: transactions.map((transaction: any) => {
         const financials = getServiceTransactionFinancials(
           transaction.totalPriceCents,
@@ -2396,6 +2383,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
           currency: transaction.currency,
           totalPriceCents: transaction.totalPriceCents,
           ...financials,
+          billing: summarizeServiceBilling({ ...transaction, dues: transaction.paymentDues, paidCents: financials.paidCents, today, timezone }),
         }
       }),
       summary: {
@@ -2853,6 +2841,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           assignedProfessionalSnapshot: true,
           serviceSteps: enrolledServiceStepsSelect,
           stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -2878,6 +2867,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
             },
@@ -3012,6 +3002,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           assignedProfessionalSnapshot: true,
           serviceSteps: enrolledServiceStepsSelect,
           stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3037,6 +3028,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
             },
@@ -3115,7 +3107,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         _sum: { totalPriceCents: true },
       }),
       prismaWithServices.contactServicePayment.aggregate({
-        where: {
+        where: { voidedAt: null,
           tenantId,
           contactService: {
             is: summaryWhere,
@@ -3143,6 +3135,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: item.id,
           status: item.status,
           purchasedAt: item.purchasedAt,
+          billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant?.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant?.timezone)) }),
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
@@ -3212,6 +3205,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
           installmentFrequency: true,
           tenant: {
             select: {
+              timezone: true,
               taxEnabled: true,
               taxLabel: true,
               defaultTaxRateBps: true,
@@ -3262,23 +3256,23 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       }
     }
 
+    if ((payload.initialPaymentCents ?? 0) > 0 && !canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
     const initialPaymentCents = payload.initialPaymentCents ?? 0
+    const enrollmentCommand = { tenantId, actorUserId: authed.user.id, payload }
     const created = await prisma.$transaction(async (tx) => {
+      const replay = await replayFinancialWriteTx(tx, tenantId, payload.requestKey, enrollmentCommand)
+      if (replay) return replay as unknown as { contactService: { id: string } }
       const prismaTx = tx as any
       await assertServiceEnrollableTx(tx, tenantId, payload.serviceId)
       const effective = await loadEffectiveServiceConfiguration(tx, tenantId, payload.serviceId)
       const tenantBilling = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId },
         select: { taxEnabled: true, taxLabel: true, defaultTaxRateBps: true } })
       const totalPriceCents = getServiceTotalWithTaxCents({ ...effective, ...tenantBilling })
-      const initialPaymentError = getServiceTransactionPaymentValidationError({
-        totalPriceCents, alreadyPaidCents: 0, paymentAmountCents: initialPaymentCents,
-        allowPartialPayments: effective.allowPartialPayments,
-        minimumPartialPaymentCents: effective.minimumPartialPaymentCents,
-      })
-      if (initialPaymentError) throw new ServiceCollectionError(
-        initialPaymentError === "PAYMENT_EXCEEDS_SERVICE_TOTAL" ? "INVALID_INITIAL_PAYMENT" : initialPaymentError)
+      const billingPreview = await previewServiceBillingTx(tx, { tenantId, serviceId: payload.serviceId, terms: payload.paymentTerms, initialPaymentCents, purchasedAt: payload.purchasedAt })
+      if (billingPreview.configurationVersion !== payload.configurationVersion) throw new ServiceCollectionError("BILLING_CONFIGURATION_CHANGED", 409)
       if (payload.assignedProfessionalId && !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
         throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
       }
@@ -3325,12 +3319,14 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
             contactServiceId: contactService.id,
             amountCents: initialPaymentCents,
             paidAt: purchasedAt,
-            paymentMethod: null,
-            note: "Initial payment",
+            paymentMethod: payload.initialPaymentMethod ?? null,
+            note: payload.initialPaymentNote ?? null,
             recordedById: authed.user.id,
           },
         })
       }
+
+      await replacePaymentPlanTx(tx, { tenantId, contactServiceId: contactService.id, plan: billingPreview.plan, dues: billingPreview.dues, paidCents: initialPaymentCents })
 
       if (activeChecklist.length) {
         await prismaTx.contactServiceChecklistItem.createMany({
@@ -3361,7 +3357,9 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_ENROLLED", next: { status: "IN_PROGRESS" }, actor: { actorUserId: authed.user.id } })
         if (initialPayment) await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_PAYMENT_CHANGED", recordId: initialPayment.id, change: "ADDED", isInitialPayment: true, next: initialPayment, actor: { actorUserId: authed.user.id } })
       }
-      return { contactService }
+      const result = { contactService }
+      await saveFinancialChangeTx(tx, { tenantId, contactServiceId: contactService.id, requestKey: payload.requestKey, command: enrollmentCommand, kind: "ACCOUNT_CREATED", revision: 1, actorUserId: authed.user.id, next: { plan: billingPreview.plan, schedule: billingPreview.dues, initialPayment }, result })
+      return result
     })
 
     return res.status(201).json({
@@ -3405,6 +3403,7 @@ router.get(
             stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
+            ...billingAccountSelect,
             totalPriceCents: true,
             billingSnapshot: true,
             currency: true,
@@ -3474,10 +3473,10 @@ router.get(
                 },
                 tenant: {
                   select: {
+                    timezone: true,
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
-                    timezone: true,
                   },
                 },
                 checklistItems: {
@@ -3598,24 +3597,10 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      const [paymentAggregate, scheduledPaymentsRecordedCount] = await Promise.all([
-        prismaWithServices.contactServicePayment.aggregate({
-          where: { tenantId, contactServiceId },
-          _sum: { amountCents: true },
-          _max: { paidAt: true },
-          _count: { _all: true },
-        }),
-        prismaWithServices.contactServicePayment.count({
-          where: {
-            tenantId,
-            contactServiceId,
-            OR: [
-              { note: null },
-              { NOT: { note: { equals: "initial payment", mode: "insensitive" } } },
-            ],
-          },
-        }),
-      ])
+      const paymentAggregate = await prismaWithServices.contactServicePayment.aggregate({
+        where: { tenantId, contactServiceId, voidedAt: null },
+        _sum: { amountCents: true }, _max: { paidAt: true }, _count: { _all: true },
+      })
       const paidCents = paymentAggregate._sum.amountCents ?? 0
       const followUpState = resolveSavedFollowUpState(item)
       const nextFollowUp = serializeEffectiveNextFollowUp(followUpState.effectiveNextFollowUp)
@@ -3678,7 +3663,6 @@ router.get(
           paymentSummary: {
             latestPaidAt: paymentAggregate._max.paidAt ?? null,
             totalPaymentsCount: paymentAggregate._count._all,
-            scheduledPaymentsRecordedCount,
           },
         },
       })
@@ -3736,6 +3720,7 @@ router.get(
         select: {
           ...contactServiceWorkspaceBaseSelect,
           payments: {
+            where: { voidedAt: null },
             select: {
               id: true,
               amountCents: true,
@@ -3869,7 +3854,7 @@ router.get(
       }
 
       const paymentAggregate = await prismaWithServices.contactServicePayment.aggregate({
-        where: { tenantId, contactServiceId },
+        where: { voidedAt: null, tenantId, contactServiceId },
         _sum: { amountCents: true },
       })
       const paidCents = paymentAggregate._sum.amountCents ?? 0
@@ -3943,6 +3928,7 @@ router.get(
             stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
+            ...billingAccountSelect,
             totalPriceCents: true,
             billingSnapshot: true,
             currency: true,
@@ -4012,10 +3998,10 @@ router.get(
                 },
                 tenant: {
                   select: {
+                    timezone: true,
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
-                    timezone: true,
                   },
                 },
                 checklistItems: {
@@ -4032,6 +4018,7 @@ router.get(
               },
             },
             payments: {
+              where: { voidedAt: null },
               select: {
                 id: true,
                 amountCents: true,
@@ -4249,6 +4236,7 @@ router.get(
           purchasedAt: item.purchasedAt,
           completedAt: item.completedAt,
           canceledAt: item.canceledAt,
+          billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant?.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant?.timezone)) }),
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
@@ -4271,6 +4259,7 @@ router.get(
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            paymentSettings: resolvePaymentSettings(item.service),
             professionals: item.service.professionals,
           },
           tenantBilling: {
@@ -4351,7 +4340,7 @@ router.get(
         prismaWithServices.contactServiceNote.count({ where: serviceWhere }),
         prismaWithServices.contactNote.count({ where: contactWhere }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: { tenantId, contactServiceId },
+          where: { voidedAt: null, tenantId, contactServiceId },
           _sum: { amountCents: true },
         }),
       ])
@@ -4745,10 +4734,9 @@ router.post("/:tenantId/contact-services/:contactServiceId/payments", requireAut
     if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
     const result = await prisma.$transaction(async tx => {
-      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "ADDED", actorUserId: authed.user.id, payload })
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "ADDED", actorUserId: authed.user.id, payload, requestKey: payload.requestKey, expectedRevision: payload.expectedRevision })
       if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
-      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
-      return { payment: result.payment, summary }
+      return { payment: result.payment, summary: result.summary }
     })
     return res.status(201).json({ ok: true, payment: result.payment, summary: result.summary })
   } catch (error) {
@@ -4767,10 +4755,9 @@ router.patch("/:tenantId/contact-services/:contactServiceId/payments/:paymentId"
     if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
     if (!Object.keys(payload).length) return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
     const result = await prisma.$transaction(async tx => {
-      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "UPDATED", actorUserId: authed.user.id, paymentId, payload })
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "UPDATED", actorUserId: authed.user.id, paymentId, payload, reason: payload.reason, requestKey: payload.requestKey, expectedRevision: payload.expectedRevision })
       if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
-      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
-      return { payment: result.payment, summary }
+      return { payment: result.payment, summary: result.summary }
     })
     return res.status(200).json({ ok: true, payment: result.payment, summary: result.summary })
   } catch (error) {
@@ -4789,10 +4776,9 @@ router.delete("/:tenantId/contact-services/:contactServiceId/payments/:paymentId
     if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
     const result = await prisma.$transaction(async tx => {
-      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "REMOVED", actorUserId: authed.user.id, paymentId })
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "REMOVED", actorUserId: authed.user.id, paymentId, ...FinancialWriteSchema.extend({ reason: FinancialReasonSchema }).strict().parse(req.body) })
       if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
-      const summary = await summarizeContactServicePayments(tx, tenantId, contactServiceId)
-      return { payment: result.payment, summary }
+      return { payment: result.payment, summary: result.summary }
     })
     return res.status(200).json({ ok: true, summary: result.summary })
   } catch (error) {
@@ -5061,12 +5047,16 @@ router.delete(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      await prismaWithServices.contactService.delete({
-        where: { id: contactServiceId },
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw(Prisma.sql`SELECT id FROM "ContactService" WHERE "tenantId"=${tenantId} AND id=${contactServiceId} FOR UPDATE`)
+        const receipts = await tx.contactServicePayment.count({ where: { tenantId, contactServiceId } })
+        if (receipts > 0) throw new ServiceCollectionError("SERVICE_HAS_PAYMENT_HISTORY_CANCEL_INSTEAD", 409)
+        await tx.contactService.delete({ where: { id: contactServiceId } })
       })
 
       return res.json({ ok: true })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
   },

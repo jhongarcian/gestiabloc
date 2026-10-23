@@ -171,6 +171,7 @@ export const getContactDetailsContext = cache(
         tenantTimezone,
         currentUserId: user.id,
         membershipSecurityLevel: membership.securityLevel,
+        membershipRole: membership.role,
         canApproveSensitiveFieldAccess:
           membership.role === "TENANT_ADMIN" || membership.securityLevel === "MAX",
         canManageContactTags:

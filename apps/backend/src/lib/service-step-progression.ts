@@ -43,7 +43,7 @@ export async function reconcileServiceStepEnrollmentTx(
   })
   if (last?.occurrences[0]?.progressionStatus !== "FINISHED") return enrollment
   const payments = await tx.contactServicePayment.aggregate({
-    where: { tenantId, contactServiceId },
+    where: { voidedAt: null, tenantId, contactServiceId },
     _sum: { amountCents: true },
   })
   const paid = (payments._sum.amountCents ?? 0) >= enrollment.totalPriceCents

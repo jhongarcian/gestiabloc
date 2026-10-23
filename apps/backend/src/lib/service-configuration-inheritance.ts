@@ -1,5 +1,6 @@
 import { serviceStepSelect, saveServiceStepsTx } from "./service-steps.js"
 import { z } from "zod"
+import { resolvePaymentSettings } from "./service-billing.js"
 import { Prisma } from "../generated/prisma/index.js"
 import {
   ServiceCollectionError,
@@ -17,6 +18,7 @@ export const serviceSectionModesSchema = z.object({
   stepsMode: ServiceSectionModeSchema.optional(),
 })
 export const billingSelect = {
+  paymentSettings: true,
   basePriceCents: true,
   currency: true,
   isTaxExempt: true,
@@ -58,8 +60,9 @@ export const serviceConfigurationSelect = {
 } satisfies Prisma.ServiceSelect
 type Configuration = Prisma.ServiceGetPayload<{ select: typeof serviceConfigurationSelect }>
 const billingKeys = Object.keys(billingSelect) as Array<keyof typeof billingSelect>
-export function pickBilling(service: Pick<Configuration, keyof typeof billingSelect>) {
+export function pickBilling(service: Omit<Pick<Configuration, keyof typeof billingSelect>, "paymentSettings"> & { paymentSettings?: unknown }) {
   return {
+    paymentSettings: resolvePaymentSettings(service),
     basePriceCents: service.basePriceCents,
     currency: service.currency,
     isTaxExempt: service.isTaxExempt,
@@ -193,6 +196,7 @@ export async function prepareServiceSectionsTx(
 }
 
 const billingSnapshotSchema = z.object({
+  paymentSettings: z.unknown().optional(),
   basePriceCents: z.number().int(),
   currency: z.string(),
   isTaxExempt: z.boolean(),

@@ -1,5 +1,11 @@
 "use client"
 
+import { paymentOptionsLabel, type PaymentSettings } from "@/lib/service-billing"
+
+import { ServicePaymentFields } from "@/components/service-payment-fields"
+import { RecordServicePaymentDialog } from "@/components/record-service-payment-dialog"
+import { type EnrollmentBillingValue } from "@/lib/service-billing"
+
 import Link from "next/link"
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isAxiosError } from "axios"
@@ -55,7 +61,6 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import {
   Popover,
   PopoverContent,
@@ -212,7 +217,8 @@ type ServiceDetailsResponse = {
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
-    allowPartialPayments: boolean
+    paymentSettings?: PaymentSettings
+  allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
@@ -249,6 +255,7 @@ type ContactServicesPanelProps = {
   tenantId: string
   tenantSlug: string
   contactId: string
+  membershipRole: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   initialCreateServiceId?: string | null
   initialCreateOpen?: boolean
@@ -263,15 +270,6 @@ const currencyFormatter = (valueCents: number, currency: string) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
-
-const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
-const parseUsdToCents = (value: string) => {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-  return Math.round(parsed * 100)
-}
 
 const formatDate = (value: string | null | undefined) => {
   if (!value) return "-"
@@ -303,12 +301,6 @@ const getServiceTotalWithTaxCents = ({
 
   return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
 }
-
-const INSTALLMENT_FREQUENCY_LABELS = {
-  WEEKLY: "Weekly",
-  BIWEEKLY: "Biweekly",
-  MONTHLY: "Monthly",
-} as const
 
 const PROFESSIONAL_TONE_STYLES = {
   internal: {
@@ -902,6 +894,8 @@ export function ContactServicesPanel({
   tenantId,
   tenantSlug,
   contactId,
+  membershipSecurityLevel,
+  membershipRole,
   initialCreateServiceId,
   initialCreateOpen,
   initialPage = 1,
@@ -935,8 +929,10 @@ export function ContactServicesPanel({
   const [createServiceId, setCreateServiceId] = useState("")
   const [createAssignedProfessionalId, setCreateAssignedProfessionalId] = useState("")
   const [createFollowUpAssignedToUserId, setCreateFollowUpAssignedToUserId] = useState("")
-  const [createPaymentMode, setCreatePaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
-  const [createInitialPaymentUsd, setCreateInitialPaymentUsd] = useState("")
+  const [enrollmentBilling, setEnrollmentBilling] = useState<EnrollmentBillingValue | null>(null)
+  const enrollmentRequestKey = useRef("")
+  const enrollmentSaving = useRef(false)
+  const [recordPaymentId, setRecordPaymentId] = useState<string | null>(null)
   const [createNotes, setCreateNotes] = useState("")
   const [createErrors, setCreateErrors] = useState<
     Partial<
@@ -976,8 +972,9 @@ export function ContactServicesPanel({
     setCreateServiceId("")
     setCreateAssignedProfessionalId("")
     setCreateFollowUpAssignedToUserId("")
-    setCreatePaymentMode("FULL")
-    setCreateInitialPaymentUsd("")
+    setEnrollmentBilling(null)
+    enrollmentRequestKey.current = ""
+    enrollmentSaving.current = false
     setCreateNotes("")
     setCreateServiceDetails(null)
     setCreateErrors({})
@@ -1099,12 +1096,6 @@ export function ContactServicesPanel({
       setCreateAssignedProfessionalId((current) =>
         data.service.professionals.some((item) => item.id === current) ? current : "",
       )
-      setCreatePaymentMode((prev) => {
-        if (prev === "PARTIAL" && !data.service.allowPartialPayments) {
-          return "FULL"
-        }
-        return prev
-      })
     } catch {
         if (requestId !== serviceDetailsRequest.current) return
       setCreateServiceDetails(null)
@@ -1235,68 +1226,6 @@ export function ContactServicesPanel({
     [followUpAssigneeOptions],
   )
 
-  const paymentStepSchema = useMemo(
-    () =>
-      z
-        .object({
-          paymentMode: z.enum(["FULL", "PARTIAL", "LATER"]),
-          initialPaymentUsd: z.string(),
-          notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
-        })
-        .superRefine((value, ctx) => {
-          if (value.paymentMode === "PARTIAL" && !createServiceDetails?.allowPartialPayments) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["paymentMode"],
-              message: "This service does not allow partial payments.",
-            })
-          }
-
-          if (value.paymentMode !== "PARTIAL" || !createServiceDetails) {
-            return
-          }
-
-          const initialPaymentCents = parseUsdToCents(value.initialPaymentUsd)
-          const maxAllowedTotalCents = createServiceDetails
-            ? getServiceTotalWithTaxCents({
-                basePriceCents: createServiceDetails.basePriceCents,
-                isTaxExempt: createServiceDetails.isTaxExempt,
-                taxEnabled: createServiceDetails.tenantBilling.taxEnabled,
-                defaultTaxRatePercent: createServiceDetails.tenantBilling.defaultTaxRatePercent,
-              })
-            : null
-
-          if (initialPaymentCents === null || initialPaymentCents <= 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Enter a valid partial payment amount in USD.",
-            })
-            return
-          }
-
-          if (maxAllowedTotalCents !== null && initialPaymentCents > maxAllowedTotalCents) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment cannot be greater than total amount.",
-            })
-          }
-
-          if (
-            createServiceDetails.minimumPartialPaymentCents !== null &&
-            initialPaymentCents < createServiceDetails.minimumPartialPaymentCents
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment is below the minimum allowed for this service.",
-            })
-          }
-        }),
-    [createServiceDetails],
-  )
-
   const applyCreateSchemaErrors = <
     T extends
       | "serviceId"
@@ -1364,24 +1293,9 @@ export function ContactServicesPanel({
   }
 
   const validateCreatePaymentStep = () => {
-    const result = paymentStepSchema.safeParse({
-      paymentMode: createPaymentMode,
-      initialPaymentUsd: createInitialPaymentUsd,
-      notes: createNotes,
-    })
-
-    if (result.success) {
-      setCreateErrors((current) => ({
-        ...current,
-        paymentMode: undefined,
-        initialPaymentUsd: undefined,
-        notes: undefined,
-      }))
-      return true
-    }
-
-    applyCreateSchemaErrors(result, ["paymentMode", "initialPaymentUsd", "notes"])
-    return false
+    if (!enrollmentBilling) return false
+    if (createNotes.length > 4000) { toast.error("Service notes must be 4000 characters or fewer."); return false }
+    return true
   }
 
   const onNextCreateStep = () => {
@@ -1506,15 +1420,12 @@ export function ContactServicesPanel({
       return
     }
 
-    const initialPaymentCents =
-      createPaymentMode === "FULL"
-        ? totalPriceCents
-        : createPaymentMode === "LATER"
-          ? 0
-          : parseUsdToCents(createInitialPaymentUsd)
+    if (enrollmentSaving.current) return
+    enrollmentSaving.current = true
+    enrollmentRequestKey.current ||= crypto.randomUUID()
 
     const workflowError = serviceWorkflowError(createServiceDetails?.id === createServiceId ? createServiceDetails : null)
-    if (workflowError) { toast.error(workflowError); return }
+    if (workflowError) { enrollmentSaving.current = false; toast.error(workflowError); return }
     setIsSaving(true)
     try {
       const { data } = await api.post<{ contactService: { id: string } }>(
@@ -1529,7 +1440,8 @@ export function ContactServicesPanel({
         ...(createAssignedProfessionalId
           ? { assignedProfessionalId: createAssignedProfessionalId }
           : {}),
-        ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
+        ...enrollmentBilling,
+        requestKey: enrollmentRequestKey.current,
         ...(createNotes.trim() ? { notes: createNotes.trim() } : {}),
         },
       )
@@ -1561,6 +1473,7 @@ export function ContactServicesPanel({
         toast.error("Could not create service transaction.")
       }
     } finally {
+      enrollmentSaving.current = false
       setIsSaving(false)
     }
   }
@@ -1784,7 +1697,7 @@ export function ContactServicesPanel({
                                 variant="outline"
                                 className={cn("capitalize", SERVICE_STATUS_STYLES[item.status])}
                               >
-                                {toSentence(item.status)}
+                                {item.status === "PENDING_PAYMENT" || item.status === "COMPLETED" ? "Work finished" : item.status === "CANCELED" ? "Service canceled" : "Work in progress"}
                               </Badge>
                             </TableCell>
                             <TableCell className="px-4 py-0 text-foreground">
@@ -1806,8 +1719,10 @@ export function ContactServicesPanel({
                             <TableCell className="px-4 py-0 text-foreground">
                               {currencyFormatter(item.paidCents, item.currency)}
                             </TableCell>
-                            <TableCell className="px-4 py-0 text-foreground">
-                              {currencyFormatter(item.remainingCents, item.currency)}
+                            <TableCell className="relative z-20 px-4 py-0 text-foreground">
+                              <div className="flex flex-col items-start gap-1">{currencyFormatter(item.remainingCents, item.currency)}
+                                {(membershipRole === "TENANT_ADMIN" || membershipSecurityLevel !== "LOW") && item.remainingCents > 0 ? <Button type="button" size="sm" variant="outline" onClick={event => { event.stopPropagation(); setRecordPaymentId(item.id) }}>Record payment</Button> : null}
+                              </div>
                             </TableCell>
                             <TableCell className="relative z-20 px-4 py-0">
                               <Popover>
@@ -1946,6 +1861,8 @@ export function ContactServicesPanel({
           </div>
         </TooltipProvider>
       </div>
+
+      {recordPaymentId ? <RecordServicePaymentDialog tenantId={tenantId} contactServiceId={recordPaymentId} open onOpenChange={value => { if (!value) setRecordPaymentId(null) }} onSaved={loadServices} /> : null}
 
       <Dialog
         open={isCreateOpen}
@@ -2180,11 +2097,7 @@ export function ContactServicesPanel({
                       </p>
                     ) : null}
                     <p className="text-sm text-slate-500">
-                      {createServiceDetails.allowPartialPayments
-                        ? createServiceDetails.installmentCount && createServiceDetails.installmentFrequency
-                          ? `Minimum deposit ${currencyFormatter(createServiceDetails.minimumPartialPaymentCents ?? 0, createServiceDetails.currency)} · ${createServiceDetails.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[createServiceDetails.installmentFrequency].toLowerCase()} installments`
-                          : "Partial payments allowed"
-                        : "Full payment only"}
+                      {paymentOptionsLabel(createServiceDetails)}
                     </p>
                   </div>
                 ) : null}
@@ -2321,198 +2234,10 @@ export function ContactServicesPanel({
               </section>
             ) : null}
 
-            {createStep === 4 ? (
-              <section className="mt-6 grid gap-5">
-                <div className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold text-blue-700">Payment</p>
-                  <h3 className="text-base font-semibold text-slate-950">
-                    Confirm the purchase details
-                  </h3>
-                  <p className="text-sm leading-6 text-slate-600">
-                    Review the service cost, choose how payment will be handled, and add any final context.
-                  </p>
-                </div>
-                <FieldGroup className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    data-invalid={Boolean(createErrors.paymentMode)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-payment-type">
-                      Payment type
-                    </FieldLabel>
-                    <Select
-                      value={createPaymentMode}
-                      onValueChange={(value) => {
-                        clearCreateError("paymentMode")
-                        clearCreateError("initialPaymentUsd")
-                        setCreatePaymentMode(value as "FULL" | "PARTIAL" | "LATER")
-                      }}
-                      disabled={isSaving}
-                    >
-                      <SelectTrigger
-                        id="contact-service-transaction-payment-type"
-                        aria-invalid={Boolean(createErrors.paymentMode)}
-                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="FULL" className="cursor-pointer">Pay in full</SelectItem>
-                          <SelectItem
-                            value="PARTIAL"
-                            disabled={!createServiceDetails?.allowPartialPayments}
-                            className="cursor-pointer"
-                          >
-                            Partial payment
-                          </SelectItem>
-                          <SelectItem value="LATER" className="cursor-pointer">Pay later</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {!createServiceDetails?.allowPartialPayments ? (
-                      <FieldDescription>
-                        This service supports full payment or pay later only.
-                      </FieldDescription>
-                    ) : null}
-                    <FieldError>{createErrors.paymentMode}</FieldError>
-                  </Field>
-
-                  <Field className="gap-2">
-                    <FieldLabel htmlFor="contact-service-transaction-cost">
-                      Service cost
-                    </FieldLabel>
-                    <Input
-                      id="contact-service-transaction-cost"
-                      value={
-                        createServiceTotalCents !== null
-                          ? centsToUsdInput(createServiceTotalCents)
-                          : ""
-                      }
-                      readOnly
-                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 text-slate-600 shadow-none"
-                    />
-                  </Field>
-                </FieldGroup>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  {createServiceDetails?.allowPartialPayments ? (
-                    <span>
-                      Payment plan:{" "}
-                      <span className="font-medium text-slate-900">
-                        {createServiceDetails.minimumPartialPaymentCents !== null
-                          ? `Minimum deposit ${currencyFormatter(createServiceDetails.minimumPartialPaymentCents, createServiceDetails.currency)}`
-                          : "Partial payments allowed"}
-                        {createServiceDetails.installmentCount && createServiceDetails.installmentFrequency
-                          ? ` · ${createServiceDetails.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[createServiceDetails.installmentFrequency].toLowerCase()} installments`
-                          : ""}
-                      </span>
-                    </span>
-                  ) : (
-                    <span>
-                      Payment plan: <span className="font-medium text-slate-900">Full payment only</span>
-                    </span>
-                  )}
-                </div>
-
-                {createAssignedProfessionalId && createServiceDetails ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Assigned professional:{" "}
-                    <span className="font-medium text-slate-900">
-                      {getProfessionalLabel(
-                        createServiceDetails.professionals.find(
-                          (item) => item.id === createAssignedProfessionalId,
-                        )!,
-                      )}
-                    </span>
-                  </div>
-                ) : null}
-
-                {createFollowUpAssignedToUserId ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Enrollment coordinator:{" "}
-                    <span className="font-medium text-slate-900">
-                      {followUpAssigneeOptions.find(
-                        (item) => item.value === createFollowUpAssignedToUserId,
-                      )?.label ?? "Assigned user"}
-                    </span>
-                  </div>
-                ) : null}
-
-                <FieldGroup className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    data-invalid={Boolean(createErrors.initialPaymentUsd)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-payment-now">
-                      {createPaymentMode === "PARTIAL" ? "Partial Payment Amount" : "Payment Now"}
-                    </FieldLabel>
-                    <Input
-                      id="contact-service-transaction-payment-now"
-                      value={
-                        createPaymentMode === "PARTIAL"
-                          ? createInitialPaymentUsd
-                          : createPaymentMode === "LATER"
-                            ? "0.00"
-                            : createServiceTotalCents !== null
-                              ? centsToUsdInput(createServiceTotalCents)
-                              : ""
-                      }
-                      onChange={(event) => {
-                        clearCreateError("initialPaymentUsd")
-                        setCreateInitialPaymentUsd(event.target.value)
-                      }}
-                      readOnly={createPaymentMode !== "PARTIAL"}
-                      disabled={isSaving}
-                      aria-invalid={Boolean(createErrors.initialPaymentUsd)}
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      className={cn(
-                        "h-11 rounded-xl border-slate-200 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100",
-                        createPaymentMode === "PARTIAL"
-                          ? "bg-slate-50/60"
-                          : "bg-slate-50 text-slate-600",
-                      )}
-                    />
-                    {createPaymentMode === "PARTIAL" &&
-                    createServiceDetails?.minimumPartialPaymentCents ? (
-                      <FieldDescription>
-                        Minimum partial payment:{" "}
-                        {currencyFormatter(
-                          createServiceDetails.minimumPartialPaymentCents,
-                          createServiceDetails.currency,
-                        )}
-                      </FieldDescription>
-                    ) : null}
-                    <FieldError>{createErrors.initialPaymentUsd}</FieldError>
-                  </Field>
-
-                  <Field
-                    data-invalid={Boolean(createErrors.notes)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-notes">Notes</FieldLabel>
-                    <Textarea
-                      id="contact-service-transaction-notes"
-                      value={createNotes}
-                      onChange={(event) => {
-                        clearCreateError("notes")
-                        setCreateNotes(event.target.value)
-                      }}
-                      rows={3}
-                      disabled={isSaving}
-                      aria-invalid={Boolean(createErrors.notes)}
-                      placeholder="Add context for this service purchase"
-                      className="min-h-28 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                    />
-                    <FieldError>{createErrors.notes}</FieldError>
-                  </Field>
-                </FieldGroup>
-              </section>
-            ) : null}
+            <section className={createStep === 4 ? "mt-6 flex flex-col gap-5" : "hidden"}>
+              {createServiceId && isCreateOpen ? <ServicePaymentFields key={createServiceId} tenantId={tenantId} serviceId={createServiceId} disabled={isSaving} onChange={setEnrollmentBilling} /> : null}
+              <FieldGroup><Field><FieldLabel htmlFor="contact-service-transaction-notes">Service notes (optional)</FieldLabel><Textarea id="contact-service-transaction-notes" value={createNotes} maxLength={4000} disabled={isSaving} onChange={event => setCreateNotes(event.target.value)} /></Field></FieldGroup>
+            </section>
           </div>
           <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
             <div className="text-sm text-slate-500 sm:mr-auto">
@@ -2549,7 +2274,7 @@ export function ContactServicesPanel({
               <Button
                 type="button"
                 onClick={() => void onCreate()}
-                disabled={isSaving}
+                disabled={isSaving || !enrollmentBilling}
                 className="min-w-40 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
               >
                 {isSaving ? (

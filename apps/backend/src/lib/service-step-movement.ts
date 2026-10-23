@@ -268,7 +268,7 @@ export async function moveServiceStepTx(
       data: { progressionStatus: "FINISHED", advancedAt: now },
     })
     const paid = await tx.contactServicePayment.aggregate({
-      where: { tenantId, contactServiceId },
+      where: { voidedAt: null, tenantId, contactServiceId },
       _sum: { amountCents: true },
     })
     const settled = (paid._sum.amountCents ?? 0) >= enrollment.totalPriceCents

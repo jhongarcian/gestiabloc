@@ -19,7 +19,7 @@ export async function emitServiceAutomationEventTx(tx: Prisma.TransactionClient,
   const group = saved?.service?.parentService ?? enrollment.service.parentService
   if (!group?.id) throw new Error("The enrolled sub-service has no service group.")
   const updated = await tx.contactService.update({ where: { id: enrollment.id }, data: { automationEventRevision: { increment: 1 } }, select: { automationEventRevision: true } })
-  const paid = await tx.contactServicePayment.aggregate({ where: { tenantId: input.tenantId, contactServiceId: enrollment.id }, _sum: { amountCents: true } })
+  const paid = await tx.contactServicePayment.aggregate({ where: { voidedAt: null, tenantId: input.tenantId, contactServiceId: enrollment.id }, _sum: { amountCents: true } })
   const paidCents = paid._sum.amountCents ?? 0
   const snapshot: ServiceEventSnapshot = JSON.parse(JSON.stringify({
     schemaVersion: 1, revision: updated.automationEventRevision, occurredAt: new Date().toISOString(),

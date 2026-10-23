@@ -1,3 +1,4 @@
+import { ServicePaymentSettingsSchema, resolvePaymentSettings, legacyPaymentFields } from "../lib/service-billing.js";
 import { ensureServiceStepAutomationsTx } from "../lib/service-step-automations.js";
 import { type NextFunction, type Request, type Response, Router } from "express";
 import argon2 from "argon2";
@@ -712,6 +713,7 @@ const CreateServiceSchema = z.object({
   fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
   currency: z.string().trim().min(3).max(3).default("USD"),
+  paymentSettings: ServicePaymentSettingsSchema.optional(),
   isTaxExempt: z.boolean().default(false),
   allowPartialPayments: z.boolean().default(false),
   minimumPartialPaymentCents: z.coerce
@@ -721,7 +723,7 @@ const CreateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
-  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentCount: z.coerce.number().int().min(1).max(120).nullable().optional(),
   installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
@@ -739,6 +741,7 @@ const UpdateServiceSchema = z.object({
   fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   currency: z.string().trim().min(3).max(3).optional(),
+  paymentSettings: ServicePaymentSettingsSchema.optional(),
   isTaxExempt: z.boolean().optional(),
   allowPartialPayments: z.boolean().optional(),
   minimumPartialPaymentCents: z.coerce
@@ -748,7 +751,7 @@ const UpdateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
-  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentCount: z.coerce.number().int().min(1).max(120).nullable().optional(),
   installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
@@ -1068,6 +1071,8 @@ function normalizeServicePayload(
     ...payload,
     currency: payload.currency?.trim().toUpperCase(),
   } as typeof payload & { currency?: string };
+
+  if (normalized.paymentSettings) Object.assign(normalized, legacyPaymentFields(normalized.paymentSettings));
 
   if (normalized.allowPartialPayments === false) {
     normalized.minimumPartialPaymentCents = null;
@@ -3953,6 +3958,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         minimumPartialPaymentCents: service.minimumPartialPaymentCents,
         installmentCount: service.installmentCount,
         installmentFrequency: service.installmentFrequency,
+        paymentSettings: resolvePaymentSettings(service),
         isActive: service.isActive,
         sortOrder: service.sortOrder,
         checklistItems: service.checklistItems,
@@ -3971,10 +3977,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
             service.name.trim().length > 0 &&
             service.basePriceCents >= 0 &&
             service.currency.trim().length === 3 &&
-            (!service.allowPartialPayments ||
-              (service.minimumPartialPaymentCents !== null &&
-                service.installmentCount !== null &&
-                service.installmentFrequency !== null)),
+            ServicePaymentSettingsSchema.safeParse(resolvePaymentSettings(service)).success,
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
             service.kind === "GROUP" || service.steps.length > 0,
@@ -3983,10 +3986,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
             service.name.trim().length > 0 &&
             service.basePriceCents >= 0 &&
             service.currency.trim().length === 3 &&
-            (!service.allowPartialPayments ||
-              (service.minimumPartialPaymentCents !== null &&
-                service.installmentCount !== null &&
-                service.installmentFrequency !== null)) &&
+            ServicePaymentSettingsSchema.safeParse(resolvePaymentSettings(service)).success &&
             service.checklistItems.length > 0 &&
             (service.kind === "GROUP" || service.steps.length > 0) &&
             service.professionals.length > 0,
@@ -4004,14 +4004,8 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
 
     const { tenantId } = TenantPathSchema.parse(req.params);
     const payload = CreateServiceSchema.parse(req.body);
-    const normalizedPayload = {
-      ...payload,
-      currency: payload.currency.trim().toUpperCase(),
-      minimumPartialPaymentCents: payload.allowPartialPayments
-        ? payload.minimumPartialPaymentCents ?? null
-        : null,
-    };
-    const normalizedName = normalizedPayload.name.trim();
+    const normalizedPayload = { ...normalizeServicePayload(payload), currency: payload.currency.trim().toUpperCase() };
+    const normalizedName = payload.name.trim();
 
     const duplicate = await findServiceByName(tenantId, normalizedName);
     if (duplicate) {
@@ -4061,8 +4055,8 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     });
 
     if (
-      payload.allowPartialPayments &&
-      normalizedPayload.minimumPartialPaymentCents !== null &&
+      normalizedPayload.allowPartialPayments &&
+      normalizedPayload.minimumPartialPaymentCents != null &&
       normalizedPayload.minimumPartialPaymentCents > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
@@ -4105,7 +4099,8 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
           basePriceCents: payload.basePriceCents,
           currency: normalizedPayload.currency || "USD",
           isTaxExempt: payload.isTaxExempt,
-          allowPartialPayments: payload.allowPartialPayments,
+          paymentSettings: resolvePaymentSettings(normalizedPayload),
+          allowPartialPayments: normalizedPayload.allowPartialPayments,
           minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
           installmentCount: normalizedPayload.installmentCount ?? null,
           installmentFrequency: normalizedPayload.installmentFrequency ?? null,
@@ -4198,6 +4193,10 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         basePriceCents: true,
         isTaxExempt: true,
         allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
+        paymentSettings: true,
         tenant: {
           select: {
             taxEnabled: true,
@@ -4250,6 +4249,11 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       nextFitProfile = validation.profile;
     }
 
+    const legacyBillingChanged = ["allowPartialPayments", "minimumPartialPaymentCents", "installmentCount", "installmentFrequency"].some(key => payload[key as keyof typeof payload] !== undefined);
+    if (!payload.paymentSettings && legacyBillingChanged) {
+      payload.paymentSettings = resolvePaymentSettings({ ...existing, ...payload, paymentSettings: undefined });
+      Object.assign(payload, legacyPaymentFields(payload.paymentSettings));
+    }
     const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
     const updated = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any;
@@ -4262,6 +4266,7 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
         where: { id: recordId },
         data: {
           ...sectionChanges,
+          ...(payload.paymentSettings !== undefined ? { paymentSettings: payload.paymentSettings } : {}),
           ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
           ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
           ...(payload.fitProfile !== undefined ? { fitProfile: nextFitProfile } : {}),

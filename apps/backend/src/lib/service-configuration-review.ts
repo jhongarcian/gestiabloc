@@ -26,7 +26,7 @@ const enrollmentInclude = {
   contact: { select: { firstName: true, lastName: true } },
   serviceSteps: { orderBy: { sortOrder: "asc" }, include: { occurrences: { orderBy: { id: "asc" } } } },
   checklistItems: { orderBy: { id: "asc" }, include: { checklistItem: true, _count: { select: { checklistActivities: true } } } },
-  payments: { orderBy: { id: "asc" } },
+  payments: { where: { voidedAt: null }, orderBy: { id: "asc" } },
 } satisfies Prisma.ContactServiceInclude
 type Enrollment = Prisma.ContactServiceGetPayload<{ include: typeof enrollmentInclude }>
 type Effective = Awaited<ReturnType<typeof loadEffectiveServiceConfiguration>>

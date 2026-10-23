@@ -16,7 +16,7 @@ export default async function ContactServicesPage({
 }) {
   const { tenantSlug, contactId } = await params
   const resolvedSearchParams = searchParams ? await searchParams : undefined
-  const { tenantId, membershipSecurityLevel } = await getContactDetailsContext(tenantSlug, contactId)
+  const { tenantId, membershipSecurityLevel, membershipRole } = await getContactDetailsContext(tenantSlug, contactId)
 
   return (
     <ContactServicesPanel
@@ -24,6 +24,7 @@ export default async function ContactServicesPage({
       tenantSlug={tenantSlug}
       contactId={contactId}
       membershipSecurityLevel={membershipSecurityLevel}
+      membershipRole={membershipRole}
       initialCreateOpen={resolvedSearchParams?.create === "1"}
       initialCreateServiceId={resolvedSearchParams?.serviceId ?? null}
       initialPage={parsePositivePage(resolvedSearchParams?.page)}

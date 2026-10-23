@@ -154,6 +154,23 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
   })
 
   async function request(path: string, method = "GET", body?: unknown) {
+    // Existing service scenarios use the new financial contract by default; individual
+    // billing tests supply explicit keys/revisions when exercising conflict behavior.
+    if (method === "POST" && /\/contact-services$/.test(path) && body && typeof body === "object") {
+      const payload = body as Record<string, unknown>
+      const preview = await request(`/api/services/${tenantId}/billing-preview`, "POST", {
+        serviceId: payload.serviceId, initialPaymentCents: payload.initialPaymentCents ?? 0,
+        ...(payload.paymentTerms ? { paymentTerms: payload.paymentTerms } : {}),
+        ...(payload.purchasedAt ? { purchasedAt: payload.purchasedAt } : {}),
+      })
+      body = { requestKey: randomUUID(), configurationVersion: preview.data.configurationVersion ?? "0".repeat(64), ...payload }
+    }
+    if (method !== "GET" && /\/contact-services\/[^/]+\/payments(?:\/[^/]+)?$/.test(path)) {
+      const id = path.split("/contact-services/")[1].split("/")[0]
+      const account = await db.contactService.findFirst({ where: { tenantId, id }, select: { financialRevision: true } })
+      body = { requestKey: randomUUID(), expectedRevision: account?.financialRevision ?? 0,
+        ...(method !== "POST" ? { reason: "Correcting the test receipt" } : {}), ...(body as Record<string, unknown> ?? {}) }
+    }
     const response = await fetch(`${base}${path}`, {
       method,
       headers: { Cookie: `sid=${token}`, "Content-Type": "application/json" },
@@ -620,8 +637,8 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       serviceId: child.id,
       initialPaymentCents: 2000,
     })
-    assert.equal(invalid.data.error, "PAYMENT_BELOW_MINIMUM")
-    assert.equal(await db.contactService.count({ where: { tenantId } }), 2)
+    assert.equal(invalid.status, 201, JSON.stringify(invalid.data))
+    assert.equal(await db.contactService.count({ where: { tenantId } }), 3)
   })
 
   test("service-owned steps save by stable ID, archive removals, inherit, copy, and restore", async () => {
@@ -4578,11 +4595,15 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const paymentPath = `/api/services/${tenantId}/contact-services/${fixture.id}/payments`
     const created = await request(paymentPath, "POST", { amountCents: 2000, paidAt: "2026-10-01T12:00:00.000Z", paymentMethod: "CASH", note: "First" })
     assert.equal(created.status, 201, JSON.stringify(created.data))
-    const id = created.data.payment.id
+    let id = created.data.payment.id
     const before = await db.contactServicePayment.findUniqueOrThrow({ where: { id } })
     assert.equal((await request(`${paymentPath}/${id}`, "PATCH", { amountCents: 2000, paidAt: "2026-10-01T12:00:00.000Z", paymentMethod: "CASH", note: "  First  " })).status, 200)
     assert.equal((await db.contactServicePayment.findUniqueOrThrow({ where: { id } })).updatedAt.getTime(), before.updatedAt.getTime())
-    for (const patch of [{ note: "Revised" }, { paymentMethod: "CARD" }, { paidAt: "2026-10-02T12:00:00.000Z" }, { amountCents: 3000 }]) assert.equal((await request(`${paymentPath}/${id}`, "PATCH", patch)).status, 200)
+    for (const patch of [{ note: "Revised" }, { paymentMethod: "CARD" }, { paidAt: "2026-10-02T12:00:00.000Z" }, { amountCents: 3000 }]) {
+      const corrected = await request(`${paymentPath}/${id}`, "PATCH", patch)
+      assert.equal(corrected.status, 200, JSON.stringify(corrected.data))
+      id = corrected.data.payment.id
+    }
     const events = await serviceEvents(fixture.id, "SERVICE_PAYMENT_CHANGED")
     assert.equal(events.length, 5)
     assert.ok(events.every(event => event.status === "COMPLETED" && !event.dispatches.length))
@@ -4592,8 +4613,9 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal((removed.serviceEventSnapshot as any).previous.amountCents, 3000)
     assert.equal((removed.serviceEventSnapshot as any).next, null)
     const competing = await Promise.all([request(paymentPath, "POST", { amountCents: 7000 }), request(paymentPath, "POST", { amountCents: 7000 })])
-    assert.deepEqual(competing.map(result => result.status).sort(), [201, 400])
-    assert.equal((await db.contactServicePayment.aggregate({ where: { contactServiceId: fixture.id }, _sum: { amountCents: true } }))._sum.amountCents, 7000)
+    assert.equal(competing.filter(result => result.status === 201).length, 1)
+    assert.ok(competing.some(result => result.status === 400 || result.status === 409))
+    assert.equal((await db.contactServicePayment.aggregate({ where: { contactServiceId: fixture.id, voidedAt: null }, _sum: { amountCents: true } }))._sum.amountCents, 7000)
     const revisions = (await serviceEvents(fixture.id)).map(event => (event.serviceEventSnapshot as any)?.revision).filter(Boolean)
     assert.equal(new Set(revisions).size, revisions.length)
   })
@@ -4641,9 +4663,9 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.deepEqual((await serviceEvents(fixture.id, "SERVICE_STATUS_CHANGED")).map(event => (event.serviceEventSnapshot as any).next.status), ["PENDING_PAYMENT", "COMPLETED", "PENDING_PAYMENT"])
     const { mutateServicePaymentTx } = await import("./service-payment-mutations.js")
     const beforeCount = (await serviceEvents(fixture.id)).length
-    await assert.rejects(db.$transaction(async tx => { await mutateServicePaymentTx(tx, { tenantId, contactServiceId: fixture.id, operation: "ADDED", actorUserId: userId, payload: { amountCents: 10000 } }); throw new Error("Rollback test") }))
+    await assert.rejects(db.$transaction(async tx => { await mutateServicePaymentTx(tx, { tenantId, contactServiceId: fixture.id, operation: "ADDED", actorUserId: userId, requestKey: randomUUID(), expectedRevision: (await tx.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).financialRevision, payload: { amountCents: 10000 } }); throw new Error("Rollback test") }))
     assert.equal((await serviceEvents(fixture.id)).length, beforeCount)
-    assert.equal(await db.contactServicePayment.count({ where: { contactServiceId: fixture.id } }), 0)
+    assert.equal(await db.contactServicePayment.count({ where: { contactServiceId: fixture.id, voidedAt: null } }), 0)
     const other = await fixture.enroll()
     assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}`, "PATCH", { status: "CANCELED" })).status, 200)
     assert.equal((await request(`/api/services/${tenantId}/contact-services/${other.id}/payments`, "POST", { amountCents: 10000 })).status, 201)
@@ -4992,4 +5014,163 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       await pool.end()
     }
   })
+
+  async function billingFixture(initialPaymentCents = 20000) {
+    const fixture = await completionFixture()
+    const paymentSettings = { schemaVersion: 1, enabledTypes: ["SINGLE_PAYMENT", "INSTALLMENTS", "FLEXIBLE"], defaultType: "INSTALLMENTS", suggestedDepositCents: 20000, installmentCount: 4, installmentFrequency: "MONTHLY" }
+    const configured = await request(`${settingsPath()}/${parentId}`, "PATCH", { basePriceCents: 100000, paymentSettings })
+    assert.equal(configured.status, 200, JSON.stringify(configured.data))
+    const body = { contactId: fixture.contact.id, serviceId: fixture.child.data.service.id, initialPaymentCents, initialPaymentMethod: "CASH", paymentTerms: { type: "INSTALLMENTS", installmentCount: 4, firstDueDate: "2027-01-31" } }
+    const created = await request(`/api/services/${tenantId}/contact-services`, "POST", body)
+    assert.equal(created.status, 201, JSON.stringify(created.data))
+    const id = created.data.contactService.id as string
+    const path = `/api/services/${tenantId}/contact-services/${id}`
+    return { ...fixture, id, path, body, paymentSettings, billing: async () => (await request(`${path}/billing`)).data }
+  }
+
+  test("billing saves an inherited account and split receipts settle one installment", async () => {
+    const fixture = await billingFixture()
+    const before = await fixture.billing()
+    assert.equal(before.summary.paidCents, 20000)
+    assert.deepEqual(before.summary.schedule.map((due: any) => due.amountCents), [20000, 20000, 20000, 20000, 20000])
+    assert.deepEqual(before.summary.schedule.slice(1).map((due: any) => due.dueDate), ["2027-01-31", "2027-02-28", "2027-03-31", "2027-04-30"])
+    for (const amountCents of [7500, 12500]) assert.equal((await request(`${fixture.path}/payments`, "POST", { amountCents })).status, 201)
+    const after = await fixture.billing()
+    assert.equal(after.summary.paidCents, 40000)
+    assert.equal(after.summary.remainingCents, 60000)
+    assert.equal(after.summary.nextDueDate, "2027-02-28")
+    assert.deepEqual(after.summary.schedule.map((due: any) => due.dueDate), before.summary.schedule.map((due: any) => due.dueDate))
+    assert.equal((await db.contactService.findUniqueOrThrow({ where: { id: fixture.id } })).paidCents, 40000)
+  })
+
+  test("billing idempotency returns the original receipt and rejects conflicting reuse", async () => {
+    const fixture = await billingFixture(0)
+    const command = { requestKey: randomUUID(), expectedRevision: 1, amountCents: 7500 }
+    const responses = await Promise.all([request(`${fixture.path}/payments`, "POST", command), request(`${fixture.path}/payments`, "POST", command)])
+    assert.deepEqual(responses.map(response => response.status), [201, 201])
+    assert.equal(responses[0].data.payment.id, responses[1].data.payment.id)
+    assert.equal((await fixture.billing()).summary.paidCents, 7500)
+    assert.equal(await db.contactServiceFinancialChange.count({ where: { tenantId, contactServiceId: fixture.id, kind: "PAYMENT_ADDED" } }), 1)
+    const reused = await request(`${fixture.path}/payments`, "POST", { ...command, amountCents: 5000 })
+    assert.equal(reused.status, 409)
+    assert.equal(reused.data.error, "IDEMPOTENCY_KEY_REUSED")
+  })
+
+  test("billing rejects stale concurrent writes before a second receipt can be recorded", async () => {
+    const fixture = await billingFixture(0)
+    const writes = await Promise.all([1, 2].map(() => request(`${fixture.path}/payments`, "POST", { requestKey: randomUUID(), expectedRevision: 1, amountCents: 60000 })))
+    assert.deepEqual(writes.map(response => response.status).sort(), [201, 409])
+    assert.equal((await fixture.billing()).summary.remainingCents, 40000)
+    const overpaid = await request(`${fixture.path}/payments`, "POST", { amountCents: 40001 })
+    assert.equal(overpaid.status, 400)
+    assert.equal(overpaid.data.error, "PAYMENT_EXCEEDS_SERVICE_TOTAL")
+  })
+
+  test("billing corrects receipts predating a revision without changing the original total", async () => {
+    const fixture = await billingFixture()
+    const receipt = await request(`${fixture.path}/payments`, "POST", { amountCents: 15000, paymentMethod: "CASH", note: "Original receipt" })
+    const original = await db.contactServicePayment.findUniqueOrThrow({ where: { id: receipt.data.payment.id } })
+    const revised = await request(`${fixture.path}/billing-plan`, "PATCH", { requestKey: randomUUID(), expectedRevision: 2, reason: "Customer needs more time", paymentTerms: { type: "INSTALLMENTS", installmentCount: 2, firstDueDate: "2027-06-15" } })
+    assert.equal(revised.status, 200, JSON.stringify(revised.data))
+    assert.deepEqual(revised.data.summary.schedule.map((due: any) => due.amountCents), [20000, 15000, 32500, 32500])
+    const correction = await request(`${fixture.path}/payments/${original.id}`, "PATCH", { amountCents: 5000, reason: "Receipt amount was entered incorrectly" })
+    assert.equal(correction.status, 200, JSON.stringify(correction.data))
+    assert.notEqual(correction.data.payment.id, original.id)
+    assert.equal(correction.data.payment.replacesPaymentId, original.id)
+    const preserved = await db.contactServicePayment.findUniqueOrThrow({ where: { id: original.id } })
+    assert.equal(preserved.amountCents, 15000)
+    assert.equal(preserved.note, "Original receipt")
+    assert.ok(preserved.voidedAt)
+    const after = await fixture.billing()
+    assert.equal(after.summary.totalPriceCents, 100000)
+    assert.equal(after.summary.paidCents, 25000)
+    assert.equal(after.summary.remainingCents, 75000)
+    assert.deepEqual(after.summary.schedule.map((due: any) => due.remainingCents), [0, 10000, 32500, 32500])
+    assert.equal(after.changes.find((change: any) => change.kind === "PLAN_REVISED").previous.schedule.length, 5)
+    assert.ok(after.payments.some((payment: any) => payment.id === original.id && payment.voidedAt))
+  })
+
+  test("billing voids mistaken entries with a reason, preserves receipts, and prevents deleting their account", async () => {
+    const fixture = await billingFixture(0)
+    const receipt = await request(`${fixture.path}/payments`, "POST", { amountCents: 10000 })
+    const command = { requestKey: randomUUID(), expectedRevision: 2, reason: "Duplicate paper receipt" }
+    const first = await request(`${fixture.path}/payments/${receipt.data.payment.id}`, "DELETE", command)
+    const retry = await request(`${fixture.path}/payments/${receipt.data.payment.id}`, "DELETE", command)
+    assert.equal(first.status, 200)
+    assert.deepEqual(first.data, retry.data)
+    const after = await fixture.billing()
+    assert.equal(after.summary.paidCents, 0)
+    assert.equal(after.payments.length, 1)
+    assert.ok(after.payments[0].voidedAt)
+    assert.equal(after.changes.filter((change: any) => change.kind === "PAYMENT_REMOVED").length, 1)
+    assert.equal((await request(fixture.path, "DELETE")).status, 409)
+  })
+
+  test("billing enforces payment and revision permissions and tenant isolation", async () => {
+    const fixture = await billingFixture(0)
+    await db.membership.update({ where: { userId_tenantId: { userId, tenantId } }, data: { role: "TENANT_USER", securityLevel: "MEDIUM" } })
+    assert.equal((await request(`${fixture.path}/payments`, "POST", { amountCents: 1 })).status, 201)
+    assert.equal((await request(`${fixture.path}/billing-plan`, "PATCH", { requestKey: randomUUID(), expectedRevision: 2, reason: "Change terms", paymentTerms: { type: "FLEXIBLE" } })).status, 403)
+    await db.membership.update({ where: { userId_tenantId: { userId, tenantId } }, data: { securityLevel: "LOW" } })
+    assert.equal((await fixture.billing()).permissions.canRecord, false)
+    assert.equal((await request(`${fixture.path}/payments`, "POST", { amountCents: 1 })).status, 403)
+    await db.membership.update({ where: { userId_tenantId: { userId, tenantId } }, data: { role: "TENANT_ADMIN" } })
+    assert.equal((await fixture.billing()).permissions.canRecord, true)
+    const foreign = await db.tenant.create({ data: { name: "Other agency", slug: randomUUID() } })
+    try {
+      assert.equal((await request(`/api/services/${foreign.id}/contact-services/${fixture.id}/billing`)).status, 403)
+      await db.membership.create({ data: { tenantId: foreign.id, userId, role: "TENANT_ADMIN" } })
+      assert.equal((await request(`/api/services/${foreign.id}/contact-services/${fixture.id}/billing`)).status, 404)
+    } finally { await db.tenant.delete({ where: { id: foreign.id } }) }
+  })
+
+  test("billing preserves legacy balances until an admin confirms a schedule", async () => {
+    const fixture = await billingFixture()
+    await db.contactServicePaymentDue.deleteMany({ where: { tenantId, contactServiceId: fixture.id } })
+    await db.contactService.update({ where: { id: fixture.id }, data: { paymentType: null, paymentPlan: Prisma.DbNull } })
+    const before = await fixture.billing()
+    assert.equal(before.summary.scheduleNeedsReview, true)
+    assert.equal(before.summary.nextDueDate, null)
+    assert.equal(before.summary.overdueCents, 0)
+    assert.equal((await request(`${fixture.path}/payments`, "POST", { amountCents: 100 })).status, 201)
+    const reviewed = await request(`${fixture.path}/billing-plan`, "PATCH", { requestKey: randomUUID(), expectedRevision: 2, reason: "Confirmed the customer's arrangement", paymentTerms: { type: "FLEXIBLE" } })
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.data))
+    assert.equal(reviewed.data.summary.scheduleNeedsReview, false)
+    assert.equal(reviewed.data.summary.paidCents, 20100)
+    assert.equal(reviewed.data.summary.remainingCents, 79900)
+    assert.equal(reviewed.data.summary.nextDueDate, null)
+  })
+
+  test("billing enrollment retries create one account and stale previews cannot change the agreed price", async () => {
+    const fixture = await billingFixture(0)
+    const preview = await request(`/api/services/${tenantId}/billing-preview`, "POST", { serviceId: fixture.body.serviceId, initialPaymentCents: 0 })
+    const body = { contactId: fixture.body.contactId, serviceId: fixture.body.serviceId, initialPaymentCents: 0, configurationVersion: preview.data.configurationVersion, requestKey: randomUUID() }
+    const results = await Promise.all([request(`/api/services/${tenantId}/contact-services`, "POST", body), request(`/api/services/${tenantId}/contact-services`, "POST", body)])
+    assert.equal(results[0].status, 201)
+    assert.equal(results[1].status, 201)
+    assert.equal(results[0].data.contactService.id, results[1].data.contactService.id)
+    await request(`${settingsPath()}/${parentId}`, "PATCH", { basePriceCents: 120000 })
+    const stale = await request(`/api/services/${tenantId}/contact-services`, "POST", { ...body, requestKey: randomUUID() })
+    assert.equal(stale.status, 409)
+    assert.equal(stale.data.error, "BILLING_CONFIGURATION_CHANGED")
+    assert.equal((await fixture.billing()).summary.totalPriceCents, 100000)
+  })
+
+  test("billing register filters use real obligations, account balances, and review state", async () => {
+    const fixture = await billingFixture(0)
+    const before = await fixture.billing()
+    const due = await request(`${fixture.path}/billing-plan`, "PATCH", { requestKey: randomUUID(), expectedRevision: 1, reason: "Confirmed due date", paymentTerms: { type: "SINGLE_PAYMENT", firstDueDate: before.summary.today } })
+    assert.equal(due.status, 200)
+    const matching = async (filter: string) => (await request(`/api/services/${tenantId}/transactions?paymentFilter=${filter}`)).data.items.some((item: any) => item.id === fixture.id)
+    assert.equal(await matching("DUE_TODAY"), true)
+    assert.equal(await matching("BALANCE_DUE"), true)
+    assert.equal(await matching("OVERDUE"), false)
+    assert.equal((await request(`${fixture.path}/payments`, "POST", { amountCents: 100000 })).status, 201)
+    assert.equal(await matching("PAID"), true)
+    assert.equal(await matching("DUE_TODAY"), false)
+    const original = await request(`${fixture.path}/billing`)
+    assert.equal(original.data.summary.workState, "IN_PROGRESS")
+    assert.equal(original.data.summary.paymentState, "PAID")
+  })
+
 })

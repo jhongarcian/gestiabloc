@@ -755,6 +755,12 @@ enum ServiceKind {
   OFFERING
 }
 
+enum ServicePaymentType {
+  SINGLE_PAYMENT
+  INSTALLMENTS
+  FLEXIBLE
+}
+
 enum ServiceSectionMode {
   INHERIT
   CUSTOM
@@ -799,6 +805,7 @@ model Service {
   minimumPartialPaymentCents Int?
   installmentCount           Int?
   installmentFrequency       InstallmentFrequency?
+  paymentSettings            Json?
   isActive                   Boolean               @default(true)
   sortOrder                  Int                   @default(0)
 
@@ -911,6 +918,8 @@ model ContactService {
   completedAt               DateTime?
   canceledAt                DateTime?
   totalPriceCents           Int
+  // Transactionally maintained projection for payment-register filters.
+  paidCents                 Int                  @default(0)
   billingSnapshot           Json?
   configurationSnapshot     Json?
   assignedProfessionalSnapshot Json?
@@ -919,6 +928,11 @@ model ContactService {
   workflowKind              ServiceWorkflowKind @default(LEGACY_TEMPLATE)
   currency                  String               @default("USD")
   allowPartialPayments      Boolean              @default(false)
+  paymentType               ServicePaymentType?
+  paymentPlan               Json?
+  financialRevision         Int                  @default(0)
+  paymentDues               ContactServicePaymentDue[]
+  financialChanges          ContactServiceFinancialChange[]
   notes                     String?
 
   tenant                  Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -1139,6 +1153,10 @@ model ContactServicePayment {
   paymentMethod    String?
   note             String?
   recordedById     String?
+  voidedAt         DateTime?
+  voidedById       String?
+  voidReason       String?
+  replacesPaymentId String?
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -1149,6 +1167,46 @@ model ContactServicePayment {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, paidAt])
+  @@index([tenantId, contactServiceId, voidedAt])
+}
+
+// Current obligations. Previous schedules are preserved in immutable financial changes.
+model ContactServicePaymentDue {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  label            String
+  amountCents      Int
+  paidCents        Int      @default(0)
+  remainingCents   Int
+  dueDate          DateTime? @db.Date
+  sortOrder        Int
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, dueDate, remainingCents])
+}
+
+model ContactServiceFinancialChange {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  requestKey       String
+  requestHash      String
+  kind             String
+  revision         Int
+  actorUserId      String
+  reason           String?
+  previous         Json?
+  next             Json?
+  result           Json
+  createdAt        DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, requestKey])
+  @@unique([tenantId, contactServiceId, revision], map: "CSFinancialChange_account_revision_key")
+  @@index([tenantId, contactServiceId, createdAt], map: "CSFinancialChange_account_created_idx")
 }
 
 model ContactServiceFollowUpStep {

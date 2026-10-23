@@ -4382,14 +4382,20 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/transactions:
     get:
-      tags: [Services]
+      tags:
+        - Services
       summary: List sold service transactions
       description: Returns tenant-scoped sold services with collected and remaining payment amounts. Financial summaries exclude canceled transactions and are grouped by currency.
       security:
         - cookieAuth: []
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
-        - { in: query, name: serviceGroupId, description: Parent service scope; intersects serviceId when both are supplied., schema: { type: string, format: uuid } }
+        - in: query
+          name: serviceGroupId
+          description: Parent service scope; intersects serviceId when both are supplied.
+          schema:
+            type: string
+            format: uuid
         - in: query
           name: page
           schema:
@@ -4400,7 +4406,9 @@ paths:
           name: pageSize
           schema:
             type: integer
-            enum: [10, 25]
+            enum:
+              - 10
+              - 25
             default: 10
         - in: query
           name: search
@@ -4412,7 +4420,12 @@ paths:
           name: sort
           schema:
             type: string
-            enum: [PURCHASED_DESC, PURCHASED_ASC, CONTACT_ASC, SERVICE_ASC, TOTAL_DESC]
+            enum:
+              - PURCHASED_DESC
+              - PURCHASED_ASC
+              - CONTACT_ASC
+              - SERVICE_ASC
+              - TOTAL_DESC
             default: PURCHASED_DESC
         - in: query
           name: serviceId
@@ -4422,7 +4435,11 @@ paths:
           name: status
           schema:
             type: string
-            enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED]
+            enum:
+              - IN_PROGRESS
+              - PENDING_PAYMENT
+              - COMPLETED
+              - CANCELED
         - in: query
           name: rangePreset
           schema:
@@ -4432,13 +4449,25 @@ paths:
           description: Required with a custom range; interpreted in the tenant timezone.
           schema:
             type: string
-            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
         - in: query
           name: to
           description: Required with a custom range; interpreted in the tenant timezone.
           schema:
             type: string
-            pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+            pattern: ^[0-9]{4}-[0-9]{2}-[0-9]{2}$
+        - in: query
+          name: paymentFilter
+          schema:
+            type: string
+            enum:
+              - ALL
+              - BALANCE_DUE
+              - DUE_TODAY
+              - OVERDUE
+              - PAID
+              - NEEDS_REVIEW
+            default: ALL
       responses:
         "200":
           description: Service transactions returned
@@ -4608,7 +4637,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services:
     get:
-      tags: [Services]
+      tags:
+        - Services
       summary: List contact service processes
       security:
         - cookieAuth: []
@@ -4626,7 +4656,9 @@ paths:
           required: false
           schema:
             type: integer
-            enum: [10, 25]
+            enum:
+              - 10
+              - 25
             default: 10
         - in: query
           name: contactId
@@ -4638,7 +4670,11 @@ paths:
           required: false
           schema:
             type: string
-            enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
+            enum:
+              - PENDING
+              - IN_PROGRESS
+              - COMPLETED
+              - CANCELED
       responses:
         "200":
           description: Contact service processes returned
@@ -4659,7 +4695,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
     post:
-      tags: [Services]
+      tags:
+        - Services
       summary: Enroll a contact into a configured sub-service
       description: Enrolls an active offering under an active parent. Resolves billing, checklist, professionals, and steps transactionally. Captures configuration and attribution snapshots. All new enrollments require configured service steps and create independent saved step definitions plus the first occurrence with a deadline measured from actual entry. Requests selecting a template or containing unknown fields are rejected. Stores an immutable billing snapshot including price, currency, tax policy, deposit, and installment terms. Later parent or child billing edits never recalculate this purchase or its payment requirements.
       security:
@@ -4693,6 +4730,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "403":
           description: User is not an active member of the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
           content:
             application/json:
               schema:
@@ -5604,7 +5647,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/payments:
     post:
-      tags: [Services]
+      tags:
+        - Services
       summary: Record payment for a contact service process
       security:
         - cookieAuth: []
@@ -5652,10 +5696,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/services/{tenantId}/contact-services/{contactServiceId}/payments/{paymentId}:
     patch:
-      tags: [Services]
-      summary: Update a payment for a contact service process
+      tags:
+        - Services
+      summary: Correct a receipt while preserving the original
       security:
         - cookieAuth: []
       parameters:
@@ -5707,9 +5758,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     delete:
-      tags: [Services]
-      summary: Delete a payment from a contact service process
+      tags:
+        - Services
+      summary: Void a mistaken receipt while preserving history
       security:
         - cookieAuth: []
       parameters:
@@ -5726,7 +5784,7 @@ paths:
             type: string
       responses:
         "200":
-          description: Payment deleted
+          description: Receipt voided; no money is refunded
           content:
             application/json:
               schema:
@@ -5749,6 +5807,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VoidServicePaymentRequest"
   /api/services/{tenantId}/contact-services/{contactServiceId}/follow-up-steps:
     post:
       tags: [Services]
@@ -6487,6 +6557,180 @@ paths:
           description: Onboarding state updated
         "400":
           description: Invalid state action or step
+  /api/services/{tenantId}/billing-preview:
+    post:
+      tags:
+        - Services
+      summary: Preview server-calculated service price and payment schedule
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ServiceBillingPreviewRequest"
+      responses:
+        "200":
+          description: Saved-term preview; no money is collected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceBillingPreviewResponse"
+        "400":
+          description: Invalid financial request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient tenant permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Account not found in this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/billing:
+    get:
+      tags:
+        - Services
+      summary: Read a service account, saved schedule, all receipts, and audit history
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Server-derived balances and history, paged in groups of 20
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceBillingAccountResponse"
+        "400":
+          description: Invalid financial request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient tenant permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Account not found in this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /api/services/{tenantId}/contact-services/{contactServiceId}/billing-plan:
+    patch:
+      tags:
+        - Services
+      summary: Admin revises unpaid terms or confirms a legacy arrangement
+      description: Locks the account, retains paid portions, and replaces only unpaid obligations. Price, currency and receipts stay fixed. The earlier schedule, actor and required reason are preserved.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: contactServiceId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviseServicePaymentPlanRequest"
+      responses:
+        "200":
+          description: Arrangement saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  summary:
+                    $ref: "#/components/schemas/ServiceBillingSummary"
+        "400":
+          description: Invalid financial request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "403":
+          description: Insufficient tenant permissions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Account not found in this tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale revision or configuration, conflicting request key, or account is no longer eligible
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   securitySchemes:
     cookieAuth:
@@ -11520,7 +11764,9 @@ components:
     AccountSettingsServiceCreateRequest:
       description: Create GROUP with no parent or OFFERING with a same-tenant parent. Kind defaults to GROUP. Parents can define billing, checklist, and professional defaults. Only offerings are enrollable. New offerings default to INHERIT for each section; billing values supplied for an inherited section are unused. Nonempty inherited collections are rejected.
       type: object
-      required: [name, basePriceCents]
+      required:
+        - name
+        - basePriceCents
       properties:
         stepsMode:
           $ref: "#/components/schemas/ServiceSectionMode"
@@ -11565,16 +11811,21 @@ components:
         allowPartialPayments:
           type: boolean
           default: false
+          deprecated: true
         minimumPartialPaymentCents:
           type: integer
           minimum: 0
           nullable: true
+          deprecated: true
         installmentCount:
           type: integer
-          minimum: 2
+          minimum: 1
           nullable: true
+          deprecated: true
+          maximum: 120
         installmentFrequency:
           $ref: "#/components/schemas/InstallmentFrequency"
+          deprecated: true
         isActive:
           type: boolean
           default: true
@@ -11589,6 +11840,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsServiceProfessionalInput"
+        paymentSettings:
+          $ref: "#/components/schemas/ServicePaymentSettings"
     AccountSettingsServiceChecklistItemUpdateInput:
       allOf:
         - $ref: "#/components/schemas/AccountSettingsServiceChecklistItemInput"
@@ -11651,16 +11904,21 @@ components:
           type: boolean
         allowPartialPayments:
           type: boolean
+          deprecated: true
         minimumPartialPaymentCents:
           type: integer
           minimum: 0
           nullable: true
+          deprecated: true
         installmentCount:
           type: integer
-          minimum: 2
+          minimum: 1
           nullable: true
+          deprecated: true
+          maximum: 120
         installmentFrequency:
           $ref: "#/components/schemas/InstallmentFrequency"
+          deprecated: true
         isActive:
           type: boolean
         sortOrder:
@@ -11676,6 +11934,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AccountSettingsServiceProfessionalUpdateInput"
+        paymentSettings:
+          $ref: "#/components/schemas/ServicePaymentSettings"
     AccountSettingsServiceTemplateItem:
       type: object
       properties:
@@ -12070,7 +12330,17 @@ components:
           $ref: "#/components/schemas/ServiceSummaryMetrics"
     ServiceTransactionItem:
       type: object
-      required: [id, purchasedAt, status, contact, service, currency, totalPriceCents, paidCents, remainingCents, paymentState]
+      required:
+        - id
+        - purchasedAt
+        - status
+        - contact
+        - service
+        - currency
+        - totalPriceCents
+        - paidCents
+        - remainingCents
+        - paymentState
       properties:
         id:
           type: string
@@ -12079,10 +12349,16 @@ components:
           format: date-time
         status:
           type: string
-          enum: [IN_PROGRESS, PENDING_PAYMENT, COMPLETED, CANCELED]
+          enum:
+            - IN_PROGRESS
+            - PENDING_PAYMENT
+            - COMPLETED
+            - CANCELED
         contact:
           type: object
-          required: [id, displayName]
+          required:
+            - id
+            - displayName
           properties:
             id:
               type: string
@@ -12096,7 +12372,9 @@ components:
               nullable: true
         service:
           type: object
-          required: [id, name]
+          required:
+            - id
+            - name
           properties:
             id:
               type: string
@@ -12114,7 +12392,12 @@ components:
           type: integer
         paymentState:
           type: string
-          enum: [UNPAID, PARTIAL, PAID]
+          enum:
+            - UNPAID
+            - PARTIAL
+            - PAID
+        billing:
+          $ref: "#/components/schemas/ServiceBillingSummary"
     ServiceTransactionCurrencyTotals:
       type: object
       required: [currency, grossSalesCents, collectedCents, outstandingCents]
@@ -12367,15 +12650,23 @@ components:
           nullable: true
           description: Latest saved occurrence state plus bypassed steps; revisits reset the affected step.
           properties:
-            total: { type: integer }
-            completed: { type: integer }
-            remaining: { type: integer }
-            percentage: { type: integer }
+            total:
+              type: integer
+            completed:
+              type: integer
+            remaining:
+              type: integer
+            percentage:
+              type: integer
         id:
           type: string
         status:
           type: string
-          enum: [PENDING, IN_PROGRESS, COMPLETED, CANCELED]
+          enum:
+            - PENDING
+            - IN_PROGRESS
+            - COMPLETED
+            - CANCELED
         startedAt:
           type: string
           format: date-time
@@ -12459,6 +12750,8 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ContactServiceFollowUpStepItem"
+        billing:
+          $ref: "#/components/schemas/ServiceBillingSummary"
     ContactServiceNextFollowUp:
       type: object
       nullable: true
@@ -12566,6 +12859,19 @@ components:
               type: string
             name:
               type: string
+        voidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        voidedById:
+          type: string
+          nullable: true
+        voidReason:
+          type: string
+          nullable: true
+        replacesPaymentId:
+          type: string
+          nullable: true
     ContactServiceNoteItem:
       type: object
       properties:
@@ -12780,11 +13086,16 @@ components:
     CreateContactServiceRequest:
       type: object
       additionalProperties: false
-      required: [contactId, serviceId]
+      required:
+        - contactId
+        - serviceId
+        - requestKey
+        - configurationVersion
       properties:
         workflowKind:
           type: string
-          enum: [SERVICE_STEPS]
+          enum:
+            - SERVICE_STEPS
           description: Defaults to SERVICE_STEPS. Configured steps are required for all new enrollments. Template selection and unknown fields are rejected.
         contactId:
           type: string
@@ -12812,6 +13123,30 @@ components:
         initialPaymentCents:
           type: integer
           minimum: 0
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        configurationVersion:
+          type: string
+          minLength: 64
+          maxLength: 64
+          description: Version returned by billing-preview. A changed configuration returns 409 without creating the enrollment.
+        paymentTerms:
+          $ref: "#/components/schemas/ServicePaymentTerms"
+        initialPaymentMethod:
+          type: string
+          enum:
+            - CASH
+            - CARD
+            - CHECK
+            - TRANSFER
+            - ACH
+          nullable: true
+        initialPaymentNote:
+          type: string
+          maxLength: 1000
+          nullable: true
     CreateContactServiceResponse:
       type: object
       properties:
@@ -12986,8 +13321,6 @@ components:
           nullable: true
         totalPaymentsCount:
           type: integer
-        scheduledPaymentsRecordedCount:
-          type: integer
     UpdateContactServiceRequest:
       type: object
       properties:
@@ -13110,7 +13443,10 @@ components:
           description: Newly created transition event, or null when the selected status was unchanged.
     CreateContactServicePaymentRequest:
       type: object
-      required: [amountCents]
+      required:
+        - amountCents
+        - requestKey
+        - expectedRevision
       properties:
         amountCents:
           type: integer
@@ -13124,6 +13460,16 @@ components:
         note:
           type: string
           nullable: true
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: Current financialRevision from the service billing summary. Stale writes return 409.
+      additionalProperties: false
+      description: Records money already received outside the CRM. Any positive amount up to the remaining balance is allowed.
     UpdateContactServicePaymentRequest:
       type: object
       properties:
@@ -13139,6 +13485,24 @@ components:
         note:
           type: string
           nullable: true
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: Current financialRevision from the service billing summary. Stale writes return 409.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+      additionalProperties: false
+      required:
+        - requestKey
+        - expectedRevision
+        - reason
+      description: Atomically voids the original receipt and creates a replacement. The response can contain a different payment ID. An unchanged review preserves the existing receipt.
     CreateContactServicePaymentResponse:
       type: object
       properties:
@@ -13146,33 +13510,9 @@ components:
           type: boolean
           example: true
         payment:
-          type: object
-          properties:
-            id:
-              type: string
-            amountCents:
-              type: integer
-            paidAt:
-              type: string
-              format: date-time
-            paymentMethod:
-              type: string
-              nullable: true
-            note:
-              type: string
-              nullable: true
-            recordedById:
-              type: string
-              nullable: true
+          $ref: "#/components/schemas/ContactServicePaymentItem"
         summary:
-          type: object
-          properties:
-            totalPriceCents:
-              type: integer
-            paidCents:
-              type: integer
-            remainingCents:
-              type: integer
+          $ref: "#/components/schemas/ServiceBillingSummary"
     CreateContactServiceNoteRequest:
       type: object
       required: [title, body]
@@ -13213,20 +13553,7 @@ components:
         note:
           $ref: "#/components/schemas/PaginatedContactServiceNoteItem"
     DeleteContactServicePaymentResponse:
-      type: object
-      properties:
-        ok:
-          type: boolean
-          example: true
-        summary:
-          type: object
-          properties:
-            totalPriceCents:
-              type: integer
-            paidCents:
-              type: integer
-            remainingCents:
-              type: integer
+      $ref: "#/components/schemas/CreateContactServicePaymentResponse"
     CreateContactServiceFollowUpStepRequest:
       type: object
       additionalProperties: false
@@ -14015,3 +14342,349 @@ components:
           example: APPOINTMENT_TIME_UNAVAILABLE
         availability:
           $ref: "#/components/schemas/CalendarAvailabilityResponse"
+    ServicePaymentType:
+      type: string
+      enum:
+        - SINGLE_PAYMENT
+        - INSTALLMENTS
+        - FLEXIBLE
+    ServicePaymentSettings:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - enabledTypes
+        - defaultType
+        - suggestedDepositCents
+        - installmentCount
+        - installmentFrequency
+      properties:
+        schemaVersion:
+          type: integer
+          enum:
+            - 1
+        enabledTypes:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          description: SINGLE_PAYMENT must remain enabled.
+          items:
+            $ref: "#/components/schemas/ServicePaymentType"
+        defaultType:
+          $ref: "#/components/schemas/ServicePaymentType"
+          description: Must be one of enabledTypes.
+        suggestedDepositCents:
+          type: integer
+          minimum: 0
+          description: Suggested only. Zero received at enrollment is always allowed.
+        installmentCount:
+          type: integer
+          minimum: 1
+          maximum: 120
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
+    ServicePaymentTerms:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+      properties:
+        type:
+          $ref: "#/components/schemas/ServicePaymentType"
+        installmentCount:
+          type: integer
+          minimum: 1
+          maximum: 120
+          description: Number of future payments after the amount received at enrollment.
+        firstDueDate:
+          type: string
+          format: date
+        monthlyAnchorDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          description: Resolved monthly day anchor from the preview. Preserves January 31 to February 28 to March 31; omit when staff choose a different first due date.
+    ServiceBillingPlan:
+      type: object
+      properties:
+        schemaVersion:
+          type: integer
+          enum: [1]
+        type:
+          $ref: "#/components/schemas/ServicePaymentType"
+        installmentCount:
+          type: integer
+          minimum: 0
+          maximum: 120
+        installmentFrequency:
+          $ref: "#/components/schemas/InstallmentFrequency"
+          nullable: true
+        firstDueDate:
+          type: string
+          format: date
+          nullable: true
+        monthlyAnchorDay:
+          type: integer
+          minimum: 1
+          maximum: 31
+          nullable: true
+    ServiceFinancialWrite:
+      type: object
+      required:
+        - requestKey
+        - expectedRevision
+      properties:
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: Current financialRevision from the service billing summary. Stale writes return 409.
+    VoidServicePaymentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - requestKey
+        - expectedRevision
+        - reason
+      properties:
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: Current financialRevision from the service billing summary. Stale writes return 409.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+    ReviseServicePaymentPlanRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - requestKey
+        - expectedRevision
+        - paymentTerms
+        - reason
+      properties:
+        requestKey:
+          type: string
+          format: uuid
+          description: Reuse the same key and identical payload when retrying a write.
+        expectedRevision:
+          type: integer
+          minimum: 0
+          description: Current financialRevision from the service billing summary. Stale writes return 409.
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        paymentTerms:
+          $ref: "#/components/schemas/ServicePaymentTerms"
+    ServiceBillingDue:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+        amountCents:
+          type: integer
+          minimum: 0
+        paidCents:
+          type: integer
+          minimum: 0
+        remainingCents:
+          type: integer
+          minimum: 0
+        dueDate:
+          type: string
+          format: date
+          nullable: true
+        sortOrder:
+          type: integer
+          minimum: 0
+        state:
+          type: string
+          enum:
+            - PAID
+            - PARTIAL
+            - SCHEDULED
+            - OVERDUE
+    ServiceBillingSummary:
+      type: object
+      properties:
+        totalPriceCents:
+          type: integer
+          minimum: 0
+        paidCents:
+          type: integer
+          minimum: 0
+        remainingCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+        financialRevision:
+          type: integer
+          minimum: 0
+        paymentType:
+          $ref: "#/components/schemas/ServicePaymentType"
+          nullable: true
+        scheduleNeedsReview:
+          type: boolean
+        paymentState:
+          type: string
+          enum:
+            - UNPAID
+            - PARTIAL
+            - PAID
+        workState:
+          type: string
+          enum:
+            - IN_PROGRESS
+            - FINISHED
+            - CANCELED
+        today:
+          type: string
+          format: date
+        timezone:
+          type: string
+        nextDueDate:
+          type: string
+          format: date
+          nullable: true
+        nextDueCents:
+          type: integer
+          minimum: 0
+        dueTodayCents:
+          type: integer
+          minimum: 0
+        overdueCents:
+          type: integer
+          minimum: 0
+        schedule:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceBillingDue"
+    ServiceBillingPreviewRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - serviceId
+      properties:
+        serviceId:
+          type: string
+          format: uuid
+        paymentTerms:
+          $ref: "#/components/schemas/ServicePaymentTerms"
+        initialPaymentCents:
+          type: integer
+          minimum: 0
+          default: 0
+        purchasedAt:
+          type: string
+          format: date-time
+          nullable: true
+    ServiceBillingPreviewResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        totalPriceCents:
+          type: integer
+          minimum: 0
+        currency:
+          type: string
+        configurationVersion:
+          type: string
+          minLength: 64
+          maxLength: 64
+        settings:
+          $ref: "#/components/schemas/ServicePaymentSettings"
+        plan:
+          $ref: "#/components/schemas/ServiceBillingPlan"
+        today:
+          type: string
+          format: date
+        permissions:
+          type: object
+          properties:
+            canRecord:
+              type: boolean
+        dues:
+          type: array
+          items:
+            $ref: "#/components/schemas/ServiceBillingDue"
+    ServiceBillingAccountResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        summary:
+          $ref: "#/components/schemas/ServiceBillingSummary"
+        plan:
+          $ref: "#/components/schemas/ServiceBillingPlan"
+          nullable: true
+        settings:
+          $ref: "#/components/schemas/ServicePaymentSettings"
+        payments:
+          type: array
+          description: Includes preserved voided and replaced receipts; do not sum all history entries to calculate the balance.
+          items:
+            $ref: "#/components/schemas/ContactServicePaymentItem"
+        changes:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              kind:
+                type: string
+              revision:
+                type: integer
+                minimum: 0
+              actorUserId:
+                type: string
+              actorName:
+                type: string
+              reason:
+                type: string
+                nullable: true
+              createdAt:
+                type: string
+                format: date-time
+              previous:
+                type: object
+                nullable: true
+                additionalProperties: true
+              next:
+                type: object
+                nullable: true
+                additionalProperties: true
+        pagination:
+          type: object
+          properties:
+            page:
+              type: integer
+              minimum: 1
+            totalPages:
+              type: integer
+              minimum: 1
+            totalPayments:
+              type: integer
+              minimum: 0
+        permissions:
+          type: object
+          properties:
+            canRecord:
+              type: boolean
+            canRevisePlan:
+              type: boolean

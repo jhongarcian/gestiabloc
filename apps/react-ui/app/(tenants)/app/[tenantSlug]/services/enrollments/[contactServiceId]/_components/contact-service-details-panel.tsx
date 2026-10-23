@@ -1,5 +1,9 @@
 "use client"
 
+import { ServicePaymentAccount } from "@/components/service-payment-account"
+import { RecordServicePaymentDialog } from "@/components/record-service-payment-dialog"
+import { billingDate, type BillingSummary } from "@/lib/service-billing"
+
 import { RetiredServiceWorkflowNotice, type RetiredServiceWorkflow } from "@/components/retired-service-workflow-notice"
 
 import { enrolledServiceStepLabel, enrolledServiceStepProgress, serviceOfferingLabel } from "@/lib/service-hierarchy"
@@ -114,16 +118,6 @@ import {
 } from "@/lib/routes"
 import { uploadPrivateFileToSignedUrl } from "@/lib/supabase-storage"
 import {
-  TRANSACTION_MONEY_INPUT_MAX_LENGTH,
-  TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
-  parseTransactionMoneyToCents,
-  sanitizePaymentEntryMode,
-  sanitizeTransactionMoneyInput,
-  sanitizeTransactionMultilineInput,
-  sanitizeTransactionPaymentMethod,
-  sanitizeTransactionPaymentNote,
-} from "@/lib/transaction-inputs"
-import {
   dateTimeDraftToUtcIso,
   formatDateTimeForDisplay,
   formatUtcIsoToDateTimeDraft,
@@ -233,6 +227,7 @@ type ServiceProfessional = {
 import { ServiceStepSnapshot, type EnrolledServiceStep } from "./service-step-snapshot"
 
 type ContactServiceDetails = {
+  billing?: BillingSummary
   retiredWorkflow?: RetiredServiceWorkflow | null
   workflowKind?: "LEGACY_TEMPLATE" | "SERVICE_STEPS" | "NONE"
   serviceSteps?: EnrolledServiceStep[]
@@ -398,7 +393,6 @@ type ContactServiceOverview = Omit<
   paymentSummary?: {
     latestPaidAt: string | null
     totalPaymentsCount: number
-    scheduledPaymentsRecordedCount: number
   }
 }
 
@@ -482,8 +476,6 @@ const currencyFormatter = (valueCents: number, currency: string) =>
   }).format((valueCents || 0) / 100)
 
 const MAX_NOTE_ATTACHMENTS = 10
-
-const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
 
 function inferContentType(file: File) {
   if (file.type) return file.type
@@ -603,14 +595,6 @@ const PAYMENT_METHOD_OPTIONS = [
   { value: "TRANSFER", label: "Transfer" },
   { value: "ACH", label: "ACH" },
 ] as const
-
-const INSTALLMENT_FREQUENCY_LABELS = {
-  WEEKLY: "Weekly",
-  BIWEEKLY: "Biweekly",
-  MONTHLY: "Monthly",
-} as const
-
-const PAYMENTS_PAGE_SIZE = 5
 const FOLLOW_UP_PAGE_SIZE = 5
 const SERVICE_NOTE_PAGE_SIZES = [10, 25, 50] as const
 const SERVICE_SECTIONS: Array<{ value: ServiceEnrollmentView; label: string }> = [
@@ -711,31 +695,6 @@ const COMPACT_DESTRUCTIVE_BUTTON_CLASS =
 const formatDateTime = (value: string | null | undefined) => {
   if (!value) return "-"
   return new Date(value).toLocaleString()
-}
-
-const formatDateOnly = (value: string | Date | null | undefined) => {
-  if (!value) return "-"
-  return new Date(value).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  })
-}
-
-const addInstallmentInterval = (
-  baseDate: Date,
-  frequency: NonNullable<ContactServiceDetails["service"]["installmentFrequency"]>,
-  occurrences: number,
-) => {
-  const nextDate = new Date(baseDate)
-  if (frequency === "MONTHLY") {
-    nextDate.setMonth(nextDate.getMonth() + occurrences)
-    return nextDate
-  }
-
-  const daysToAdd = frequency === "WEEKLY" ? 7 * occurrences : 14 * occurrences
-  nextDate.setDate(nextDate.getDate() + daysToAdd)
-  return nextDate
 }
 
 const isBeforeToday = (date: Date) => {
@@ -1150,7 +1109,7 @@ const normalizeContactServiceOverview = (
     paymentSummary: {
       latestPaidAt: details.paymentSummary?.latestPaidAt ?? null,
       totalPaymentsCount: details.paymentSummary?.totalPaymentsCount ?? 0,
-      scheduledPaymentsRecordedCount: details.paymentSummary?.scheduledPaymentsRecordedCount ?? 0,
+
     },
   }
 }
@@ -1194,19 +1153,7 @@ export function ContactServiceDetailsPanel({
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const [isPaymentOpen, setIsPaymentOpen] = useState(false)
-  const [isPaymentSaving, setIsPaymentSaving] = useState(false)
-  const [isPaymentEditOpen, setIsPaymentEditOpen] = useState(false)
-  const [isPaymentDeleting, setIsPaymentDeleting] = useState(false)
   const [isNoteSaving, setIsNoteSaving] = useState(false)
-  const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null)
-  const [paymentEntryMode, setPaymentEntryMode] = useState<"FULL" | "PARTIAL">("FULL")
-  const [paymentAmountUsd, setPaymentAmountUsd] = useState("")
-  const [paymentAmountError, setPaymentAmountError] = useState<string | null>(null)
-  const [paymentMethod, setPaymentMethod] = useState<string>("")
-  const [paymentNote, setPaymentNote] = useState("")
-  const [editPaymentAmountUsd, setEditPaymentAmountUsd] = useState("")
-  const [editPaymentMethod, setEditPaymentMethod] = useState<string>("")
-  const [editPaymentNote, setEditPaymentNote] = useState("")
   const [serviceNoteTitle, setServiceNoteTitle] = useState("")
   const [serviceNoteBody, setServiceNoteBody] = useState("")
   const [serviceNoteFieldErrors, setServiceNoteFieldErrors] = useState<{
@@ -1245,7 +1192,6 @@ export function ContactServiceDetailsPanel({
     completed: number
     total: number
   } | null>(null)
-  const [paymentPage, setPaymentPage] = useState(1)
   const [followUpFilter, setFollowUpFilter] = useState<FollowUpFilter>("ALL")
   const [followUpPage, setFollowUpPage] = useState(1)
   const [expandedStepId, setExpandedStepId] = useState<string | null>(null)
@@ -1414,7 +1360,6 @@ export function ContactServiceDetailsPanel({
     setItem(null)
     setDetailScope(null)
     setIsDetailLoadError(false)
-    setPaymentPage(1)
     setServiceNoteItems([])
     setServiceNotePagination({ page: 1, pageSize: 10, total: 0, totalPages: 1 })
     setServiceNotePage(1)
@@ -1474,21 +1419,6 @@ export function ContactServiceDetailsPanel({
     if (activeView !== "notes") return
     void loadServiceNotes()
   }, [activeView, loadServiceNotes])
-
-  const resetPaymentForm = () => {
-    setPaymentEntryMode("FULL")
-    setPaymentAmountUsd("")
-    setPaymentAmountError(null)
-    setPaymentMethod("")
-    setPaymentNote("")
-  }
-
-  const resetEditPaymentForm = () => {
-    setEditPaymentAmountUsd("")
-    setEditPaymentMethod("")
-    setEditPaymentNote("")
-    setSelectedPaymentId(null)
-  }
 
   const resetNoteForm = () => {
     setServiceNoteDialogMode("create")
@@ -1606,76 +1536,6 @@ export function ContactServiceDetailsPanel({
     }
   }
 
-  const onAddPayment = async () => {
-    if (!canManageSensitiveServiceActions) {
-      toast.error("You do not have permission to record payments.")
-      return
-    }
-    if (!item) return
-    if (paymentEntryMode === "PARTIAL" && !item.allowPartialPayments) {
-      setPaymentAmountError("Partial payments are not available for this service.")
-      toast.error("This service does not allow partial payments.")
-      return
-    }
-
-    const amountCents =
-      paymentEntryMode === "FULL"
-        ? item.remainingCents
-        : parseTransactionMoneyToCents(paymentAmountUsd)
-    if (amountCents === null || amountCents <= 0) {
-      setPaymentAmountError("Enter an amount greater than zero.")
-      return
-    }
-    if (amountCents > item.remainingCents) {
-      setPaymentAmountError(
-        `Enter an amount no greater than ${currencyFormatter(item.remainingCents, item.currency)}.`,
-      )
-      return
-    }
-    if (
-      amountCents < item.remainingCents &&
-      item.service.minimumPartialPaymentCents !== null &&
-      amountCents < item.service.minimumPartialPaymentCents
-    ) {
-      setPaymentAmountError(
-        `Enter at least ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)} or pay the remaining balance in full.`,
-      )
-      return
-    }
-
-    const sanitizedPaymentMethod = sanitizeTransactionPaymentMethod(paymentMethod)
-    const sanitizedPaymentNote = sanitizeTransactionPaymentNote(paymentNote)
-
-    setPaymentAmountError(null)
-    setIsPaymentSaving(true)
-    try {
-      await api.post(`/api/services/${encodedTenantId}/contact-services/${item.id}/payments`, {
-        amountCents,
-        ...(sanitizedPaymentMethod ? { paymentMethod: sanitizedPaymentMethod } : {}),
-        ...(sanitizedPaymentNote ? { note: sanitizedPaymentNote } : {}),
-      })
-      toast.success("Payment recorded.")
-      setIsPaymentOpen(false)
-      resetPaymentForm()
-      setPaymentPage(1)
-      await refreshData(true)
-      router.refresh()
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not record payment.",
-        )
-      } else {
-        toast.error("Could not record payment.")
-      }
-    } finally {
-      setIsPaymentSaving(false)
-    }
-  }
-
   const onDeleteService = async () => {
     if (!canManageSensitiveServiceActions) {
       toast.error("You do not have permission to delete this service.")
@@ -1709,120 +1569,6 @@ export function ContactServiceDetailsPanel({
       }
     } finally {
       setIsDeleting(false)
-    }
-  }
-
-  const openEditPayment = (payment: ContactServiceDetails["payments"][number]) => {
-    setSelectedPaymentId(payment.id)
-    setEditPaymentAmountUsd(centsToUsdInput(payment.amountCents))
-    setEditPaymentMethod(sanitizeTransactionPaymentMethod(payment.paymentMethod))
-    setEditPaymentNote(
-      sanitizeTransactionMultilineInput(
-        payment.note ?? "",
-        TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
-      ),
-    )
-    setIsPaymentEditOpen(true)
-  }
-
-  const onUpdatePayment = async () => {
-    if (!item || !selectedPaymentId) return
-    const amountCents = parseTransactionMoneyToCents(editPaymentAmountUsd)
-    if (amountCents === null || amountCents <= 0) {
-      toast.error(`Enter a valid payment amount in ${item.currency}.`)
-      return
-    }
-
-    const selectedPayment = item.payments.find(
-      (payment) => payment.id === selectedPaymentId,
-    )
-    if (!selectedPayment) {
-      toast.error("This payment is no longer available. Refresh and try again.")
-      return
-    }
-
-    const maximumPaymentCents =
-      item.totalPriceCents - (item.paidCents - selectedPayment.amountCents)
-    if (amountCents > maximumPaymentCents) {
-      toast.error(
-        `Enter an amount no greater than ${currencyFormatter(maximumPaymentCents, item.currency)}.`,
-      )
-      return
-    }
-
-    if (amountCents < maximumPaymentCents && !item.allowPartialPayments) {
-      toast.error("This service does not allow partial payments.")
-      return
-    }
-
-    if (
-      amountCents < maximumPaymentCents &&
-      item.service.minimumPartialPaymentCents !== null &&
-      amountCents < item.service.minimumPartialPaymentCents
-    ) {
-      toast.error(
-        `Enter at least ${currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)} or pay the remaining balance in full.`,
-      )
-      return
-    }
-
-    setIsPaymentSaving(true)
-    try {
-      await api.patch(
-        `/api/services/${encodedTenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
-        {
-          amountCents,
-          paymentMethod: sanitizeTransactionPaymentMethod(editPaymentMethod) || null,
-          note: sanitizeTransactionPaymentNote(editPaymentNote) || null,
-        },
-      )
-      toast.success("Payment updated.")
-      setIsPaymentEditOpen(false)
-      resetEditPaymentForm()
-      await refreshData(true)
-      router.refresh()
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not update payment.",
-        )
-      } else {
-        toast.error("Could not update payment.")
-      }
-    } finally {
-      setIsPaymentSaving(false)
-    }
-  }
-
-  const onDeletePayment = async () => {
-    if (!item || !selectedPaymentId) return
-
-    setIsPaymentDeleting(true)
-    try {
-      await api.delete(
-        `/api/services/${encodedTenantId}/contact-services/${item.id}/payments/${selectedPaymentId}`,
-      )
-      toast.success("Payment deleted.")
-      setIsPaymentEditOpen(false)
-      resetEditPaymentForm()
-      await refreshData(true)
-      router.refresh()
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not delete payment.",
-        )
-      } else {
-        toast.error("Could not delete payment.")
-      }
-    } finally {
-      setIsPaymentDeleting(false)
     }
   }
 
@@ -2179,15 +1925,6 @@ export function ContactServiceDetailsPanel({
     }
   }, [serviceBreadcrumbLabel])
   const payments = useMemo(() => item?.payments ?? [], [item?.payments])
-  const paymentPageCount = Math.max(1, Math.ceil(payments.length / PAYMENTS_PAGE_SIZE))
-  const safePaymentPage = Math.min(paymentPage, paymentPageCount)
-  const visiblePayments = useMemo(
-    () => {
-      const startIndex = (safePaymentPage - 1) * PAYMENTS_PAGE_SIZE
-      return payments.slice(startIndex, startIndex + PAYMENTS_PAGE_SIZE)
-    },
-    [payments, safePaymentPage],
-  )
   const checklistItems = useMemo(
     () => item?.checklistItems ?? overview?.checklistItems ?? [],
     [item?.checklistItems, overview?.checklistItems],
@@ -2283,9 +2020,6 @@ export function ContactServiceDetailsPanel({
     return filteredFollowUpSteps.slice(startIndex, startIndex + FOLLOW_UP_PAGE_SIZE)
   }, [filteredFollowUpSteps, safeFollowUpPage])
 
-  useEffect(() => {
-    setPaymentPage((current) => Math.min(current, paymentPageCount))
-  }, [paymentPageCount])
 
   useEffect(() => {
     setFollowUpPage(1)
@@ -2308,51 +2042,8 @@ export function ContactServiceDetailsPanel({
   const paymentCollectionPercentage = serviceData?.totalPriceCents
     ? Math.min(100, Math.round((serviceData.paidCents / serviceData.totalPriceCents) * 100))
     : 0
-  const completedScheduledPaymentsCount = useMemo(() => {
-    if (item) {
-      return payments.filter((payment) => payment.note?.trim().toLowerCase() !== "initial payment").length
-    }
-    return overview?.paymentSummary?.scheduledPaymentsRecordedCount ?? 0
-  }, [item, overview?.paymentSummary?.scheduledPaymentsRecordedCount, payments])
-  const remainingScheduledInstallments = useMemo(() => {
-    if (!serviceData || serviceData.remainingCents <= 0 || !serviceData.service.installmentCount) return 0
-    return Math.max(serviceData.service.installmentCount - completedScheduledPaymentsCount, 1)
-  }, [completedScheduledPaymentsCount, serviceData])
-  const suggestedInstallmentPaymentCents = useMemo(() => {
-    if (!serviceData || serviceData.remainingCents <= 0 || remainingScheduledInstallments <= 0) return null
-    return Math.ceil(serviceData.remainingCents / remainingScheduledInstallments)
-  }, [remainingScheduledInstallments, serviceData])
-  const nextScheduledPaymentDate = useMemo(() => {
-    if (
-      !serviceData?.purchasedAt ||
-      serviceData.remainingCents <= 0 ||
-      !serviceData.service.installmentCount ||
-      !serviceData.service.installmentFrequency
-    ) {
-      return null
-    }
-
-    return addInstallmentInterval(
-      new Date(serviceData.purchasedAt),
-      serviceData.service.installmentFrequency,
-      completedScheduledPaymentsCount + 1,
-    )
-  }, [completedScheduledPaymentsCount, serviceData])
-  const nextScheduledPaymentSummary = useMemo(() => {
-    if (!serviceData || !nextScheduledPaymentDate) return null
-    return `Next scheduled payment: ${formatDateOnly(nextScheduledPaymentDate)}`
-  }, [nextScheduledPaymentDate, serviceData])
-  const addPaymentPlanSummary = useMemo(() => {
-    if (!serviceData) return ""
-    if (serviceData.remainingCents <= 0) return "No balance remains on this service."
-    if (!serviceData.allowPartialPayments) {
-      return `The remaining balance is ${currencyFormatter(serviceData.remainingCents, serviceData.currency)}.`
-    }
-    if (suggestedInstallmentPaymentCents !== null && remainingScheduledInstallments > 0) {
-      return `${remainingScheduledInstallments} scheduled payment${remainingScheduledInstallments === 1 ? "" : "s"} remaining at about ${currencyFormatter(suggestedInstallmentPaymentCents, serviceData.currency)} each.`
-    }
-    return `Enter the amount to record against the remaining balance of ${currencyFormatter(serviceData.remainingCents, serviceData.currency)}.`
-  }, [remainingScheduledInstallments, serviceData, suggestedInstallmentPaymentCents])
+  const remainingScheduledInstallments = serviceData?.billing?.schedule.filter(due => due.remainingCents > 0 && due.dueDate).length ?? 0
+  const nextScheduledPaymentSummary = serviceData?.billing?.nextDueDate ? `Next payment: ${billingDate(serviceData.billing.nextDueDate)}` : null
   const canAddPayments = Boolean(serviceData && serviceData.remainingCents > 0)
   const currentStatusOption = serviceData ? STATUS_OPTION_BY_VALUE[serviceData.status] : null
   const followUpCoordinator = serviceData?.followUpCoordinator ?? null
@@ -3166,7 +2857,7 @@ export function ContactServiceDetailsPanel({
                   disabled={!canManageSensitiveServiceActions}
                 >
                   <span className="truncate">
-                    {currentStatusOption?.label ?? toSentence(serviceData.status)}
+                    {serviceData.billing?.workState === "FINISHED" ? "Work finished" : currentStatusOption?.label ?? toSentence(serviceData.status)}
                   </span>
                   {isStatusSaving ? (
                     <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin" />
@@ -3728,9 +3419,7 @@ export function ContactServiceDetailsPanel({
                     <div>
                       <dt className="text-xs text-slate-500">Payment schedule</dt>
                       <dd className="mt-1 font-medium text-slate-800">
-                        {serviceData.service.installmentCount && serviceData.service.installmentFrequency
-                          ? `${serviceData.service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[serviceData.service.installmentFrequency].toLowerCase()} installments`
-                          : "Full payment"}
+                        {serviceData.billing?.scheduleNeedsReview ? "Schedule needs review" : serviceData.billing?.paymentType === "FLEXIBLE" ? "Flexible payments" : `${remainingScheduledInstallments} payments remaining`}
                       </dd>
                       {nextScheduledPaymentSummary ? (
                         <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
@@ -4688,258 +4377,7 @@ export function ContactServiceDetailsPanel({
         </section>
         ) : null}
 
-        {activeView === "transaction" ? (
-        <section aria-labelledby="service-transaction-title">
-          {!item ? (
-            <div className="rounded-[24px] border border-slate-200 bg-slate-50 px-5 py-10 text-center">
-              <h2 id="service-transaction-title" className="text-base font-semibold text-slate-950">
-                Transaction
-              </h2>
-              <p className="mt-2 text-sm font-medium text-slate-700">
-                {isDetailLoading || !isDetailLoadError
-                  ? "Loading transaction details..."
-                  : "We could not load the transaction."}
-              </p>
-              {isDetailLoadError ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="mt-4 cursor-pointer rounded-full border-slate-200 bg-white"
-                  onClick={() => void loadItem("transaction")}
-                >
-                  Retry
-                </Button>
-              ) : null}
-            </div>
-          ) : (
-            <section className="rounded-[24px] border border-slate-200 bg-white p-5">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-semibold uppercase text-slate-500">Financial record</p>
-                  <h2 id="service-transaction-title" className="mt-1 text-lg font-semibold text-slate-950">
-                    Transaction
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-600">
-                    Review this transaction and record another payment when more balance is collected.
-                  </p>
-                </div>
-                {canManageSensitiveServiceActions ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="h-9 cursor-pointer rounded-xl border border-blue-100 bg-blue-50/80 px-3.5 text-xs font-semibold text-blue-700 shadow-sm hover:border-blue-200 hover:bg-blue-100/80 hover:text-blue-800"
-                    onClick={() => setIsPaymentOpen(true)}
-                    disabled={!canAddPayments}
-                  >
-                    <CircleDollarSign data-icon="inline-start" />
-                    Record payment
-                  </Button>
-                ) : null}
-              </div>
-              <div className="mb-4 grid gap-3 md:grid-cols-3">
-                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">
-                    Schedule
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-slate-950">
-                    {item.service.installmentCount && item.service.installmentFrequency
-                      ? `${item.service.installmentCount} · ${INSTALLMENT_FREQUENCY_LABELS[item.service.installmentFrequency]}`
-                      : "Full payment only"}
-                  </p>
-                </div>
-                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">
-                    Next Payment Date
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-slate-950">
-                    {item.remainingCents <= 0
-                      ? "Paid in full"
-                      : nextScheduledPaymentDate
-                        ? formatDateOnly(nextScheduledPaymentDate)
-                        : "Not scheduled"}
-                  </p>
-                </div>
-                <div className="min-w-0 rounded-[20px] border border-slate-200 bg-slate-50/80 px-4 py-3.5 shadow-sm">
-                  <p className="text-[11px] font-semibold uppercase text-slate-400">
-                    Minimum Deposit
-                  </p>
-                  <p className="mt-2 text-base font-semibold text-slate-950">
-                    {item.service.minimumPartialPaymentCents !== null
-                      ? currencyFormatter(item.service.minimumPartialPaymentCents, item.currency)
-                      : "Not required"}
-                  </p>
-                </div>
-              </div>
-              {payments.length ? (
-                <div className="overflow-hidden rounded-[22px] border border-slate-200">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/70 px-5 py-3">
-                    <p className="text-xs text-slate-500">
-                      Showing {(safePaymentPage - 1) * PAYMENTS_PAGE_SIZE + 1}–{Math.min(safePaymentPage * PAYMENTS_PAGE_SIZE, payments.length)} of {payments.length} payments
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <Badge
-                        className={cn(
-                          "rounded-full px-2.5 py-0.5 hover:bg-inherit",
-                          item.remainingCents > 0
-                            ? "bg-amber-100 text-amber-800"
-                            : "bg-emerald-100 text-emerald-800",
-                        )}
-                      >
-                        {paymentCollectionState}
-                      </Badge>
-                    </div>
-                  </div>
-                  <div className="divide-y divide-slate-200 bg-white md:hidden">
-                    {visiblePayments.map((payment, index) => (
-                      <article
-                        key={`mobile-${payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}`}
-                        className="flex flex-col gap-3 px-4 py-4"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="text-xs font-medium text-slate-500">
-                              {formatDateTime(payment.paidAt)}
-                            </p>
-                            <p className="mt-1 text-lg font-semibold text-slate-950">
-                              {currencyFormatter(payment.amountCents, item.currency)}
-                            </p>
-                          </div>
-                          {payment.paymentMethod ? (
-                            <Badge variant="outline" className="shrink-0 border-slate-200 bg-slate-50 text-slate-700">
-                              {formatPaymentMethod(payment.paymentMethod)}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                          <span>Recorded by {payment.recordedBy?.name ?? "System"}</span>
-                          {!payment.paymentMethod ? <span>No payment method</span> : null}
-                        </div>
-                        <p className="text-sm leading-6 text-slate-600">
-                          {payment.note?.trim() || "Payment recorded for this service."}
-                        </p>
-                        {canManageSensitiveServiceActions ? (
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="w-fit cursor-pointer rounded-full border-slate-200 bg-white"
-                            onClick={() => openEditPayment(payment)}
-                          >
-                            Review payment
-                          </Button>
-                        ) : null}
-                      </article>
-                    ))}
-                  </div>
-                  <div className="hidden overflow-x-auto md:block">
-                    <table className="w-full min-w-[760px] table-fixed">
-                      <thead>
-                        <tr className="border-b border-slate-200 bg-slate-50/40">
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
-                            Date Paid
-                          </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
-                            Recorded By
-                          </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
-                            Type
-                          </th>
-                          <th className="px-5 py-3 text-left text-[11px] font-semibold uppercase text-slate-400">
-                            Note
-                          </th>
-                          <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase text-slate-400">
-                            Amount
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200 bg-white">
-                        {visiblePayments.map((payment, index) => (
-                          <tr
-                            key={payment.id ?? `${payment.paidAt}-${payment.amountCents}-${index}`}
-                            className={cn(
-                              "transition-colors",
-                              canManageSensitiveServiceActions
-                                ? "cursor-pointer hover:bg-slate-50/60"
-                                : "cursor-default",
-                            )}
-                            onClick={() => {
-                              if (!canManageSensitiveServiceActions) return
-                              openEditPayment(payment)
-                            }}
-                          >
-                            <td className="px-5 py-3.5 align-top text-sm font-medium text-slate-900">
-                              {formatDateTime(payment.paidAt)}
-                            </td>
-                            <td className="px-5 py-3.5 align-top">
-                              <div className="min-w-0">
-                                <p className="text-sm font-medium text-slate-900">
-                                  {payment.recordedBy?.name ?? "System"}
-                                </p>
-                                <p className="text-xs text-slate-500">Recorded payment</p>
-                              </div>
-                            </td>
-                            <td className="px-5 py-3.5 align-top">
-                              {payment.paymentMethod ? (
-                                <Badge variant="outline" className="border-slate-200 bg-slate-50 text-slate-700">
-                                  {formatPaymentMethod(payment.paymentMethod)}
-                                </Badge>
-                              ) : (
-                                <span className="text-sm text-slate-400">No method</span>
-                              )}
-                            </td>
-                            <td className="px-5 py-3.5 align-top">
-                              <p className="line-clamp-2 text-sm leading-6 text-slate-600">
-                                {payment.note?.trim() || "Payment recorded for this service."}
-                              </p>
-                            </td>
-                            <td className="px-5 py-3.5 text-right align-top">
-                              <p className="text-sm font-semibold text-slate-950">
-                                {currencyFormatter(payment.amountCents, item.currency)}
-                              </p>
-                              <p className="mt-1 text-xs text-emerald-600">Paid</p>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {paymentPageCount > 1 ? (
-                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-4 py-3 sm:px-5">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700"
-                        disabled={safePaymentPage <= 1}
-                        onClick={() => setPaymentPage((current) => Math.max(1, current - 1))}
-                      >
-                        Previous
-                      </Button>
-                      <span className="text-xs font-medium text-slate-500 tabular-nums">
-                        Page {safePaymentPage} of {paymentPageCount}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="cursor-pointer rounded-full border-slate-200 bg-white text-slate-700"
-                        disabled={safePaymentPage >= paymentPageCount}
-                        onClick={() => setPaymentPage((current) => Math.min(paymentPageCount, current + 1))}
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                  No payments have been recorded for this service yet.
-                </div>
-              )}
-            </section>
-          )}
-        </section>
-        ) : null}
+        {activeView === "transaction" ? <ServicePaymentAccount tenantId={tenantId} contactServiceId={contactServiceId} onChanged={() => refreshData(true)} /> : null}
 
         {activeView === "notes" ? (
           <section aria-labelledby="service-notes-title" className="flex min-h-full flex-1 flex-col gap-4">
@@ -5790,366 +5228,12 @@ export function ContactServiceDetailsPanel({
         </SheetContent>
       </Sheet>
 
+      <RecordServicePaymentDialog tenantId={tenantId} contactServiceId={contactServiceId} open={isPaymentOpen} onOpenChange={setIsPaymentOpen} onSaved={() => refreshData(true)} />
+
       {item ? (
         <>
-      <Dialog
-        open={isPaymentOpen}
-        onOpenChange={(nextOpen) => {
-          if (!nextOpen && isPaymentSaving) return
-          setIsPaymentOpen(nextOpen)
-          if (!nextOpen) resetPaymentForm()
-        }}
-      >
-        <DialogContent className="max-h-[calc(100dvh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[28px] border-slate-200 bg-white p-0 shadow-2xl sm:max-w-2xl [&>button]:cursor-pointer">
-          <DialogHeader className="relative overflow-hidden border-b border-blue-100 bg-[#f1f7ff] px-6 py-6 text-left sm:px-7">
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute inset-0 opacity-40 [background-image:linear-gradient(rgba(30,64,175,.08)_1px,transparent_1px),linear-gradient(90deg,rgba(30,64,175,.08)_1px,transparent_1px)] [background-size:42px_42px]"
-            />
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -right-12 -bottom-20 size-48 rounded-full bg-blue-300/30 blur-3xl"
-            />
-            <div className="relative pr-10">
-              <div className="flex max-w-xl min-w-0 flex-col gap-1.5">
-                <p className="text-xs font-semibold text-blue-700">Service payment</p>
-                <DialogTitle className="text-xl font-semibold text-slate-950 sm:text-2xl">
-                  Record payment
-                </DialogTitle>
-                <DialogDescription className="max-w-lg text-sm leading-6 text-slate-600">
-                  Record a payment for {item.service.name} and update the remaining service balance.
-                </DialogDescription>
-              </div>
-            </div>
-          </DialogHeader>
-          <form
-            id="add-service-transaction-form"
-            className="contents"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void onAddPayment()
-            }}
-          >
-            <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-6 [scrollbar-gutter:stable] sm:px-7">
-              <div className="flex flex-col gap-7">
-                <dl className="grid gap-4 border-b border-slate-200 pb-6 sm:grid-cols-2 sm:gap-0">
-                  <div className="min-w-0 sm:border-r sm:border-slate-200 sm:pr-6">
-                    <dt className="text-xs font-medium text-slate-500">Remaining balance</dt>
-                    <dd className="mt-1 text-xl font-semibold text-slate-950">
-                      {currencyFormatter(item.remainingCents, item.currency)}
-                    </dd>
-                  </div>
-                  <div className="min-w-0 sm:pl-6">
-                    <dt className="text-xs font-medium text-slate-500">Payment position</dt>
-                    <dd className="mt-1 text-sm font-semibold text-slate-950">
-                      {paymentCollectionState}
-                    </dd>
-                    {nextScheduledPaymentSummary ? (
-                      <p className="mt-1 text-xs text-slate-500">{nextScheduledPaymentSummary}</p>
-                    ) : null}
-                  </div>
-                </dl>
 
-                <FieldGroup className="gap-5">
-                  <Field data-disabled={isPaymentSaving} className="gap-2">
-                    <FieldLabel htmlFor="service-payment-action" className="text-slate-800">
-                      Payment action <span className="text-rose-600" aria-hidden="true">*</span>
-                    </FieldLabel>
-                    <Select
-                      value={paymentEntryMode}
-                      disabled={isPaymentSaving}
-                      onValueChange={(value) => {
-                        const nextMode = sanitizePaymentEntryMode(value)
-                        setPaymentEntryMode(nextMode)
-                        setPaymentAmountError(null)
-                        if (nextMode === "FULL") {
-                          setPaymentAmountUsd("")
-                          return
-                        }
-                        setPaymentAmountUsd(
-                          suggestedInstallmentPaymentCents !== null
-                            ? centsToUsdInput(suggestedInstallmentPaymentCents)
-                            : "",
-                        )
-                      }}
-                    >
-                      <SelectTrigger
-                        id="service-payment-action"
-                        aria-required="true"
-                        className="h-11 cursor-pointer rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="FULL">Pay remaining in full</SelectItem>
-                          <SelectItem value="PARTIAL" disabled={!item.allowPartialPayments}>
-                            Record partial payment
-                          </SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {paymentEntryMode === "PARTIAL" ? (
-                      <FieldDescription className="text-xs">
-                        {addPaymentPlanSummary} The next suggested payment updates after this payment.
-                      </FieldDescription>
-                    ) : null}
-                  </Field>
 
-                  <div className="grid gap-5 sm:grid-cols-2">
-                    <Field
-                      data-invalid={Boolean(paymentAmountError)}
-                      data-disabled={isPaymentSaving}
-                      className="gap-2"
-                    >
-                      <FieldLabel htmlFor="service-payment-amount" className="text-slate-800">
-                        Payment amount ({item.currency}){" "}
-                        <span className="text-rose-600" aria-hidden="true">*</span>
-                      </FieldLabel>
-                      <Input
-                        id="service-payment-amount"
-                        value={
-                          paymentEntryMode === "FULL"
-                            ? centsToUsdInput(item.remainingCents)
-                            : paymentAmountUsd
-                        }
-                        onChange={(event) => {
-                          setPaymentAmountUsd(
-                            sanitizeTransactionMoneyInput(event.target.value),
-                          )
-                          setPaymentAmountError(null)
-                        }}
-                        maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
-                        inputMode="decimal"
-                        placeholder="0.00"
-                        readOnly={paymentEntryMode === "FULL"}
-                        disabled={isPaymentSaving}
-                        aria-invalid={Boolean(paymentAmountError)}
-                        aria-required="true"
-                        className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                      />
-                      {paymentEntryMode === "PARTIAL" && suggestedInstallmentPaymentCents !== null ? (
-                        <div className="flex flex-wrap items-center gap-2">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="cursor-pointer rounded-full"
-                            disabled={isPaymentSaving}
-                            onClick={() => {
-                              setPaymentAmountUsd(centsToUsdInput(suggestedInstallmentPaymentCents))
-                              setPaymentAmountError(null)
-                            }}
-                          >
-                            Use {currencyFormatter(suggestedInstallmentPaymentCents, item.currency)}
-                          </Button>
-                          <span className="text-xs text-slate-500">
-                            {remainingScheduledInstallments} installment
-                            {remainingScheduledInstallments === 1 ? "" : "s"} remaining
-                          </span>
-                        </div>
-                      ) : paymentEntryMode === "PARTIAL" ? (
-                        <FieldDescription className="text-xs">
-                          Enter up to {currencyFormatter(item.remainingCents, item.currency)}.
-                        </FieldDescription>
-                      ) : null}
-                      <FieldError>{paymentAmountError}</FieldError>
-                    </Field>
-
-                    <Field data-disabled={isPaymentSaving} className="gap-2">
-                      <FieldLabel htmlFor="service-payment-method" className="text-slate-800">
-                        Payment method
-                      </FieldLabel>
-                      <Select
-                        value={paymentMethod || "__none__"}
-                        disabled={isPaymentSaving}
-                        onValueChange={(value) =>
-                          setPaymentMethod(
-                            value === "__none__"
-                              ? ""
-                              : sanitizeTransactionPaymentMethod(value),
-                          )
-                        }
-                      >
-                        <SelectTrigger
-                          id="service-payment-method"
-                          className="h-11 cursor-pointer rounded-xl border-slate-200 bg-slate-50/60 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                        >
-                          <SelectValue placeholder="Select payment method" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectGroup>
-                            <SelectItem value="__none__">No method</SelectItem>
-                            {PAYMENT_METHOD_OPTIONS.map((option) => (
-                              <SelectItem key={option.value} value={option.value}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectGroup>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-
-                  <Field data-disabled={isPaymentSaving} className="gap-2">
-                    <FieldLabel htmlFor="service-payment-note" className="text-slate-800">
-                      Note
-                    </FieldLabel>
-                    <Textarea
-                      id="service-payment-note"
-                      value={paymentNote}
-                      onChange={(event) =>
-                        setPaymentNote(
-                          sanitizeTransactionMultilineInput(
-                            event.target.value,
-                            TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
-                          ),
-                        )
-                      }
-                      maxLength={TRANSACTION_PAYMENT_NOTE_MAX_LENGTH}
-                      rows={4}
-                      placeholder="Add payment context"
-                      disabled={isPaymentSaving}
-                      className="min-h-32 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 text-sm leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                    />
-                    <FieldDescription className="text-xs">
-                      This context will appear with the payment in payment history.
-                    </FieldDescription>
-                  </Field>
-                </FieldGroup>
-              </div>
-            </div>
-            <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setIsPaymentOpen(false)
-                  resetPaymentForm()
-                }}
-                disabled={isPaymentSaving}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={isPaymentSaving || !canAddPayments}
-                className="min-w-36 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
-              >
-                {isPaymentSaving ? (
-                  <Loader2 data-icon="inline-start" className="animate-spin" />
-                ) : null}
-                {isPaymentSaving ? "Recording..." : "Record payment"}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isPaymentEditOpen}
-        onOpenChange={(open) => {
-          setIsPaymentEditOpen(open)
-          if (!open) resetEditPaymentForm()
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Edit payment</DialogTitle>
-            <DialogDescription>
-              Correct the payment amount, method, or note. You can also delete this payment.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-1">
-            <div className="grid gap-2">
-              <Label>Payment Amount ({item.currency})</Label>
-              <Input
-                value={editPaymentAmountUsd}
-                onChange={(event) =>
-                  setEditPaymentAmountUsd(
-                    sanitizeTransactionMoneyInput(event.target.value),
-                  )
-                }
-                maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
-                inputMode="decimal"
-                placeholder="0.00"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Payment Method</Label>
-              <Select
-                value={editPaymentMethod || "__none__"}
-                onValueChange={(value) =>
-                  setEditPaymentMethod(
-                    value === "__none__"
-                      ? ""
-                      : sanitizeTransactionPaymentMethod(value),
-                  )
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select payment method" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No method</SelectItem>
-                  {PAYMENT_METHOD_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label>Note</Label>
-              <Textarea
-                value={editPaymentNote}
-                onChange={(event) =>
-                  setEditPaymentNote(
-                    sanitizeTransactionMultilineInput(
-                      event.target.value,
-                      TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
-                    ),
-                  )
-                }
-                maxLength={TRANSACTION_PAYMENT_NOTE_MAX_LENGTH}
-                rows={4}
-                placeholder="Optional payment note"
-              />
-            </div>
-          </div>
-          <DialogFooter className="flex items-center justify-between gap-2">
-            <Button
-              type="button"
-              variant="destructive"
-              onClick={() => void onDeletePayment()}
-              disabled={isPaymentDeleting || isPaymentSaving}
-              className="cursor-pointer"
-            >
-              {isPaymentDeleting ? "Deleting..." : "Delete payment"}
-            </Button>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setIsPaymentEditOpen(false)}
-                disabled={isPaymentSaving}
-                className="cursor-pointer"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="button"
-                onClick={() => void onUpdatePayment()}
-                disabled={isPaymentSaving || isPaymentDeleting}
-                className="cursor-pointer"
-              >
-                {isPaymentSaving ? "Saving..." : "Save payment"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
 
 

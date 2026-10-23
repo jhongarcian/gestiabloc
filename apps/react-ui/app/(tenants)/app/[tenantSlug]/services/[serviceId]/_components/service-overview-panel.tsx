@@ -1,5 +1,8 @@
 "use client"
 
+import { paymentOptionsLabel, type PaymentSettings, type EnrollmentBillingValue } from "@/lib/service-billing"
+
+import { ServicePaymentFields } from "@/components/service-payment-fields"
 import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
 import { serviceWorkflowError, serviceOfferingLabel } from "@/lib/service-hierarchy"
 import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
@@ -21,7 +24,7 @@ import {
   Users,
   Wallet,
 } from "lucide-react"
-import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { type DateRange } from "react-day-picker"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -121,6 +124,7 @@ export type ServiceOverviewPanelProps = {
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
+    paymentSettings?: PaymentSettings
     allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
@@ -172,8 +176,6 @@ type TransactionFormState = {
   contactId: string
   assignedProfessionalId: string
   followUpAssignedToUserId: string
-  paymentMode: "FULL" | "PARTIAL" | "LATER"
-  initialPaymentUsd: string
   notes: string
 }
 
@@ -236,38 +238,6 @@ function formatCurrency(valueCents: number, currency: string) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
-}
-
-function centsToUsdInput(valueCents: number) {
-  return ((valueCents || 0) / 100).toFixed(2)
-}
-
-function parseUsdToCents(value: string) {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-
-  return Math.round(parsed * 100)
-}
-
-function getServiceTotalWithTaxCents({
-  basePriceCents,
-  isTaxExempt,
-  taxEnabled,
-  defaultTaxRatePercent,
-}: {
-  basePriceCents: number
-  isTaxExempt: boolean
-  taxEnabled: boolean
-  defaultTaxRatePercent: number | null
-}) {
-  if (!taxEnabled || isTaxExempt || defaultTaxRatePercent === null) {
-    return basePriceCents
-  }
-
-  return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
 }
 
 function formatDateOnly(date: Date) {
@@ -697,22 +667,11 @@ function CreateTransactionDialog({
   const [debouncedContactSearchQuery, setDebouncedContactSearchQuery] = useState("")
   const [assignedProfessionalId, setAssignedProfessionalId] = useState("")
   const [followUpAssignedToUserId, setFollowUpAssignedToUserId] = useState("")
-  const [paymentMode, setPaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
-  const [initialPaymentUsd, setInitialPaymentUsd] = useState("")
+  const [enrollmentBilling, setEnrollmentBilling] = useState<EnrollmentBillingValue | null>(null)
+  const enrollmentRequestKey = useRef("")
+  const enrollmentSaving = useRef(false)
   const [notes, setNotes] = useState("")
   const [errors, setErrors] = useState<TransactionFormErrors>({})
-  const totalWithTaxCents = getServiceTotalWithTaxCents({
-    basePriceCents: service.basePriceCents,
-    isTaxExempt: service.isTaxExempt,
-    taxEnabled: service.tenantBilling.taxEnabled,
-    defaultTaxRatePercent: service.tenantBilling.defaultTaxRatePercent,
-  })
-  const selectedFollowUpAssignee = useMemo(
-    () =>
-      followUpAssigneeOptions.find((item) => item.value === followUpAssignedToUserId) ?? null,
-    [followUpAssignedToUserId, followUpAssigneeOptions],
-  )
-
   const contactStepSchema = useMemo(
     () =>
       z.object({
@@ -758,64 +717,9 @@ function CreateTransactionDialog({
     [followUpAssigneeOptions, service.professionals],
   )
 
-  const paymentStepSchema = useMemo(
-    () =>
-      z
-        .object({
-          paymentMode: z.enum(["FULL", "PARTIAL", "LATER"]),
-          initialPaymentUsd: z.string(),
-          notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
-        })
-        .superRefine((value, ctx) => {
-          if (value.paymentMode === "PARTIAL" && !service.allowPartialPayments) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["paymentMode"],
-              message: "This service does not allow partial payments.",
-            })
-          }
-
-          if (value.paymentMode !== "PARTIAL") {
-            return
-          }
-
-          const initialPaymentCents = parseUsdToCents(value.initialPaymentUsd)
-
-          if (initialPaymentCents === null || initialPaymentCents <= 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Enter a valid partial payment amount in USD.",
-            })
-            return
-          }
-
-          if (initialPaymentCents > totalWithTaxCents) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment cannot be greater than total amount.",
-            })
-          }
-
-          if (
-            service.minimumPartialPaymentCents !== null &&
-            service.minimumPartialPaymentCents !== undefined &&
-            initialPaymentCents < service.minimumPartialPaymentCents
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment is below the minimum allowed for this service.",
-            })
-          }
-        }),
-    [
-      service.allowPartialPayments,
-      service.minimumPartialPaymentCents,
-      totalWithTaxCents,
-    ],
-  )
+  const paymentStepSchema = z.object({
+    notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
+  })
 
   const clearFieldError = (field: keyof TransactionFormErrors) => {
     setErrors((current) => {
@@ -887,24 +791,13 @@ function CreateTransactionDialog({
   }
 
   const validatePaymentStep = () => {
-    const result = paymentStepSchema.safeParse({
-      paymentMode,
-      initialPaymentUsd,
-      notes,
-    })
-
-    if (result.success) {
-      setErrors((current) => ({
-        ...current,
-        paymentMode: undefined,
-        initialPaymentUsd: undefined,
-        notes: undefined,
-      }))
-      return true
+    const result = paymentStepSchema.safeParse({ notes })
+    if (!result.success) {
+      applySchemaErrors(result, ["notes"])
+      return false
     }
-
-    applySchemaErrors(result, ["paymentMode", "initialPaymentUsd", "notes"])
-    return false
+    clearFieldError("notes")
+    return true
   }
 
   const resetForm = () => {
@@ -916,8 +809,9 @@ function CreateTransactionDialog({
     setDebouncedContactSearchQuery("")
     setAssignedProfessionalId("")
     setFollowUpAssignedToUserId("")
-    setPaymentMode("FULL")
-    setInitialPaymentUsd("")
+    setEnrollmentBilling(null)
+    enrollmentRequestKey.current = ""
+    enrollmentSaving.current = false
     setNotes("")
     setErrors({})
   }
@@ -1020,11 +914,6 @@ function CreateTransactionDialog({
       return
     }
 
-    if (!validatePaymentStep()) {
-      toast.error("Review the payment details.")
-      return
-    }
-
     setStep(4)
   }
 
@@ -1057,17 +946,16 @@ function CreateTransactionDialog({
       return
     }
 
-    const totalPriceCents = totalWithTaxCents
-
-    const initialPaymentCents =
-      paymentMode === "FULL"
-        ? totalPriceCents
-        : paymentMode === "LATER"
-          ? 0
-          : parseUsdToCents(initialPaymentUsd)
+    if (!enrollmentBilling) {
+      toast.error("Review the payment preview before creating the service.")
+      return
+    }
+    if (enrollmentSaving.current) return
 
     const workflowError = serviceWorkflowError(service)
     if (workflowError) { toast.error(workflowError); return }
+    enrollmentSaving.current = true
+    enrollmentRequestKey.current ||= crypto.randomUUID()
     setIsSaving(true)
 
     try {
@@ -1079,7 +967,8 @@ function CreateTransactionDialog({
           workflowKind: "SERVICE_STEPS",
           ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
           ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
-          ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
+          ...enrollmentBilling,
+          requestKey: enrollmentRequestKey.current,
           ...(notes.trim() ? { notes: notes.trim() } : {}),
         },
       )
@@ -1107,6 +996,7 @@ function CreateTransactionDialog({
         toast.error("Could not create service transaction.")
       }
     } finally {
+      enrollmentSaving.current = false
       setIsSaving(false)
     }
   }
@@ -1413,142 +1303,23 @@ function CreateTransactionDialog({
             </section>
           ) : null}
 
-          {step === 4 ? (
-            <section className="grid gap-4">
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-type">Payment Type</Label>
-                  <Select
-                    value={paymentMode}
-                    onValueChange={(value) => {
-                      clearFieldError("paymentMode")
-                      clearFieldError("initialPaymentUsd")
-                      setPaymentMode(value as "FULL" | "PARTIAL" | "LATER")
-                    }}
-                  >
-                    <SelectTrigger id="service-transaction-payment-type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="FULL">Pay in Full</SelectItem>
-                      <SelectItem value="PARTIAL" disabled={!service.allowPartialPayments}>
-                        Partial Payment
-                      </SelectItem>
-                      <SelectItem value="LATER">Pay Later</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {!service.allowPartialPayments ? (
-                    <p className="text-xs text-slate-500">
-                      This service supports full payment or pay later only.
-                    </p>
-                  ) : null}
-                  {errors.paymentMode ? (
-                    <p className="text-xs text-rose-600">{errors.paymentMode}</p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-cost">Service Cost</Label>
-                  <Input
-                    id="service-transaction-cost"
-                    readOnly
-                    value={centsToUsdInput(totalWithTaxCents)}
-                    className="bg-slate-50 text-slate-600"
-                  />
-                </div>
-              </div>
-
-              {assignedProfessionalId ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Assigned professional:{" "}
-                  <span className="font-medium text-slate-900">
-                    {getProfessionalLabel(
-                      service.professionals.find((item) => item.id === assignedProfessionalId)!,
-                    )}
-                  </span>
-                </div>
-              ) : null}
-
-              {followUpAssignedToUserId ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-9 w-9 shrink-0 border border-slate-200 bg-white shadow-sm">
-                      {selectedFollowUpAssignee?.image ? (
-                        <AvatarImage
-                          src={selectedFollowUpAssignee.image}
-                          alt={selectedFollowUpAssignee.label}
-                          className="object-cover"
-                        />
-                      ) : null}
-                      <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
-                        {getInitials(selectedFollowUpAssignee?.label ?? "Assigned user")}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                        Enrollment coordinator
-                      </p>
-                      <p className="truncate font-medium text-slate-900">
-                        {selectedFollowUpAssignee?.label ?? "Assigned user"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-now">
-                    {paymentMode === "PARTIAL" ? "Partial Payment Amount" : "Payment Now"}
-                  </Label>
-                  <Input
-                    id="service-transaction-payment-now"
-                    value={
-                      paymentMode === "PARTIAL"
-                        ? initialPaymentUsd
-                        : paymentMode === "LATER"
-                          ? "0.00"
-                          : centsToUsdInput(totalWithTaxCents)
-                    }
-                    onChange={(event) => {
-                      clearFieldError("initialPaymentUsd")
-                      setInitialPaymentUsd(event.target.value)
-                    }}
-                    readOnly={paymentMode !== "PARTIAL"}
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    className={paymentMode === "PARTIAL" ? undefined : "bg-slate-50 text-slate-600"}
-                  />
-                  {paymentMode === "PARTIAL" && service.minimumPartialPaymentCents ? (
-                    <p className="text-xs text-slate-500">
-                      Minimum partial payment:{" "}
-                      {formatCurrency(service.minimumPartialPaymentCents, service.currency)}
-                    </p>
-                  ) : null}
-                  {errors.initialPaymentUsd ? (
-                    <p className="text-xs text-rose-600">{errors.initialPaymentUsd}</p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-notes">Notes</Label>
-                  <Textarea
-                    id="service-transaction-notes"
-                    rows={4}
-                    value={notes}
-                    onChange={(event) => {
-                      clearFieldError("notes")
-                      setNotes(event.target.value)
-                    }}
-                    placeholder="Add any notes about this service transaction"
-                  />
-                  {errors.notes ? (
-                    <p className="text-xs text-rose-600">{errors.notes}</p>
-                  ) : null}
-                </div>
-              </div>
-            </section>
-          ) : null}
+          <section hidden={step !== 4} className="grid gap-4">
+            {open ? <ServicePaymentFields key={service.id} tenantId={tenantId} serviceId={service.id} disabled={isSaving} onChange={setEnrollmentBilling} /> : null}
+            <div className="grid gap-2">
+              <Label htmlFor="service-transaction-notes">Service notes (optional)</Label>
+              <Textarea
+                id="service-transaction-notes"
+                rows={4}
+                value={notes}
+                onChange={(event) => {
+                  clearFieldError("notes")
+                  setNotes(event.target.value)
+                }}
+                placeholder="Add any notes about this service transaction"
+              />
+              {errors.notes ? <p className="text-xs text-rose-600">{errors.notes}</p> : null}
+            </div>
+          </section>
         </div>
 
         <DialogFooter className="shrink-0 gap-2 border-t border-slate-200 pt-4 sm:justify-between">
@@ -1632,11 +1403,7 @@ export function ServiceOverviewPanel({
     serviceId: service.id,
   })
 
-  const paymentSummary = service.allowPartialPayments
-    ? service.installmentCount && service.installmentFrequency
-      ? `Minimum deposit ${service.minimumPartialPaymentCents !== null ? formatCurrency(service.minimumPartialPaymentCents, service.currency) : "required"} · ${service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[service.installmentFrequency].toLowerCase()} installments`
-      : "Partial payments allowed"
-    : "Full payment only"
+  const paymentSummary = paymentOptionsLabel(service)
 
   useEffect(() => {
     if (rangePreset === "CUSTOM") {
@@ -2067,13 +1834,13 @@ export function ServiceOverviewPanel({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs font-medium text-slate-500">Payment mode</p>
+                      <p className="text-xs font-medium text-slate-500">Payment options</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
-                        {service.allowPartialPayments ? "Partial payments allowed" : "Full payment only"}
+                        {paymentOptionsLabel(service)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs font-medium text-slate-500">Minimum deposit</p>
+                      <p className="text-xs font-medium text-slate-500">Suggested deposit</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.minimumPartialPaymentCents !== null
                           ? formatCurrency(service.minimumPartialPaymentCents, service.currency)

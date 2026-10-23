@@ -1,5 +1,8 @@
 "use client"
 
+import { ServicePaymentSettings } from "@/components/service-payment-settings"
+import { defaultPaymentSettings, PAYMENT_TYPE_LABELS, type PaymentSettings } from "@/lib/service-billing"
+
 import Link from "next/link"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -100,6 +103,7 @@ export type ServiceDetailsPanelProps = {
     isTaxExempt: boolean
     allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
+    paymentSettings?: PaymentSettings
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
     isActive: boolean
@@ -347,16 +351,6 @@ function dollarsToCents(value: string) {
   return Math.round(numericValue * 100)
 }
 
-const INSTALLMENT_FREQUENCY_OPTIONS = [
-  { value: "WEEKLY", label: "Weekly" },
-  { value: "BIWEEKLY", label: "Biweekly" },
-  { value: "MONTHLY", label: "Monthly" },
-] as const
-
-function formatInstallmentFrequency(value: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null | undefined) {
-  return INSTALLMENT_FREQUENCY_OPTIONS.find((option) => option.value === value)?.label ?? null
-}
-
 function formatCurrency(valueCents: number, currency: string) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -428,19 +422,12 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   )
   const [basePrice, setBasePrice] = useState(centsToDollars(service.basePriceCents))
   const [currency, setCurrency] = useState(service.currency)
+  const [paymentSettings, setPaymentSettings] = useState(() => defaultPaymentSettings(service))
   const [isTaxExempt, setIsTaxExempt] = useState(service.isTaxExempt)
-  const [allowPartialPayments, setAllowPartialPayments] = useState(service.allowPartialPayments)
-  const [minimumPartialPayment, setMinimumPartialPayment] = useState(
-    service.minimumPartialPaymentCents !== null
-      ? centsToDollars(service.minimumPartialPaymentCents)
-      : "",
-  )
-  const [installmentCount, setInstallmentCount] = useState(
-    service.installmentCount !== null ? String(service.installmentCount) : "",
-  )
-  const [installmentFrequency, setInstallmentFrequency] = useState<
-    "WEEKLY" | "BIWEEKLY" | "MONTHLY" | ""
-  >(service.installmentFrequency ?? "")
+  const allowPartialPayments = paymentSettings.enabledTypes.includes("INSTALLMENTS")
+  const minimumPartialPayment = String(paymentSettings.suggestedDepositCents / 100)
+  const installmentCount = String(paymentSettings.installmentCount)
+  const installmentFrequency = paymentSettings.installmentFrequency
   const [isActive, setIsActive] = useState(service.isActive)
   const [users, setUsers] = useState<UsersResponse["items"]>([])
   const [checklistItems, setChecklistItems] = useState<ChecklistItemDraft[]>(
@@ -535,7 +522,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
   const installmentCountNumber = useMemo(() => {
     if (!allowPartialPayments) return null
     const parsed = Number.parseInt(installmentCount, 10)
-    if (!Number.isInteger(parsed) || parsed < 2) return null
+    if (!Number.isInteger(parsed) || parsed < 1) return null
     return parsed
   }, [allowPartialPayments, installmentCount])
   const tenantTaxRatePercent = service.tenantBilling.defaultTaxRatePercent
@@ -554,15 +541,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
     return basePriceCentsPreview + estimatedTaxCents
   }, [basePriceCentsPreview, estimatedTaxCents])
   const maxAllowedDepositCents = totalWithTaxCents ?? basePriceCentsPreview
-  const estimatedInstallmentCents = useMemo(() => {
-    if (!allowPartialPayments || installmentCountNumber === null || totalWithTaxCents === null) {
-      return null
-    }
-
-    const deposit = minimumDepositCentsPreview ?? 0
-    const remainingBalance = Math.max(0, totalWithTaxCents - deposit)
-    return Math.round(remainingBalance / installmentCountNumber)
-  }, [allowPartialPayments, installmentCountNumber, minimumDepositCentsPreview, totalWithTaxCents])
   const overviewComplete = useMemo(() => {
     if (!name.trim()) return false
     if (basePriceCentsPreview === null) return false
@@ -606,11 +584,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       {
         key: "overview" as const,
         label: "Overview",
-        value: allowPartialPayments
-          ? installmentCountNumber
-            ? `${installmentCountNumber} ${installmentCountNumber === 1 ? "installment" : "installments"}`
-            : "Billing setup needed"
-          : "Full payment",
+        value: PAYMENT_TYPE_LABELS[paymentSettings.defaultType],
         hint: overviewComplete
           ? "Billing rules configured"
           : service.tenantBilling.taxEnabled && !isTaxExempt && tenantTaxRatePercent == null
@@ -645,11 +619,10 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       },
     ],
     [
-      allowPartialPayments,
+      paymentSettings.defaultType,
       configuredSteps.length,
       checklistComplete,
       checklistItems.length,
-      installmentCountNumber,
       isTaxExempt,
       overviewComplete,
       professionals.length,
@@ -684,14 +657,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
         setBasePrice(centsToDollars(saved.basePriceCents))
         setCurrency(saved.currency)
         setIsTaxExempt(saved.isTaxExempt)
-        setAllowPartialPayments(saved.allowPartialPayments)
-        setMinimumPartialPayment(
-          saved.minimumPartialPaymentCents === null
-            ? ""
-            : centsToDollars(saved.minimumPartialPaymentCents),
-        )
-        setInstallmentCount(saved.installmentCount === null ? "" : String(saved.installmentCount))
-        setInstallmentFrequency(saved.installmentFrequency ?? "")
+        setPaymentSettings(defaultPaymentSettings(saved))
       } else if (section === "checklistMode") {
         setChecklistItems(
           saved.checklistItems.map((item) => ({
@@ -993,54 +959,11 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
       return
     }
 
-    const minimumPartialPaymentCents = allowPartialPayments
-      ? dollarsToCents(minimumPartialPayment)
-      : null
-    const nextInstallmentCount = allowPartialPayments ? Number.parseInt(installmentCount, 10) : null
-
     if (!billingInherited) {
-      if (currency.trim().length !== 3) {
-        toast.error("Enter a three-letter currency code.")
-        return
-      }
-      if (allowPartialPayments && minimumPartialPaymentCents === null) {
-        toast.error("Minimum deposit must be a valid number.")
-        return
-      }
-
-      if (
-        allowPartialPayments &&
-        minimumPartialPaymentCents !== null &&
-        maxAllowedDepositCents !== null &&
-        minimumPartialPaymentCents > maxAllowedDepositCents
-      ) {
-        toast.error("Minimum deposit cannot exceed the service total.")
-        return
-      }
-
-      if (
-        service.tenantBilling.taxEnabled &&
-        !isTaxExempt &&
-        (tenantTaxRatePercent === null || tenantTaxRatePercent === undefined)
-      ) {
-        toast.error("This tenant must configure a default tax rate first.")
-        return
-      }
-
-      if (
-        allowPartialPayments &&
-        (nextInstallmentCount === null ||
-          !Number.isInteger(nextInstallmentCount) ||
-          nextInstallmentCount < 2)
-      ) {
-        toast.error("Number of installments must be at least 2.")
-        return
-      }
-
-      if (allowPartialPayments && !installmentFrequency) {
-        toast.error("Select an installment frequency.")
-        return
-      }
+      if (currency.trim().length !== 3) { toast.error("Enter a three-letter currency code."); return }
+      if (paymentSettings.enabledTypes.includes("INSTALLMENTS") && (!Number.isInteger(paymentSettings.suggestedDepositCents) || paymentSettings.suggestedDepositCents < 0 || (maxAllowedDepositCents !== null && paymentSettings.suggestedDepositCents > maxAllowedDepositCents))) { toast.error("Suggested deposit must be between zero and the service total."); return }
+      if (!Number.isInteger(paymentSettings.installmentCount) || paymentSettings.installmentCount < 1 || paymentSettings.installmentCount > 120) { toast.error("Choose between 1 and 120 future payments."); return }
+      if (service.tenantBilling.taxEnabled && !isTaxExempt && tenantTaxRatePercent == null) { toast.error("Configure the tenant tax rate first."); return }
     }
 
     saveInFlight.current = true
@@ -1056,10 +979,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
               basePriceCents,
               currency: currency.trim().toUpperCase() || "USD",
               isTaxExempt,
-              allowPartialPayments,
-              minimumPartialPaymentCents,
-              installmentCount: allowPartialPayments ? nextInstallmentCount : null,
-              installmentFrequency: allowPartialPayments ? installmentFrequency : null,
+              paymentSettings,
             }
           : {}),
         isActive,
@@ -1592,9 +1512,9 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
 
               <div className="grid gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                 <div className="space-y-1">
-                  <h4 className="text-sm font-semibold text-slate-900">Billing Rules</h4>
+                  <h4 className="text-sm font-semibold text-slate-900">Price and payment options</h4>
                   <p className="text-sm text-slate-500">
-                    Configure tax exemption, deposit rules, and the fixed installment schedule.
+                    Set tax behavior and the payment arrangements staff can offer.
                   </p>
                 </div>
 
@@ -1615,98 +1535,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   </label>
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium text-slate-900">Payment plan</p>
-                    <p className="text-sm text-slate-500">
-                      Decide whether the contact can pay over time and define the installment
-                      structure.
-                    </p>
-                  </div>
-                  <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-700">
-                    <Checkbox
-                      disabled={billingInherited || isCollectionSaving}
-                      checked={allowPartialPayments}
-                      onCheckedChange={(checked) => setAllowPartialPayments(checked === true)}
-                    />
-                    Allow partial payments
-                  </label>
-                  <div className="mt-4 grid gap-4 border-t border-slate-200 pt-4 md:grid-cols-3">
-                    <div className="grid gap-2">
-                      <Label>Minimum deposit</Label>
-                      <div className="relative">
-                        <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-500">
-                          $
-                        </span>
-                        <Input
-                          type="number"
-                          min={0}
-                          step="0.01"
-                          inputMode="decimal"
-                          disabled={billingInherited || isCollectionSaving || !allowPartialPayments}
-                          value={minimumPartialPayment}
-                          onChange={(event) => {
-                            const nextValue = event.target.value
-                            if (nextValue.startsWith("-")) return
-
-                            const parsed = Number.parseFloat(nextValue)
-                            if (Number.isFinite(parsed) && parsed < 0) return
-
-                            setMinimumPartialPayment(nextValue)
-                          }}
-                          className="pl-7"
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-2">
-                      <Label>Number of installments</Label>
-                      <Input
-                        type="number"
-                        min={2}
-                        step={1}
-                        inputMode="numeric"
-                        disabled={billingInherited || isCollectionSaving || !allowPartialPayments}
-                        value={installmentCount}
-                        onChange={(event) => {
-                          const nextValue = event.target.value
-                          if (nextValue.startsWith("-")) return
-
-                          const parsed = Number.parseInt(nextValue, 10)
-                          if (Number.isInteger(parsed) && parsed < 0) return
-
-                          setInstallmentCount(nextValue)
-                        }}
-                        placeholder="4"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label>Installment frequency</Label>
-                      <Select
-                        value={installmentFrequency || "__none__"}
-                        onValueChange={(value) =>
-                          setInstallmentFrequency(
-                            value === "__none__"
-                              ? ""
-                              : (value as "WEEKLY" | "BIWEEKLY" | "MONTHLY"),
-                          )
-                        }
-                        disabled={billingInherited || isCollectionSaving || !allowPartialPayments}
-                      >
-                        <SelectTrigger className="cursor-pointer">
-                          <SelectValue placeholder="Select frequency" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="__none__">No frequency selected</SelectItem>
-                          {INSTALLMENT_FREQUENCY_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                </div>
+                <ServicePaymentSettings value={paymentSettings} onChange={setPaymentSettings} disabled={billingInherited || isCollectionSaving} currency={currency} totalCents={totalWithTaxCents} />
               </div>
 
               <div className="grid gap-4 lg:grid-cols-2">
@@ -1749,52 +1578,6 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   )}
                 </div>
 
-                <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-                    Payment Plan Preview
-                  </p>
-                  <div className="mt-2 space-y-1 text-sm text-slate-600">
-                    <p>
-                      Total:{" "}
-                      <span className="font-medium text-slate-900">
-                        {totalWithTaxCents !== null
-                          ? formatCurrency(totalWithTaxCents, currency)
-                          : "Enter a valid price"}
-                      </span>
-                    </p>
-                    <p>
-                      {allowPartialPayments
-                        ? installmentCountNumber &&
-                          installmentFrequency &&
-                          estimatedInstallmentCents !== null
-                          ? `${installmentCountNumber} ${formatInstallmentFrequency(installmentFrequency)?.toLowerCase()} installments after first payment`
-                          : "Complete installment fields to preview the schedule"
-                        : "Full amount only"}
-                    </p>
-                    {allowPartialPayments ? (
-                      <>
-                        <p>
-                          Minimum deposit:{" "}
-                          <span className="font-medium text-slate-900">
-                            {minimumDepositCentsPreview !== null
-                              ? formatCurrency(minimumDepositCentsPreview, currency)
-                              : "Required"}
-                          </span>
-                        </p>
-                        {estimatedInstallmentCents !== null ? (
-                          <p>
-                            Estimated installment:{" "}
-                            <span className="font-medium text-slate-900">
-                              {formatCurrency(estimatedInstallmentCents, currency)}
-                            </span>
-                          </p>
-                        ) : null}
-                      </>
-                    ) : (
-                      <p>Contacts can still pay the full amount at any time.</p>
-                    )}
-                  </div>
-                </div>
               </div>
             </div>
           </section>

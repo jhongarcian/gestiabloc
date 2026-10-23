@@ -61,12 +61,13 @@ function optionalSanitizedMultilineTextSchema(maxLength: number) {
   }, z.string().max(maxLength).nullable().optional())
 }
 
-export const ServiceTransactionNotesSchema = optionalSanitizedMultilineTextSchema(
-  SERVICE_TRANSACTION_NOTES_MAX_LENGTH,
-)
+export const ServiceTransactionNotesSchema =
+  optionalSanitizedMultilineTextSchema(SERVICE_TRANSACTION_NOTES_MAX_LENGTH)
 
 export const ServiceTransactionPaymentNoteSchema =
-  optionalSanitizedMultilineTextSchema(SERVICE_TRANSACTION_PAYMENT_NOTE_MAX_LENGTH)
+  optionalSanitizedMultilineTextSchema(
+    SERVICE_TRANSACTION_PAYMENT_NOTE_MAX_LENGTH,
+  )
 
 export const ServiceTransactionAmountCentsSchema = z
   .number()
@@ -94,9 +95,12 @@ export const ServiceTransactionDateOnlySchema = z
 
 export function getServiceTransactionFinancials(
   totalCents: number,
-  payments: Array<{ amountCents: number }>,
+  payments: Array<{ amountCents: number; voidedAt?: Date | string | null }>,
 ) {
-  const paidCents = payments.reduce((sum, payment) => sum + payment.amountCents, 0)
+  const paidCents = payments.reduce(
+    (sum, payment) => sum + (payment.voidedAt ? 0 : payment.amountCents),
+    0,
+  )
 
   return {
     paidCents,
@@ -109,8 +113,6 @@ export function getServiceTransactionPaymentValidationError({
   totalPriceCents,
   alreadyPaidCents,
   paymentAmountCents,
-  allowPartialPayments,
-  minimumPartialPaymentCents,
 }: {
   totalPriceCents: number
   alreadyPaidCents: number
@@ -121,15 +123,6 @@ export function getServiceTransactionPaymentValidationError({
   const nextPaidCents = alreadyPaidCents + paymentAmountCents
 
   if (nextPaidCents > totalPriceCents) return "PAYMENT_EXCEEDS_SERVICE_TOTAL"
-  if (paymentAmountCents === 0 || nextPaidCents >= totalPriceCents) return null
-  if (!allowPartialPayments) return "SERVICE_DOES_NOT_ALLOW_PARTIAL_PAYMENTS"
-  if (
-    minimumPartialPaymentCents !== null &&
-    paymentAmountCents < minimumPartialPaymentCents
-  ) {
-    return "PAYMENT_BELOW_MINIMUM"
-  }
-
   return null
 }
 
@@ -147,8 +140,10 @@ export function getServiceTransactionContactName(contact: {
   middleName?: string | null
   lastName?: string | null
 }) {
-  return [contact.firstName, contact.middleName, contact.lastName]
-    .map((part) => part?.trim())
-    .filter(Boolean)
-    .join(" ") || "Unnamed contact"
+  return (
+    [contact.firstName, contact.middleName, contact.lastName]
+      .map((part) => part?.trim())
+      .filter(Boolean)
+      .join(" ") || "Unnamed contact"
+  )
 }

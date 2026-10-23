@@ -2220,7 +2220,7 @@ router.get("/:tenantId/:contactId/summary", requireAuth, async (req, res, next) 
       nextAppointment,
     ] = await Promise.all([
       prismaWithContacts.contactServicePayment.aggregate({
-        where: {
+        where: { voidedAt: null,
           tenantId,
           contactService: {
             tenantId,

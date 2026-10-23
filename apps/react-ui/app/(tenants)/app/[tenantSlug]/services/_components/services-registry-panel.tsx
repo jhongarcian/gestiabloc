@@ -1,5 +1,10 @@
 "use client"
 
+import { paymentOptionsLabel, type PaymentSettings } from "@/lib/service-billing"
+
+import { ServicePaymentFields } from "@/components/service-payment-fields"
+import { type EnrollmentBillingValue } from "@/lib/service-billing"
+
 import { format } from "date-fns"
 import Link from "next/link"
 import { isAxiosError } from "axios"
@@ -91,14 +96,10 @@ import {
 } from "@/lib/routes"
 import {
   TRANSACTION_CONTACT_SEARCH_MAX_LENGTH,
-  TRANSACTION_MONEY_INPUT_MAX_LENGTH,
   TRANSACTION_NOTES_MAX_LENGTH,
-  parseTransactionMoneyToCents,
   sanitizeTransactionContactSearch,
-  sanitizeTransactionMoneyInput,
   sanitizeTransactionMultilineInput,
   sanitizeTransactionNotes,
-  sanitizeTransactionPaymentMode,
   sanitizeTransactionSingleLineInput,
 } from "@/lib/transaction-inputs"
 import { cn } from "@/lib/utils"
@@ -138,6 +139,7 @@ type ServiceListItem = {
   description: string | null
   basePriceCents: number
   currency: string
+  paymentSettings?: PaymentSettings
   allowPartialPayments: boolean
   minimumPartialPaymentCents: number | null
   isActive: boolean
@@ -170,7 +172,8 @@ type ServiceDetailsResponse = {
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
-    allowPartialPayments: boolean
+    paymentSettings?: PaymentSettings
+  allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
@@ -317,10 +320,6 @@ function formatCurrency(valueCents: number, currency: string) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
-}
-
-function centsToUsdInput(valueCents: number) {
-  return ((valueCents || 0) / 100).toFixed(2)
 }
 
 function getServiceTotalWithTaxCents({
@@ -785,10 +784,9 @@ export function PurchaseTransactionDialog({
   const [serviceId, setServiceId] = useState("")
   const [assignedProfessionalId, setAssignedProfessionalId] = useState("")
   const [followUpAssignedToUserId, setFollowUpAssignedToUserId] = useState("")
-  const [paymentMode, setPaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">(
-    "FULL",
-  )
-  const [initialPaymentUsd, setInitialPaymentUsd] = useState("")
+  const [enrollmentBilling, setEnrollmentBilling] = useState<EnrollmentBillingValue | null>(null)
+  const enrollmentRequestKey = useRef("")
+  const enrollmentSaving = useRef(false)
   const [notes, setNotes] = useState("")
   const [serviceDetails, setServiceDetails] = useState<
     ServiceDetailsResponse["service"] | null
@@ -808,6 +806,9 @@ export function PurchaseTransactionDialog({
 
   const resetForm = useCallback(() => {
     setStep(1)
+    setEnrollmentBilling(null)
+    enrollmentRequestKey.current = ""
+    enrollmentSaving.current = false
     setIsSaving(false)
     setSelectedContact(null)
     setContactResults([])
@@ -817,8 +818,6 @@ export function PurchaseTransactionDialog({
     setServiceId("")
     setAssignedProfessionalId("")
     setFollowUpAssignedToUserId("")
-    setPaymentMode("FULL")
-    setInitialPaymentUsd("")
     setNotes("")
     setServiceDetails(null)
   }, [])
@@ -871,12 +870,6 @@ export function PurchaseTransactionDialog({
         )
         if (requestId !== serviceDetailsRequest.current) return
         setServiceDetails(data.service)
-        setPaymentMode((current) => {
-          if (current === "PARTIAL" && !data.service.allowPartialPayments) {
-            return "FULL"
-          }
-          return current
-        })
       } catch {
         if (requestId !== serviceDetailsRequest.current) return
         setServiceDetails(null)
@@ -1063,40 +1056,8 @@ export function PurchaseTransactionDialog({
       return
     }
 
-    if (paymentMode === "PARTIAL" && !serviceDetails?.allowPartialPayments) {
-      toast.error("This service does not allow partial payments.")
-      return
-    }
-
-    const initialPaymentCents =
-      paymentMode === "FULL"
-        ? totalPriceCents
-        : paymentMode === "LATER"
-          ? 0
-          : parseTransactionMoneyToCents(initialPaymentUsd)
-
-    if (paymentMode === "PARTIAL") {
-      if (initialPaymentCents === null || initialPaymentCents <= 0) {
-        toast.error("Enter a valid partial payment amount.")
-        return
-      }
-
-      if (initialPaymentCents > totalPriceCents) {
-        toast.error("Partial payment cannot be greater than total amount.")
-        return
-      }
-
-      if (
-        serviceDetails?.minimumPartialPaymentCents !== null &&
-        serviceDetails?.minimumPartialPaymentCents !== undefined &&
-        initialPaymentCents < serviceDetails.minimumPartialPaymentCents
-      ) {
-        toast.error(
-          "Partial payment is below the minimum allowed for this service.",
-        )
-        return
-      }
-    }
+    if (!enrollmentBilling) { toast.error("Review the payment preview before creating the service."); return }
+    if (enrollmentSaving.current) return
 
     if (!serviceOptions.some((service) => service.id === serviceId)) {
       toast.error("Select a valid service.")
@@ -1125,6 +1086,8 @@ export function PurchaseTransactionDialog({
 
     const sanitizedNotes = sanitizeTransactionNotes(notes)
 
+    enrollmentSaving.current = true
+    enrollmentRequestKey.current ||= crypto.randomUUID()
     setIsSaving(true)
 
     try {
@@ -1136,7 +1099,8 @@ export function PurchaseTransactionDialog({
           workflowKind: "SERVICE_STEPS",
           ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
           ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
-          ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
+          ...enrollmentBilling,
+          requestKey: enrollmentRequestKey.current,
           ...(sanitizedNotes ? { notes: sanitizedNotes } : {}),
         },
       )
@@ -1165,6 +1129,7 @@ export function PurchaseTransactionDialog({
         toast.error("Could not create service transaction.")
       }
     } finally {
+      enrollmentSaving.current = false
       setIsSaving(false)
     }
   }
@@ -1563,157 +1528,10 @@ export function PurchaseTransactionDialog({
             </section>
           ) : null}
 
-          {step === 5 ? (
-            <section className="grid gap-4">
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-type">
-                    Payment Type
-                  </Label>
-                  <Select
-                    value={paymentMode}
-                    onValueChange={(value) =>
-                      setPaymentMode(sanitizeTransactionPaymentMode(value))
-                    }
-                    disabled={!serviceDetails}
-                  >
-                    <SelectTrigger id="service-transaction-payment-type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="FULL">Pay in Full</SelectItem>
-                      <SelectItem
-                        value="PARTIAL"
-                        disabled={!serviceDetails?.allowPartialPayments}
-                      >
-                        Partial Payment
-                      </SelectItem>
-                      <SelectItem value="LATER">Pay Later</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {!serviceDetails?.allowPartialPayments && serviceId ? (
-                    <p className="text-xs text-slate-500">
-                      This service supports full payment or pay later only.
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-cost">Service Cost</Label>
-                  <Input
-                    id="service-transaction-cost"
-                    readOnly
-                    value={
-                      serviceTotalCents !== null
-                        ? centsToUsdInput(serviceTotalCents)
-                        : ""
-                    }
-                    className="bg-slate-50 text-slate-600"
-                  />
-                  {serviceDetails &&
-                  serviceTotalCents !== null &&
-                  serviceTotalCents !== serviceDetails.basePriceCents ? (
-                    <p className="text-xs text-slate-500">
-                      Includes {serviceDetails.tenantBilling.taxLabel || "tax"} at{" "}
-                      {(serviceDetails.tenantBilling.defaultTaxRatePercent ?? 0)
-                        .toFixed(2)
-                        .replace(/\.00$/, "")}
-                      %.
-                    </p>
-                  ) : null}
-                </div>
-              </div>
-
-              {assignedProfessionalId && serviceDetails ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Assigned professional:{" "}
-                  <span className="font-medium text-slate-900">
-                    {getProfessionalLabel(
-                      serviceDetails.professionals.find(
-                        (item) => item.id === assignedProfessionalId,
-                      )!,
-                    )}
-                  </span>
-                </div>
-              ) : null}
-
-              {followUpAssignedToUserId ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Enrollment coordinator:{" "}
-                  <span className="font-medium text-slate-900">
-                    {followUpAssigneeOptions.find(
-                      (item) => item.value === followUpAssignedToUserId,
-                    )?.label ?? "Assigned user"}
-                  </span>
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-now">
-                    {paymentMode === "PARTIAL"
-                      ? `Partial Payment Amount (${serviceDetails?.currency ?? "USD"})`
-                      : `Payment Now (${serviceDetails?.currency ?? "USD"})`}
-                  </Label>
-                  <Input
-                    id="service-transaction-payment-now"
-                    value={
-                      paymentMode === "PARTIAL"
-                        ? initialPaymentUsd
-                        : paymentMode === "LATER"
-                          ? "0.00"
-                          : serviceTotalCents !== null
-                            ? centsToUsdInput(serviceTotalCents)
-                            : ""
-                    }
-                    onChange={(event) =>
-                      setInitialPaymentUsd(
-                        sanitizeTransactionMoneyInput(event.target.value),
-                      )
-                    }
-                    maxLength={TRANSACTION_MONEY_INPUT_MAX_LENGTH}
-                    readOnly={paymentMode !== "PARTIAL"}
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    className={
-                      paymentMode === "PARTIAL"
-                        ? undefined
-                        : "bg-slate-50 text-slate-600"
-                    }
-                  />
-                  {paymentMode === "PARTIAL" &&
-                  serviceDetails?.minimumPartialPaymentCents ? (
-                    <p className="text-xs text-slate-500">
-                      Minimum partial payment:{" "}
-                      {formatCurrency(
-                        serviceDetails.minimumPartialPaymentCents,
-                        serviceDetails.currency,
-                      )}
-                    </p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-notes">Notes</Label>
-                  <Textarea
-                    id="service-transaction-notes"
-                    value={notes}
-                    onChange={(event) =>
-                      setNotes(
-                        sanitizeTransactionMultilineInput(
-                          event.target.value,
-                          TRANSACTION_NOTES_MAX_LENGTH,
-                        ),
-                      )
-                    }
-                    maxLength={TRANSACTION_NOTES_MAX_LENGTH}
-                    rows={3}
-                    placeholder="Add context for this service purchase"
-                  />
-                </div>
-              </div>
-            </section>
-          ) : null}
+          <section className={step === 5 ? "grid gap-5" : "hidden"}>
+            {serviceId && open ? <ServicePaymentFields key={serviceId} tenantId={tenantId} serviceId={serviceId} disabled={isSaving} onChange={setEnrollmentBilling} /> : null}
+            <div className="grid gap-2"><Label htmlFor="service-transaction-notes">Service notes (optional)</Label><Textarea id="service-transaction-notes" value={notes} maxLength={TRANSACTION_NOTES_MAX_LENGTH} rows={3} disabled={isSaving} onChange={event => setNotes(sanitizeTransactionMultilineInput(event.target.value, TRANSACTION_NOTES_MAX_LENGTH))} /></div>
+          </section>
         </div>
 
         <DialogFooter className="shrink-0 border-t border-slate-200 pt-4">
@@ -2290,7 +2108,7 @@ export function ServicesRegistryPanel({
                         <div className="min-w-0">
                           <p className="text-xs font-medium text-slate-500">Payment</p>
                           <p className="mt-1 truncate font-medium text-slate-800">
-                            {service.allowPartialPayments ? "Partial allowed" : "Full only"}
+                            {paymentOptionsLabel(service)}
                           </p>
                         </div>
                         <div>
@@ -2327,7 +2145,7 @@ export function ServicesRegistryPanel({
                 <TableHead className="w-[24%] text-xs">Name</TableHead>
                 <TableHead className="w-[12%] text-xs">Cost</TableHead>
                 <TableHead className="w-[16%] text-xs">
-                  Minimum payment
+                  Payment options
                 </TableHead>
                 <TableHead className="w-[12%] text-xs">Checklist</TableHead>
                 <TableHead className="w-[22%] text-xs">Professionals</TableHead>
@@ -2393,14 +2211,7 @@ export function ServicesRegistryPanel({
                           href={serviceHref}
                           className="block truncate text-slate-700 hover:text-slate-700"
                         >
-                          {service.allowPartialPayments
-                            ? service.minimumPartialPaymentCents !== null
-                              ? formatCurrency(
-                                  service.minimumPartialPaymentCents,
-                                  service.currency,
-                                )
-                              : "No minimum"
-                            : "Full only"}
+                          {paymentOptionsLabel(service)}
                         </Link>
                       </TableCell>
                       <TableCell className="align-middle">
