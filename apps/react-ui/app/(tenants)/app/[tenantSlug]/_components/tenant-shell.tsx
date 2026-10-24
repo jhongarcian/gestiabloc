@@ -140,6 +140,8 @@ declare global {
 }
 
 const formatSegment = (segment: string) => {
+  if (segment === "ai") return "AI"
+  if (segment === "faq") return "FAQ"
   if (segment === "follow-ups") return "Follow-ups"
   if (segment === "follow-up") return "Follow-up"
   return segment.replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase())
@@ -148,6 +150,7 @@ const formatSegment = (segment: string) => {
 const COMPACT_LOCATION_LABELS: Readonly<Record<string, string>> = {
   account: "Account",
   "account-settings": "Account Settings",
+  ai: "AI",
   "ai-qualification": "AI Qualification",
   appointments: "Appointments",
   automations: "Automations",

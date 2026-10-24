@@ -4,7 +4,6 @@ import { redirect } from "next/navigation"
 
 import { api, type MeResponse } from "@/lib/api"
 
-import { EMPTY_SERVICE_FIT_PROFILE } from "../../_components/service-fit-rules-tab"
 import { ServiceDetailsPanelClient } from "./_components/service-details-panel-client"
 
 type ServiceDetailsResponse = {
@@ -54,10 +53,7 @@ export default async function AccountSettingsServiceDetailsPage({
       <ServiceDetailsPanelClient
         tenantId={membership.tenant.id}
         tenantSlug={tenantSlug}
-        service={{
-          ...data.service,
-          fitProfile: data.service.fitProfile ?? EMPTY_SERVICE_FIT_PROFILE,
-        }}
+        service={data.service}
       />
     )
   } catch (error) {
