@@ -21,6 +21,7 @@ import {
 import { sendVerifyEmail } from "../lib/email.js";
 import { getSafeTimezone, getTimezoneDateParts } from "../lib/appointment-booking.js";
 import { prisma } from "../lib/prisma.js";
+import { TenantAccountUpdateSchema, TenantAccountError, readTenantAccount, saveTenantAccount } from "../lib/tenant-account.js";
 import { enforceSameOrigin } from "../lib/security.js";
 import { normalizeTenantTagName } from "../lib/tag-utils.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
@@ -141,72 +142,6 @@ const optionalStringField = (max: number) =>
     },
     z.string().max(max).nullable().optional(),
   );
-
-const optionalEmailField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value !== "string") return value;
-      const trimmed = value.trim();
-      return trimmed.length > 0 ? trimmed : null;
-    },
-    z.string().email().max(255).nullable().optional(),
-  );
-
-const optionalUrlField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value !== "string") return value;
-      const trimmed = value.trim();
-      if (trimmed.length === 0) return null;
-
-      // Accept domain-style input (e.g. "acme.com") and normalize to https URL.
-      if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) {
-        return `https://${trimmed}`;
-      }
-
-      return trimmed;
-    },
-    z.string().url().max(255).nullable().optional(),
-  );
-
-const optionalPercentageField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) return null;
-        return Number(trimmed);
-      }
-
-      return value;
-    },
-    z.number().min(0).max(100).nullable().optional(),
-  );
-
-const UpdateTenantInfoSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  email: optionalEmailField(),
-  phone: optionalStringField(60),
-  addressLine1: optionalStringField(255),
-  addressLine2: optionalStringField(255),
-  city: optionalStringField(120),
-  state: optionalStringField(120),
-  postalCode: optionalStringField(40),
-  country: optionalStringField(120),
-  timezone: optionalStringField(100),
-  website: optionalUrlField(),
-  taxEnabled: z.boolean().optional().default(false),
-  taxLabel: optionalStringField(60),
-  defaultTaxRatePercent: optionalPercentageField(),
-}).superRefine((value, ctx) => {
-  if (value.taxEnabled && value.defaultTaxRatePercent === null) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["defaultTaxRatePercent"],
-      message: "Tax rate is required when taxes are enabled.",
-    });
-  }
-});
 
 const TIME_INPUT_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const;
@@ -1994,111 +1929,21 @@ router.patch(
 router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        addressLine1: true,
-        addressLine2: true,
-        city: true,
-        state: true,
-        postalCode: true,
-        country: true,
-        timezone: true,
-        website: true,
-        taxEnabled: true,
-        taxLabel: true,
-        defaultTaxRateBps: true,
-        emailVerified: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    if (!tenant) {
-      return res.status(404).json({ error: "TENANT_NOT_FOUND" });
-    }
-
-    return res.json({
-      ok: true,
-      tenant: {
-        ...tenant,
-        defaultTaxRatePercent:
-          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
-            ? tenant.defaultTaxRateBps / 100
-            : null,
-      },
-    });
+    return res.json({ ok: true, tenant: await readTenantAccount(prisma, tenantId) });
   } catch (error) {
+    if (error instanceof TenantAccountError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
 
 router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) => {
   try {
+    enforceSameOrigin(req);
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const payload = UpdateTenantInfoSchema.parse(req.body);
-
-    const tenant = await prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
-        name: payload.name,
-        email: payload.email ?? null,
-        phone: payload.phone ?? null,
-        addressLine1: payload.addressLine1 ?? null,
-        addressLine2: payload.addressLine2 ?? null,
-        city: payload.city ?? null,
-        state: payload.state ?? null,
-        postalCode: payload.postalCode ?? null,
-        country: payload.country ?? null,
-        timezone: payload.timezone ?? null,
-        website: payload.website ?? null,
-        taxEnabled: payload.taxEnabled,
-        taxLabel: payload.taxEnabled ? payload.taxLabel ?? null : null,
-        defaultTaxRateBps:
-          payload.taxEnabled &&
-            payload.defaultTaxRatePercent !== null &&
-            payload.defaultTaxRatePercent !== undefined
-            ? Math.round(payload.defaultTaxRatePercent * 100)
-            : null,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        addressLine1: true,
-        addressLine2: true,
-        city: true,
-        state: true,
-        postalCode: true,
-        country: true,
-        timezone: true,
-        website: true,
-        taxEnabled: true,
-        taxLabel: true,
-        defaultTaxRateBps: true,
-        emailVerified: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      tenant: {
-        ...tenant,
-        defaultTaxRatePercent:
-          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
-            ? tenant.defaultTaxRateBps / 100
-            : null,
-      },
-    });
+    const payload = TenantAccountUpdateSchema.parse(req.body);
+    return res.json({ ok: true, tenant: await saveTenantAccount(prisma, tenantId, payload) });
   } catch (error) {
+    if (error instanceof TenantAccountError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });

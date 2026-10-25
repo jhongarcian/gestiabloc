@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation"
 import { createContext, useContext, useState, type ReactNode } from "react"
 import {
   BarChart3,
-  Bot,
   Building2,
   ChevronRight,
   Layers3,
@@ -23,9 +22,13 @@ import {
   type AiSkillDraft,
   type AiWorkspaceDraft,
 } from "../_lib/demo-data"
+import type { AiHelperSettings } from "../_lib/helper-settings"
+import { useHelperSettings } from "./use-helper-settings"
+import { AiHelperAvatar } from "./ai-helper-avatar"
 
-type WorkspaceContext = {
+type WorkspaceContext = ReturnType<typeof useHelperSettings> & {
   basePath: string
+  companyName: string
   draft: AiWorkspaceDraft
   setHelper: (helper: AiWorkspaceDraft["helper"]) => void
   setCompany: (company: AiWorkspaceDraft["company"]) => void
@@ -60,21 +63,30 @@ export function useAiSkill(id: string) {
 
 export function AiWorkspace({
   tenantSlug,
+  tenantId,
+  companyName,
+  initialSettings,
   children,
 }: {
   tenantSlug: string
+  tenantId: string
+  companyName: string
+  initialSettings: AiHelperSettings | null
   children: ReactNode
 }) {
   const pathname = usePathname()
-  const [draft, setDraft] = useState(createSampleWorkspace)
+  const [sampleDraft, setDraft] = useState(createSampleWorkspace)
+  const helperState = useHelperSettings(tenantId, initialSettings)
+  const draft = { ...sampleDraft, helper: helperState.helper }
   const [saved, setSaved] = useState(() => draftSnapshots(draft))
   const basePath = `/app/${tenantSlug}/account-settings/ai`
   const helperName = draft.helper.name.trim() || "AI Helper"
 
   const context: WorkspaceContext = {
+    ...helperState,
     basePath,
+    companyName,
     draft,
-    setHelper: (helper) => setDraft((current) => ({ ...current, helper })),
     setCompany: (company) => setDraft((current) => ({ ...current, company })),
     updateSkill: (id, update) =>
       setDraft((current) => ({
@@ -85,6 +97,7 @@ export function AiWorkspace({
       })),
     hasChanges: (key, value) => saved[key] !== JSON.stringify(value),
     saveDraft: (key, value) => {
+      if (key === "helper") return
       const snapshot = JSON.stringify(value)
       if (saved[key] === snapshot) return
       setSaved((current) => ({ ...current, [key]: snapshot }))
@@ -100,9 +113,11 @@ export function AiWorkspace({
       <div className="grid min-h-0 min-w-0 flex-1 items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)]">
         <aside className="min-w-0 rounded-[26px] border border-slate-200 bg-white lg:sticky lg:top-4">
           <div className="flex items-center gap-3 p-4 lg:flex-col lg:items-start lg:gap-4 lg:p-5">
-            <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-blue-950 text-white lg:size-12">
-              <Bot className="size-6" aria-hidden="true" />
-            </div>
+            <AiHelperAvatar
+              avatar={helperState.savedHelper?.avatar}
+              name={helperName}
+              className="lg:size-12"
+            />
             <div className="flex min-w-0 flex-col gap-1">
               <p className="text-xs font-medium text-slate-500">
                 Your AI helper
@@ -117,7 +132,7 @@ export function AiWorkspace({
                 variant="secondary"
                 className="hidden w-fit lg:inline-flex"
               >
-                Preview
+                {helperState.helperReady ? "Account helper" : "Unavailable"}
               </Badge>
             </div>
             <Link
@@ -173,10 +188,15 @@ export function AiWorkspace({
         </aside>
         <div className="flex min-w-0 flex-col gap-4 pb-6">
           <Alert className="rounded-2xl border-blue-100 bg-blue-50/70">
-            <AlertTitle>UI preview — changes are temporary</AlertTitle>
+            <AlertTitle>
+              {pathname.endsWith("/settings")
+                ? "Helper settings are saved to your account"
+                : "UI preview — changes are temporary"}
+            </AlertTitle>
             <AlertDescription>
-              All content is sample data. Drafts reset when you refresh or leave
-              this workspace.
+              {pathname.endsWith("/settings")
+                ? "Avatar changes save immediately. Use Save changes for your helper’s name and preferences. AI conversations will be connected in a later step."
+                : "Skills, Company Info, and Analytics use sample data. Their drafts reset when you refresh or leave. Helper settings and avatar are saved in Settings."}
             </AlertDescription>
           </Alert>
           {children}

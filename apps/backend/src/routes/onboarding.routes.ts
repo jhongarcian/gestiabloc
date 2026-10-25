@@ -246,7 +246,7 @@ router.patch("/:tenantId/profile", ...adminMiddlewares, async (req, res, next) =
 
     const profile = await prisma.tenant.update({
       where: { id: tenantId },
-      data: payload,
+      data: { ...payload, accountRevision: { increment: 1 } },
       select: {
         id: true,
         slug: true,

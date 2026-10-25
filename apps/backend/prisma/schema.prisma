@@ -70,6 +70,7 @@ enum OtpPurpose {
 
 enum FilePurpose {
   AVATAR
+  AI_AVATAR
   GENERIC
 }
 
@@ -550,6 +551,7 @@ model File {
   createdBy              User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
   noteAttachments        ContactNoteAttachment[]
   serviceNoteAttachments ContactServiceNoteAttachment[]
+  aiHelperAvatars        TenantAiSettings[] @relation("AiHelperAvatar")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -557,6 +559,7 @@ model File {
   @@index([tenantId])
   @@index([createdById])
   @@index([purpose])
+  @@unique([tenantId, id])
 }
 
 model TaskActivity {
@@ -639,12 +642,15 @@ model PasswordResetToken {
 }
 
 model Tenant {
+  aiSettings TenantAiSettings?
   serviceActionResults ServiceAutomationActionResult[]
   automationExecutionLeases AutomationExecutionLease[]
   automationExecutionTenant AutomationExecutionTenant?
   id                                   String                         @id @default(uuid())
   name                                 String
   slug                                 String                         @unique
+  description                          String?
+  accountRevision                      Int                            @default(0)
   email                                String?
   phone                                String?
   addressLine1                         String?
@@ -730,6 +736,23 @@ model Tenant {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model TenantAiSettings {
+  tenantId       String @id
+  name           String @default("AI Helper")
+  language       String @default("English")
+  tone           String @default("Professional")
+  instructions   String @default("")
+  revision       Int    @default(0)
+  avatarPresetId String @default("bot")
+  avatarFileId   String?
+  avatarRevision Int    @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  avatarFile File?  @relation("AiHelperAvatar", fields: [tenantId, avatarFileId], references: [tenantId, id], onDelete: NoAction, onUpdate: Cascade)
 }
 
 model TenantLinkedEntity {

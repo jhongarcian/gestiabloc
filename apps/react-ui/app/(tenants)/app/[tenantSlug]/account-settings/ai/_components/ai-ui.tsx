@@ -170,15 +170,17 @@ export function AiSelect({
   value,
   options,
   onChange,
+  disabled,
 }: {
   id: string
   label: string
   value: string
   options: Array<string | { value: string; label: string }>
   onChange: (value: string) => void
+  disabled?: boolean
 }) {
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger
         id={id}
         aria-label={label}

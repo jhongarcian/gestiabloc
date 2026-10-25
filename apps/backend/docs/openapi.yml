@@ -6731,7 +6731,158 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /api/account-settings/{tenantId}/ai/settings:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+    get:
+      tags: [Account Settings]
+      summary: Read the account AI helper settings
+      description: Requires an active tenant administrator. Returns clean defaults without creating a row for accounts with no saved settings.
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200":
+          $ref: "#/components/responses/AiHelperSettingsSaved"
+        "401":
+          description: Authentication required
+        "403":
+          description: Active tenant administrator access required
+    patch:
+      tags: [Account Settings]
+      summary: Save the account AI helper name and preferences
+      description: Requires an active tenant administrator and an allowed browser origin. Sends the current text revision; avatar changes use an independent revision. Does not activate AI conversations or change service profiles.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiHelperSettingsUpdate"
+      responses:
+        "200":
+          $ref: "#/components/responses/AiHelperSettingsSaved"
+        "400":
+          description: Invalid fields or unexpected properties
+        "401":
+          description: Authentication required
+        "403":
+          description: Active tenant administrator access and allowed origin required
+        "409":
+          description: AI_SETTINGS_CONFLICT — reload saved settings and explicitly resolve the text conflict before retrying
+  /api/account-settings/{tenantId}/ai/avatar:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+    post:
+      tags: [Account Settings]
+      summary: Upload or replace the account AI helper avatar
+      description: Requires an active tenant administrator and an allowed browser origin. Accepts one PNG, JPEG, or WebP image up to 5 MiB, verified against its content signature. Stored separately from personal profile avatars. Failed uploads or stale revisions retain the saved avatar; replaced AI files are cleaned up after the new avatar is saved.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [file, avatarRevision]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                avatarRevision:
+                  type: integer
+                  minimum: 0
+                  maximum: 2147483646
+      responses:
+        "200":
+          $ref: "#/components/responses/AiHelperSettingsSaved"
+        "400":
+          description: Missing file, invalid image, unexpected upload fields, or invalid revision
+        "401":
+          description: Authentication required
+        "403":
+          description: Active tenant administrator access and allowed origin required
+        "409":
+          description: AI_AVATAR_CONFLICT — reload the saved avatar before choosing again
+        "413":
+          description: FILE_TOO_LARGE — image exceeds 5 MiB
+        "503":
+          description: AVATAR_UPLOAD_FAILED — storage unavailable; current avatar unchanged
+    patch:
+      tags: [Account Settings]
+      summary: Choose a built-in helper avatar
+      description: Requires an active tenant administrator and an allowed browser origin. Replaces any uploaded helper image immediately.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [presetId, avatarRevision]
+              properties:
+                presetId:
+                  type: string
+                  enum: [bot, sparkles, compass, lightbulb]
+                avatarRevision:
+                  type: integer
+                  minimum: 0
+                  maximum: 2147483646
+      responses:
+        "200":
+          $ref: "#/components/responses/AiHelperSettingsSaved"
+        "400":
+          description: Invalid preset or revision
+        "401":
+          description: Authentication required
+        "403":
+          description: Active tenant administrator access and allowed origin required
+        "409":
+          description: AI_AVATAR_CONFLICT
+    delete:
+      tags: [Account Settings]
+      summary: Remove the uploaded helper avatar and restore the bot
+      description: Requires an active tenant administrator and an allowed browser origin. Does not affect any personal profile avatar.
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [avatarRevision]
+              properties:
+                avatarRevision:
+                  type: integer
+                  minimum: 0
+                  maximum: 2147483646
+      responses:
+        "200":
+          $ref: "#/components/responses/AiHelperSettingsSaved"
+        "400":
+          description: Invalid revision
+        "401":
+          description: Authentication required
+        "403":
+          description: Active tenant administrator access and allowed origin required
+        "409":
+          description: AI_AVATAR_CONFLICT
 components:
+  responses:
+    AiHelperSettingsSaved:
+      description: Current persisted helper settings, including independent text and avatar revisions
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, settings]
+            properties:
+              ok:
+                type: boolean
+                enum: [true]
+              settings:
+                $ref: "#/components/schemas/AiHelperSettings"
   securitySchemes:
     cookieAuth:
       type: apiKey
@@ -6807,6 +6958,66 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    AiHelperSettingsUpdate:
+      type: object
+      additionalProperties: false
+      required: [name, language, tone, instructions, revision]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: AI Helper
+        language:
+          type: string
+          enum: [English, Spanish, English and Spanish]
+        tone:
+          type: string
+          enum: [Professional, Warm, Direct]
+        instructions:
+          type: string
+          maxLength: 4000
+        revision:
+          type: integer
+          minimum: 0
+          maximum: 2147483646
+    AiHelperSettings:
+      type: object
+      required: [name, language, tone, instructions, revision, avatar]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          example: AI Helper
+        language:
+          type: string
+          enum: [English, Spanish, English and Spanish]
+        tone:
+          type: string
+          enum: [Professional, Warm, Direct]
+        instructions:
+          type: string
+          maxLength: 4000
+        revision:
+          type: integer
+          minimum: 0
+          maximum: 2147483646
+        avatar:
+          type: object
+          required: [presetId, imageUrl, revision]
+          properties:
+            presetId:
+              type: string
+              enum: [bot, sparkles, compass, lightbulb]
+            imageUrl:
+              type: string
+              format: uri
+              nullable: true
+            revision:
+              type: integer
+              minimum: 0
+              maximum: 2147483646
     RetiredServiceWorkflow:
       type: object
       nullable: true

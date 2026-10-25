@@ -1,7 +1,5 @@
 "use client"
 
-import { Bot } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
 import {
   Field,
   FieldDescription,
@@ -15,7 +13,6 @@ import { isSourceUrl } from "../_lib/demo-data"
 import {
   AiPageHeader,
   AiPanel,
-  AiSelect,
   DraftButton,
   INPUT_CLASS,
   TEXTAREA_CLASS,
@@ -156,126 +153,4 @@ export function AiCompanyInfo() {
   )
 }
 
-export function AiSettings() {
-  const { draft, setHelper } = useAiWorkspace()
-  const helper = draft.helper
-  const valid = Boolean(helper.name.trim())
-  return (
-    <>
-      <AiPageHeader
-        title="Settings"
-        description="Give your helper a name and a consistent way of speaking."
-        actions={<DraftButton draftKey="helper" value={helper} valid={valid} />}
-      />
-      <div className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
-        <AiPanel
-          title="Helper identity"
-          description="These preferences apply to the helper across all skills."
-        >
-          <FieldGroup className="gap-5">
-            <Field data-invalid={!valid}>
-              <FieldLabel htmlFor="helper-name">Helper name</FieldLabel>
-              <Input
-                id="helper-name"
-                className={INPUT_CLASS}
-                maxLength={80}
-                value={helper.name}
-                onChange={(event) =>
-                  setHelper({ ...helper, name: event.target.value })
-                }
-                aria-invalid={!valid}
-                aria-describedby={
-                  !valid ? "helper-name-error" : "helper-name-hint"
-                }
-              />
-              <FieldDescription id="helper-name-hint">
-                The sidebar updates as you type.
-              </FieldDescription>
-              {!valid ? (
-                <FieldError id="helper-name-error">
-                  Enter a name for your helper.
-                </FieldError>
-              ) : null}
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="helper-language">
-                Response language
-              </FieldLabel>
-              <AiSelect
-                id="helper-language"
-                label="Response language"
-                value={helper.language}
-                options={["English", "Spanish", "English and Spanish"]}
-                onChange={(language) => setHelper({ ...helper, language })}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="helper-tone">Tone</FieldLabel>
-              <AiSelect
-                id="helper-tone"
-                label="Tone"
-                value={helper.tone}
-                options={["Professional", "Warm", "Direct"]}
-                onChange={(tone) => setHelper({ ...helper, tone })}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="helper-instructions">
-                General instructions
-              </FieldLabel>
-              <Textarea
-                id="helper-instructions"
-                className={TEXTAREA_CLASS}
-                rows={6}
-                value={helper.instructions}
-                onChange={(event) =>
-                  setHelper({ ...helper, instructions: event.target.value })
-                }
-              />
-              <FieldDescription>
-                Describe how the helper should guide a conversation and when to
-                involve your team.
-              </FieldDescription>
-            </Field>
-          </FieldGroup>
-        </AiPanel>
-        <AiPanel
-          title="Identity preview"
-          description="A sample greeting, without a live AI conversation."
-        >
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-blue-950 text-white">
-                <Bot className="size-6" aria-hidden="true" />
-              </div>
-              <div className="min-w-0">
-                <p className="break-words text-sm font-semibold text-slate-950">
-                  {helper.name.trim() || "AI Helper"}
-                </p>
-                <p className="break-words text-xs text-slate-500">
-                  {draft.company.name.trim() || "Your company"}
-                </p>
-              </div>
-            </div>
-            <div className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">
-              Hi, I’m {helper.name.trim() || "AI Helper"}. I can help you
-              understand our services and prepare for a conversation with our
-              team.
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">{helper.language}</Badge>
-              <Badge variant="outline">{helper.tone}</Badge>
-            </div>
-            <p className="text-xs leading-5 text-slate-500">
-              Language, tone, and instructions are draft preferences. The
-              greeting illustrates the helper’s identity.
-            </p>
-          </div>
-        </AiPanel>
-      </div>
-      <div className="flex justify-end">
-        <DraftButton draftKey="helper" value={helper} valid={valid} />
-      </div>
-    </>
-  )
-}
+export { AiSettings } from "./ai-helper-settings-panel"
