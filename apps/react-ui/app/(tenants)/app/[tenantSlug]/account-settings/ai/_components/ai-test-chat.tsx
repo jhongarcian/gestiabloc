@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { Loader2, MessageCircle, Send } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
 import {
   Empty,
   EmptyDescription,
@@ -129,6 +130,14 @@ export function AiTestChat({
                   <p className="text-xs font-semibold text-blue-950">
                     {turn.reply.helper.name}
                   </p>
+                  {turn.reply.answerMode === "EXACT" ||
+                  turn.reply.answerMode === "TRANSLATED" ? (
+                    <Badge variant="outline" className="w-fit">
+                      {turn.reply.answerMode === "EXACT"
+                        ? "Answer as written"
+                        : "Translated answer"}
+                    </Badge>
+                  ) : null}
                   <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-700 [overflow-wrap:anywhere]">
                     {turn.reply.answer}
                   </p>
@@ -144,7 +153,7 @@ export function AiTestChat({
                               onClick={() => setOpen(false)}
                               href={
                                 source.skillId
-                                  ? `${basePath}/skills/${source.skillId}/knowledge-base`
+                                  ? `${basePath}/skills/${source.skillId}/${source.section === "faq" ? `faq${source.faqId ? `#faq-${source.faqId}` : ""}` : "knowledge-base"}`
                                   : `${basePath}/company-info`
                               }
                               className="rounded text-xs font-semibold text-blue-800 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"

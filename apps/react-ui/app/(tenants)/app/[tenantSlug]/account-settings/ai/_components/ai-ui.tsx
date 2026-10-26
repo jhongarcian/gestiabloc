@@ -2,7 +2,6 @@
 
 import Link from "next/link"
 import type { ReactNode } from "react"
-import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -135,32 +134,6 @@ export function AiEmpty({
         <EmptyDescription>{description}</EmptyDescription>
       </EmptyHeader>
     </Empty>
-  )
-}
-
-export function DraftButton({
-  draftKey,
-  value,
-  valid = true,
-}: {
-  draftKey: string
-  value: unknown
-  valid?: boolean
-}) {
-  const { hasChanges, saveDraft } = useAiWorkspace()
-  if (!hasChanges(draftKey, value)) return null
-  return (
-    <Button
-      type="button"
-      variant="ghost"
-      className={PRIMARY_BUTTON}
-      disabled={!valid}
-      onClick={() => {
-        if (valid) saveDraft(draftKey, value)
-      }}
-    >
-      Save draft
-    </Button>
   )
 }
 

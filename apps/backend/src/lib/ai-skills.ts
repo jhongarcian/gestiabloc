@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto"
+import { aiProfileRevision } from "./ai-profile-revision.js"
+import { knowledgeRevision, knowledgeReadOnlyReason } from "./ai-knowledge.js"
 import { z } from "zod"
 import type { Prisma, PrismaClient } from "../generated/prisma/index.js"
 import {
@@ -104,17 +105,8 @@ export function qualificationFields(
     optionMetadata: profile.optionMetadata,
   }
 }
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
-  if (value && typeof value === "object")
-    return `{${Object.entries(value)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(",")}}`
-  return JSON.stringify(value) ?? "null"
-}
 export function aiSkillRevision(value: unknown) {
-  return createHash("sha256").update(stableJson(value)).digest("hex")
+  return aiProfileRevision(value)
 }
 export function qualificationReadOnlyReason(raw: unknown) {
   if (raw === null || raw === undefined) return null
@@ -212,6 +204,7 @@ export const aiSkillSelect = {
   isActive: true,
   sortOrder: true,
   fitProfile: true,
+  _count: { select: { aiFaqs: true } },
   billingMode: true,
   checklistMode: true,
   ...linkedSelect,
@@ -250,6 +243,9 @@ export function presentAiSkill(service: AiSkillRecord) {
       parent.kind === "GROUP" &&
       parent.tenantId === service.tenantId,
     tagline: service.description ?? "",
+    faqCount: service._count?.aiFaqs ?? 0,
+    knowledgeRevision: knowledgeRevision(service.fitProfile),
+    knowledgeReadOnlyReason: knowledgeReadOnlyReason(service.fitProfile),
     revision: aiSkillRevision(service.fitProfile),
     qualification: qualificationFields(profile),
     qualificationReadOnlyReason: qualificationReadOnlyReason(

@@ -3,6 +3,7 @@ import type {
   ServiceFitProfileDraft,
 } from "../../_components/service-fit-rules-tab"
 import type { AiSkillDraft } from "./demo-data"
+import { knowledgeInput } from "./content"
 
 export type AiQualification = Pick<
   ServiceFitProfileDraft,
@@ -17,6 +18,9 @@ export type AiSkillDto = {
   parentActive: boolean
   availableToAssistant: boolean
   tagline: string
+  faqCount: number
+  knowledgeRevision: string
+  knowledgeReadOnlyReason: string | null
   revision: string
   qualification: AiQualification
   qualificationReadOnlyReason: string | null
@@ -58,9 +62,17 @@ export function toSkillDraft(skill: AiSkillDto): AiSkillDraft {
     ...skill,
     qualification: structuredClone(skill.qualification),
     savedQualification: structuredClone(skill.qualification),
-    faqs: [],
+    savedKnowledge: knowledgeInput({
+      description: skill.knowledgeProfile.overview,
+      pricingNotes: skill.knowledgeProfile.pricingNotes,
+      workflowNotes: skill.knowledgeProfile.workflowNotes,
+      adapter: skill.knowledgeProfile.adapter,
+      verification: skill.verificationProfile,
+    }),
     knowledge: {
       description: skill.knowledgeProfile.overview,
+      pricingNotes: skill.knowledgeProfile.pricingNotes,
+      workflowNotes: skill.knowledgeProfile.workflowNotes,
       adapter: skill.knowledgeProfile.adapter,
       verification: {
         mode: skill.verificationProfile.mode,
@@ -88,3 +100,42 @@ export function toSkillDraft(skill: AiSkillDto): AiSkillDraft {
 export const qualificationDirty = (skill: AiSkillDraft) =>
   JSON.stringify(skill.qualification) !==
   JSON.stringify(skill.savedQualification)
+export const knowledgeDirty = (skill: AiSkillDraft) =>
+  JSON.stringify(knowledgeInput(skill.knowledge)) !==
+  JSON.stringify(skill.savedKnowledge)
+export function mergeSavedSkill(
+  current: AiSkillDraft,
+  dto: AiSkillDto,
+  section: "knowledge" | "qualification" | "refresh",
+): AiSkillDraft {
+  const next = toSkillDraft(dto)
+  const keepQualification =
+    section !== "qualification" && qualificationDirty(current)
+  const keepKnowledge = section !== "knowledge" && knowledgeDirty(current)
+  return {
+    ...next,
+    qualification: keepQualification
+      ? current.qualification
+      : next.qualification,
+    savedQualification: keepQualification
+      ? current.savedQualification
+      : next.savedQualification,
+    revision:
+      keepQualification &&
+      JSON.stringify(dto.qualification) !==
+        JSON.stringify(current.savedQualification)
+        ? current.revision
+        : next.revision,
+    knowledge: {
+      ...(keepKnowledge ? current.knowledge : next.knowledge),
+      links: current.knowledge.links,
+      files: current.knowledge.files,
+    },
+    savedKnowledge: keepKnowledge
+      ? current.savedKnowledge
+      : next.savedKnowledge,
+    knowledgeRevision: keepKnowledge
+      ? current.knowledgeRevision
+      : next.knowledgeRevision,
+  }
+}

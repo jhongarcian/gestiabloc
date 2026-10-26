@@ -6948,6 +6948,146 @@ paths:
         "403": { description: Administrator access required or untrusted origin }
         "404": { description: Offering not found in this tenant }
         "409": { description: AI_QUALIFICATION_CONFLICT or AI_PROFILE_REVIEW_REQUIRED; existing configuration remains unchanged }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/faqs:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - $ref: "#/components/parameters/AiSkillId"
+    get:
+      tags: [AI]
+      summary: Read ordered individual FAQs and preserved legacy notes
+      security: [{ cookieAuth: [] }]
+      responses:
+        "200": { $ref: "#/components/responses/AiFaqSaved" }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator required }
+        "404": { description: Offering not found in this tenant }
+    post:
+      tags: [AI]
+      summary: Append an FAQ with a stable server-generated ID
+      security: [{ cookieAuth: [] }]
+      description: Active tenant administrators and trusted origins only. Maximum 100 questions per skill. Uses a collection revision and the service hierarchy lock.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiFaqMutation" }
+      responses:
+        "201": { $ref: "#/components/responses/AiFaqSaved" }
+        "400": { description: Invalid request or FAQ limit reached }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access or trusted origin required }
+        "404": { description: Offering not found in this tenant }
+        "409": { description: AI_FAQ_CONFLICT; reload and review before retrying }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/faqs/{faqId}:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - $ref: "#/components/parameters/AiSkillId"
+      - in: path
+        name: faqId
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [AI]
+      summary: Edit one FAQ without changing its ID or position
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AiFaqMutation" }
+      responses:
+        "200": { $ref: "#/components/responses/AiFaqSaved" }
+        "400": { description: Invalid request }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access or trusted origin required }
+        "404": { description: Skill or FAQ not found in this tenant }
+        "409": { description: AI_FAQ_CONFLICT }
+    delete:
+      tags: [AI]
+      summary: Remove one FAQ from storage and subsequent retrieval
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision]
+              properties:
+                revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+      responses:
+        "200": { $ref: "#/components/responses/AiFaqSaved" }
+        "400": { description: Invalid request }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access or trusted origin required }
+        "404": { description: Skill or FAQ not found in this tenant }
+        "409": { description: AI_FAQ_CONFLICT }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/faqs/order:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - $ref: "#/components/parameters/AiSkillId"
+    put:
+      tags: [AI]
+      summary: Reorder the complete FAQ collection
+      security: [{ cookieAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, ids]
+              properties:
+                revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+                ids:
+                  type: array
+                  maxItems: 100
+                  uniqueItems: true
+                  items: { type: string, format: uuid }
+      responses:
+        "200": { $ref: "#/components/responses/AiFaqSaved" }
+        "400": { description: Invalid request or incomplete/duplicate/foreign IDs }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access or trusted origin required }
+        "404": { description: Skill not found in this tenant }
+        "409": { description: AI_FAQ_CONFLICT }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/knowledge:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - $ref: "#/components/parameters/AiSkillId"
+    patch:
+      tags: [AI]
+      summary: Save description and advanced knowledge guidance
+      security: [{ cookieAuth: [] }]
+      description: Section revision covers raw knowledge and verification profiles. Preserves qualification, legacy FAQ prose, source URLs, unknown extensions, billing, and service steps. Does not fetch URLs or upload files.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, knowledge]
+              properties:
+                revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+                knowledge: { $ref: "#/components/schemas/AiKnowledgeInput" }
+      responses:
+        "200":
+          description: Current saved skill, without qualification field catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  skill: { $ref: "#/components/schemas/AiSkill" }
+        "400": { description: Invalid request or cross-section writes }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access or trusted origin required }
+        "404": { description: Skill not found in this tenant }
+        "409": { description: AI_KNOWLEDGE_CONFLICT or AI_KNOWLEDGE_REVIEW_REQUIRED }
   /api/account-settings/{tenantId}/ai/test-chat:
     get:
       tags: [AI]
@@ -7015,6 +7155,27 @@ paths:
         "503": { description: AI_PROVIDER_UNAVAILABLE; provider absent, inaccessible, timed out, or disconnected }
 components:
   responses:
+    AiFaqSaved:
+      description: Ordered saved FAQs, collection revision and unchanged legacy FAQ prose
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, enum: [true] }
+              revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+              legacyNotes: { type: string }
+              faqs:
+                type: array
+                maxItems: 100
+                items:
+                  type: object
+                  properties:
+                    id: { type: string, format: uuid }
+                    sortOrder: { type: integer }
+                    question: { type: string, minLength: 1, maxLength: 500 }
+                    answer: { type: string, minLength: 1, maxLength: 4000 }
+                    exactAnswer: { type: boolean }
     AiSkillSaved:
       description: Current skill and its available qualification field catalog
       content:
@@ -7048,6 +7209,11 @@ components:
       in: cookie
       name: sid
   parameters:
+    AiSkillId:
+      in: path
+      name: skillId
+      required: true
+      schema: { type: string, format: uuid }
     TenantIdPathParam:
       in: path
       name: tenantId
@@ -7117,11 +7283,49 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    AiFaqInput:
+      type: object
+      additionalProperties: false
+      required: [question, answer, exactAnswer]
+      properties:
+        question: { type: string, minLength: 1, maxLength: 500 }
+        answer: { type: string, minLength: 1, maxLength: 4000 }
+        exactAnswer:
+          type: boolean
+          description: Close matches use the saved answer as written; other supported response languages receive a faithful translation. False adapts to the conversation.
+    AiFaqMutation:
+      type: object
+      additionalProperties: false
+      required: [revision, faq]
+      properties:
+        revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+        faq: { $ref: "#/components/schemas/AiFaqInput" }
+    AiKnowledgeInput:
+      type: object
+      additionalProperties: false
+      required: [description, pricingNotes, workflowNotes, adapter, verification]
+      properties:
+        description: { type: string, maxLength: 6000 }
+        pricingNotes: { type: string, maxLength: 4000 }
+        workflowNotes: { type: string, maxLength: 4000 }
+        adapter: { type: string, enum: [NONE, IMMIGRATION_USCIS] }
+        verification:
+          type: object
+          additionalProperties: false
+          required: [mode, guidance, triggerKeywords]
+          properties:
+            mode: { type: string, enum: [NONE, WEB_SOURCES, INTERNAL_KB, EXTERNAL_API, MANUAL_CONFIRMATION] }
+            guidance: { type: string, maxLength: 4000 }
+            triggerKeywords:
+              type: array
+              maxItems: 12
+              items: { type: string, minLength: 1, maxLength: 120 }
     AiTestReply:
       type: object
       properties:
         id: { type: string, format: uuid }
         answer: { type: string, maxLength: 6000 }
+        answerMode: { type: string, enum: [ADAPTED, EXACT, TRANSLATED] }
         helper:
           type: object
           properties:
@@ -7137,8 +7341,9 @@ components:
             properties:
               id: { type: string }
               label: { type: string }
-              section: { type: string, enum: [company, overview, pricing, checklist, guidance] }
+              section: { type: string, enum: [company, overview, pricing, checklist, guidance, faq] }
               skillId: { type: string, format: uuid, nullable: true }
+              faqId: { type: string, format: uuid }
               excerpt: { type: string, maxLength: 320 }
         context:
           type: object
@@ -7225,16 +7430,19 @@ components:
         parentActive: { type: boolean }
         availableToAssistant: { type: boolean }
         tagline: { type: string }
+        faqCount: { type: integer, minimum: 0 }
+        knowledgeRevision: { type: string, pattern: "^[a-f0-9]{64}$" }
+        knowledgeReadOnlyReason: { type: string, nullable: true }
         revision: { type: string, pattern: "^[a-f0-9]{64}$" }
         qualificationReadOnlyReason: { type: string, nullable: true }
         qualification:
           $ref: "#/components/schemas/AiQualification"
         knowledgeProfile:
           type: object
-          description: Existing normalized service knowledge; read-only in this API
+          description: Current normalized service knowledge; edited through the section-specific knowledge endpoint
         verificationProfile:
           type: object
-          description: Existing normalized verification guidance; read-only in this API
+          description: Current normalized verification guidance; source URLs are preserved and not edited in this chunk
         notes:
           type: object
           description: Effective service overview, pricing and non-archived checklist with owning source service IDs, including parent inheritance

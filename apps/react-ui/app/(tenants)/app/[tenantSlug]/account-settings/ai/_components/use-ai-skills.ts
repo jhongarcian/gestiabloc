@@ -7,10 +7,13 @@ import { api } from "@/lib/api"
 import type { AiSkillDraft } from "../_lib/demo-data"
 import {
   qualificationDirty,
+  knowledgeDirty,
+  mergeSavedSkill,
   toSkillDraft,
   type AiSkillResponse,
   type AiSkillsResponse,
 } from "../_lib/skills"
+import { knowledgeInput, knowledgeValidation } from "../_lib/content"
 
 function message(error: unknown) {
   if (isAxiosError(error)) {
@@ -47,6 +50,15 @@ export function useAiSkills(
   )
   const [catalogBusy, setCatalogBusy] = useState(false)
   const [savingSkillId, setSavingSkillId] = useState<string | null>(null)
+  const [savingKnowledgeId, setSavingKnowledgeId] = useState<string | null>(
+    null,
+  )
+  const [knowledgeErrors, setKnowledgeErrors] = useState<
+    Record<string, string>
+  >({})
+  const [knowledgeConflicts, setKnowledgeConflicts] = useState<
+    Record<string, AiSkillResponse>
+  >({})
   const [skillErrors, setSkillErrors] = useState<Record<string, string>>({})
   const [skillConflicts, setSkillConflicts] = useState<
     Record<string, AiSkillResponse>
@@ -68,6 +80,7 @@ export function useAiSkills(
         : [...current, next]
     })
     setSkillErrors((current) => ({ ...current, [id]: "" }))
+    setKnowledgeErrors((current) => ({ ...current, [id]: "" }))
   }
   async function reloadSkills() {
     if (lock.current) return
@@ -79,20 +92,7 @@ export function useAiSkills(
         data.skills.map((dto) => {
           const next = toSkillDraft(dto)
           const previous = current.find((skill) => skill.id === dto.id)
-          return previous
-            ? {
-                ...next,
-                faqs: previous.faqs,
-                knowledge: previous.knowledge,
-                ...(qualificationDirty(previous)
-                  ? {
-                      qualification: previous.qualification,
-                      savedQualification: previous.savedQualification,
-                      revision: previous.revision,
-                    }
-                  : {}),
-              }
-            : next
+          return previous ? mergeSavedSkill(previous, dto, "refresh") : next
         }),
       )
       setFields(data.fields)
@@ -124,12 +124,7 @@ export function useAiSkills(
       )
       setSkills((current) => {
         const existing = current.find((item) => item.id === skill.id) ?? skill
-        const next = {
-          ...existing,
-          ...toSkillDraft(data.skill),
-          faqs: existing.faqs,
-          knowledge: existing.knowledge,
-        }
+        const next = mergeSavedSkill(existing, data.skill, "qualification")
         return current.some((item) => item.id === skill.id)
           ? current.map((item) => (item.id === skill.id ? next : item))
           : [...current, next]
@@ -188,6 +183,79 @@ export function useAiSkills(
     setFields(conflict.fields)
     setFieldsBySkill((current) => ({ ...current, [skill.id]: conflict.fields }))
   }
+  async function saveKnowledge(skill: AiSkillDraft) {
+    if (
+      lock.current ||
+      !knowledgeDirty(skill) ||
+      knowledgeValidation(skill.knowledge) ||
+      skill.knowledgeReadOnlyReason ||
+      knowledgeConflicts[skill.id]
+    )
+      return
+    lock.current = true
+    setSavingKnowledgeId(skill.id)
+    setKnowledgeErrors((current) => ({ ...current, [skill.id]: "" }))
+    try {
+      const { data } = await api.patch<{ skill: AiSkillResponse["skill"] }>(
+        `${path}/${skill.id}/knowledge`,
+        {
+          revision: skill.knowledgeRevision,
+          knowledge: knowledgeInput(skill.knowledge),
+        },
+      )
+      setSkills((current) => {
+        const existing = current.find((item) => item.id === skill.id) ?? skill
+        const next = mergeSavedSkill(existing, data.skill, "knowledge")
+        return current.some((item) => item.id === skill.id)
+          ? current.map((item) => (item.id === skill.id ? next : item))
+          : [...current, next]
+      })
+      toast.success("Knowledge saved.")
+    } catch (error) {
+      if (
+        isAxiosError(error) &&
+        error.response?.data?.error === "AI_KNOWLEDGE_CONFLICT"
+      ) {
+        try {
+          const { data } = await api.get<AiSkillResponse>(`${path}/${skill.id}`)
+          setKnowledgeConflicts((current) => ({ ...current, [skill.id]: data }))
+        } catch (cause) {
+          setKnowledgeErrors((current) => ({
+            ...current,
+            [skill.id]: message(cause),
+          }))
+        }
+      } else
+        setKnowledgeErrors((current) => ({
+          ...current,
+          [skill.id]: message(error),
+        }))
+    } finally {
+      lock.current = false
+      setSavingKnowledgeId(null)
+    }
+  }
+  function resolveKnowledgeConflict(skill: AiSkillDraft, keepEdits: boolean) {
+    const conflict = knowledgeConflicts[skill.id]
+    if (!conflict || lock.current) return
+    updateSkill(
+      skill.id,
+      (current) => {
+        const next = mergeSavedSkill(current, conflict.skill, "knowledge")
+        return {
+          ...next,
+          knowledge: keepEdits ? current.knowledge : next.knowledge,
+        }
+      },
+      skill,
+    )
+    setKnowledgeConflicts((current) => {
+      const next = { ...current }
+      delete next[skill.id]
+      return next
+    })
+    setKnowledgeErrors((current) => ({ ...current, [skill.id]: "" }))
+  }
   return {
     skills,
     fields,
@@ -196,6 +264,11 @@ export function useAiSkills(
     catalogError,
     catalogBusy,
     savingSkillId,
+    savingKnowledgeId,
+    knowledgeErrors,
+    knowledgeConflicts,
+    saveKnowledge,
+    resolveKnowledgeConflict,
     skillErrors,
     skillConflicts,
     updateSkill,

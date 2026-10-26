@@ -8,6 +8,8 @@ import { z } from "zod"
 import { sha256 } from "./crypto.js"
 import { normalizeServiceFitProfile } from "./service-fit.js"
 import { qualificationFields } from "./ai-skills.js"
+import { AiKnowledgeSchema } from "./ai-knowledge.js"
+import { loadAiChatSnapshot } from "./ai-test-chat.js"
 
 // AI_SKILLS_LIVE_TEST=1 node --env-file=.env --import tsx --test src/lib/ai-skills.integration.test.ts
 // Isolated fixtures only. No AI, uploads, email, or external verification calls.
@@ -308,6 +310,11 @@ test(
         data: changes,
       })
       assert.equal((await request()).status, 403)
+      assert.equal((await request(`${path}/${offering.id}/faqs`)).status, 403)
+      assert.equal(
+        (await request(`${path}/${offering.id}/knowledge`, "PATCH", {})).status,
+        403,
+      )
       assert.equal(
         (await request(`${path}/${offering.id}/qualification`, "PATCH", {}))
           .status,
@@ -433,6 +440,187 @@ test(
       }),
     ])
     assert.deepEqual(race.map((item) => item.status).sort(), [200, 409])
+    const faqPath = `${path}/${offering.id}/faqs`
+    let faqs = (await request(faqPath)).data
+    assert.equal(faqs.faqs.length, 0)
+    assert.equal((await request(`${path}/${foreign.id}/faqs`)).status, 404)
+    const faq = {
+      question: "What is the intake code?",
+      answer: "Use Harbor H-27. Allow 3 days.",
+      exactAnswer: true,
+    }
+    assert.equal(
+      (
+        await request(
+          faqPath,
+          "POST",
+          { revision: faqs.revision, faq },
+          { origin: "https://foreign.example" },
+        )
+      ).status,
+      403,
+    )
+    assert.equal(
+      (
+        await request(faqPath, "POST", {
+          revision: faqs.revision,
+          faq: { ...faq, question: " " },
+        })
+      ).status,
+      400,
+    )
+    const created = await request(faqPath, "POST", {
+      revision: faqs.revision,
+      faq,
+    })
+    assert.equal(created.status, 201)
+    const firstFaqId = created.data.faqs[0].id
+    assert.equal(
+      (await request(faqPath, "POST", { revision: faqs.revision, faq })).status,
+      409,
+    )
+    faqs = (
+      await request(faqPath, "POST", {
+        revision: created.data.revision,
+        faq: {
+          question: "What should I bring?",
+          answer: "Original ID.",
+          exactAnswer: false,
+        },
+      })
+    ).data
+    const secondFaqId = faqs.faqs[1].id
+    const reordered = await request(`${faqPath}/order`, "PUT", {
+      revision: faqs.revision,
+      ids: [secondFaqId, firstFaqId],
+    })
+    assert.equal(reordered.status, 200)
+    assert.deepEqual(
+      reordered.data.faqs.map((f: { id: string }) => f.id),
+      [secondFaqId, firstFaqId],
+    )
+    assert.equal(
+      (
+        await request(`${faqPath}/order`, "PUT", {
+          revision: reordered.data.revision,
+          ids: [firstFaqId, firstFaqId],
+        })
+      ).status,
+      400,
+    )
+    const edited = await request(`${faqPath}/${firstFaqId}`, "PATCH", {
+      revision: reordered.data.revision,
+      faq: { ...faq, answer: "Updated code H-42. Allow 5 days." },
+    })
+    assert.equal(edited.status, 200)
+    assert.equal(edited.data.faqs[1].id, firstFaqId)
+    assert.equal(
+      (
+        await request(`${path}/${foreign.id}/faqs/${firstFaqId}`, "DELETE", {
+          revision: edited.data.revision,
+        })
+      ).status,
+      404,
+    )
+    let snapshot = await loadAiChatSnapshot(prisma, tenantId)
+    assert.ok(
+      snapshot.sources.some(
+        (source) =>
+          source.faqId === firstFaqId && source.content.includes("H-42"),
+      ),
+    )
+    const removed = await request(`${faqPath}/${firstFaqId}`, "DELETE", {
+      revision: edited.data.revision,
+    })
+    assert.equal(removed.status, 200)
+    snapshot = await loadAiChatSnapshot(prisma, tenantId)
+    assert.equal(
+      snapshot.sources.some((source) => source.faqId === firstFaqId),
+      false,
+    )
+    const faqRace = await Promise.all(
+      [1, 2].map(() =>
+        request(faqPath, "POST", { revision: removed.data.revision, faq }),
+      ),
+    )
+    assert.deepEqual(faqRace.map((r) => r.status).sort(), [201, 409])
+    const latest = (await request(`${path}/${offering.id}`)).data.skill
+    const beforeKnowledge = (
+      await prisma.service.findUniqueOrThrow({ where: { id: offering.id } })
+    ).fitProfile as Record<string, unknown>
+    const knowledge = AiKnowledgeSchema.parse({
+      description: "Updated saved knowledge overview",
+      pricingNotes: "New pricing guidance",
+      workflowNotes: "Updated operating notes",
+      adapter: "NONE",
+      verification: {
+        mode: "NONE",
+        guidance: "Confirm intake details",
+        triggerKeywords: ["intake"],
+      },
+    })
+    const knowledgeBody = { revision: latest.knowledgeRevision, knowledge }
+    assert.equal(
+      (
+        await request(`${path}/${offering.id}/knowledge`, "PATCH", {
+          ...knowledgeBody,
+          rules: [],
+        })
+      ).status,
+      400,
+    )
+    const knowledgeSaved = await request(
+      `${path}/${offering.id}/knowledge`,
+      "PATCH",
+      knowledgeBody,
+    )
+    assert.equal(knowledgeSaved.status, 200)
+    assert.equal(
+      (
+        await request(
+          `${path}/${offering.id}/knowledge`,
+          "PATCH",
+          knowledgeBody,
+        )
+      ).status,
+      409,
+    )
+    const afterKnowledge = await prisma.service.findUniqueOrThrow({
+      where: { id: offering.id },
+    })
+    const profileAfter = afterKnowledge.fitProfile as Record<string, unknown>
+    assert.deepEqual(profileAfter.rules, beforeKnowledge.rules)
+    assert.deepEqual(profileAfter.future, beforeKnowledge.future)
+    assert.equal(
+      (profileAfter.knowledgeProfile as Record<string, unknown>).faqNotes,
+      (beforeKnowledge.knowledgeProfile as Record<string, unknown>).faqNotes,
+    )
+    assert.deepEqual(
+      (profileAfter.verificationProfile as Record<string, unknown>).sourceUrls,
+      (beforeKnowledge.verificationProfile as Record<string, unknown>)
+        .sourceUrls,
+    )
+    assert.deepEqual(
+      await prisma.serviceStep.findMany({ where: { serviceId: offering.id } }),
+      stepBefore,
+    )
+    assert.equal(afterKnowledge.basePriceCents, 100)
+    assert.equal(afterKnowledge.billingMode, "INHERIT")
+    snapshot = await loadAiChatSnapshot(prisma, tenantId)
+    assert.ok(
+      snapshot.sources.some((source) =>
+        source.content.includes("Updated saved knowledge overview"),
+      ),
+    )
+    assert.ok(
+      snapshot.sources.some((source) =>
+        source.content.includes("Updated operating notes"),
+      ),
+    )
+    assert.equal(
+      (await request(`${path}/${offering.id}`)).data.skill.faqCount,
+      2,
+    )
     const beforeOrdinarySave = (
       await prisma.service.findUniqueOrThrow({ where: { id: offering.id } })
     ).fitProfile

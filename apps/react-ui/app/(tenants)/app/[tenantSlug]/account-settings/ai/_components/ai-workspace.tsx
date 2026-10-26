@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { createContext, useContext, useState, type ReactNode } from "react"
+import { createContext, useContext, type ReactNode } from "react"
 import {
   BarChart3,
   Building2,
@@ -10,17 +10,12 @@ import {
   Layers3,
   Settings2,
 } from "lucide-react"
-import { toast } from "sonner"
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
-import {
-  draftSnapshots,
-  type AiSkillDraft,
-  type AiWorkspaceDraft,
-} from "../_lib/demo-data"
+import { type AiSkillDraft, type AiWorkspaceDraft } from "../_lib/demo-data"
 import type { AiHelperSettings } from "../_lib/helper-settings"
 import { useHelperSettings } from "./use-helper-settings"
 import { AiHelperAvatar } from "./ai-helper-avatar"
@@ -28,6 +23,7 @@ import { AiTestChat } from "./ai-test-chat"
 import type { AccountProfileResponse } from "@/lib/account-profile"
 import { useAccountProfile } from "../../_components/use-account-profile"
 import { useAiSkills } from "./use-ai-skills"
+import { useAiFaqs } from "./use-ai-faqs"
 import {
   toSkillDraft,
   type AiSkillResponse,
@@ -35,14 +31,13 @@ import {
 } from "../_lib/skills"
 
 type WorkspaceContext = ReturnType<typeof useHelperSettings> &
+  ReturnType<typeof useAiFaqs> &
   ReturnType<typeof useAiSkills> & {
     basePath: string
     companyName: string
     companyProfile: ReturnType<typeof useAccountProfile>
     draft: AiWorkspaceDraft
     setHelper: (helper: AiWorkspaceDraft["helper"]) => void
-    hasChanges: (key: string, value: unknown) => boolean
-    saveDraft: (key: string, value: unknown) => void
   }
 
 const AiContext = createContext<WorkspaceContext | null>(null)
@@ -107,36 +102,21 @@ export function AiWorkspace({
 }) {
   const pathname = usePathname()
   const skillState = useAiSkills(tenantId, initialCatalog)
+  const faqState = useAiFaqs(tenantId)
   const helperState = useHelperSettings(tenantId, initialSettings)
   const companyProfile = useAccountProfile(tenantId, initialCompany, "company")
   const draft = { skills: skillState.skills, helper: helperState.helper }
-  const [saved, setSaved] = useState(() => draftSnapshots(draft))
   const basePath = `/app/${tenantSlug}/account-settings/ai`
   const helperName = draft.helper.name.trim() || "AI Helper"
 
   const context: WorkspaceContext = {
     ...helperState,
     ...skillState,
+    ...faqState,
     basePath,
     companyName: companyProfile.savedProfile?.name ?? companyName,
     companyProfile,
     draft,
-    hasChanges: (key, value) => saved[key] !== JSON.stringify(value),
-    saveDraft: (key, value) => {
-      if (
-        key === "helper" ||
-        key === "company" ||
-        key.endsWith("/qualification-rules")
-      )
-        return
-      const snapshot = JSON.stringify(value)
-      if (saved[key] === snapshot) return
-      setSaved((current) => ({ ...current, [key]: snapshot }))
-      toast.success("Draft saved for this preview.", {
-        description:
-          "Changes reset when you refresh or leave the AI workspace.",
-      })
-    },
   }
 
   return (
@@ -235,7 +215,7 @@ export function AiWorkspace({
                     ? "Qualification rules are connected"
                     : pathname.endsWith("/faq") ||
                         pathname.endsWith("/knowledge-base")
-                      ? "Editing preview — changes are temporary"
+                      ? "Service knowledge is connected"
                       : pathname.endsWith("/analytics")
                         ? "Analytics preview — sample data"
                         : "Your account’s service skills"}
@@ -249,10 +229,10 @@ export function AiWorkspace({
                     ? "Save changes to update the deterministic fit scan. Knowledge, verification, and other service settings are preserved."
                     : pathname.endsWith("/faq") ||
                         pathname.endsWith("/knowledge-base")
-                      ? "Existing service notes are shown as saved. FAQ and Knowledge Base edits remain local previews; refreshing or leaving clears them. Qualification rules are saved separately."
+                      ? "FAQ answers, descriptions, and guidance are saved for Test helper. Links and files remain local source previews until they are connected."
                       : pathname.endsWith("/analytics")
                         ? "These metrics use sample data. Real activity tracking will be connected in a later chunk."
-                        : "Sub-services and linked notes come from your service catalog. Qualification rules are connected. FAQ and Knowledge Base editing remain previews."}
+                        : "Sub-services and linked notes come from your service catalog. Saved FAQs, knowledge, and qualification rules are connected. Links and files remain previews."}
             </AlertDescription>
           </Alert>
           {children}

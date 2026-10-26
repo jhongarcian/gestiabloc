@@ -456,6 +456,8 @@ export function AiQualificationEditor({ skillId }: { skillId: string }) {
     fieldCatalog,
     updateSkill,
     savingSkillId,
+    savingKnowledgeId,
+    catalogBusy,
     saveQualification,
     skillErrors,
     skillConflicts,
@@ -465,7 +467,8 @@ export function AiQualificationEditor({ skillId }: { skillId: string }) {
   const groups = qualificationGroups(value)
   const errors = qualificationErrors(value, fieldCatalog)
   const conflict = skillConflicts[skillId]
-  const busy = savingSkillId !== null
+  const busy =
+    savingSkillId !== null || savingKnowledgeId !== null || catalogBusy
   const disabled = busy || Boolean(skill.qualificationReadOnlyReason)
   const update = (qualification: AiQualification) =>
     updateSkill(skillId, (current) => ({ ...current, qualification }))

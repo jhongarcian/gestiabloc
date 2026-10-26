@@ -45,6 +45,7 @@ export function AiSkillsGallery() {
     catalogBusy,
     reloadSkills,
     savingSkillId,
+    savingKnowledgeId,
   } = useAiWorkspace()
   const [search, setSearch] = useState("")
   const query = search.trim().toLowerCase()
@@ -81,7 +82,11 @@ export function AiSkillsGallery() {
             <Button
               variant="outline"
               className={SECONDARY_BUTTON}
-              disabled={catalogBusy || savingSkillId !== null}
+              disabled={
+                catalogBusy ||
+                savingSkillId !== null ||
+                savingKnowledgeId !== null
+              }
               onClick={() => void reloadSkills()}
             >
               {catalogBusy ? "Refreshing…" : "Refresh services"}
@@ -222,16 +227,17 @@ export function AiSkillsGallery() {
 }
 
 export function AiSkillOverview({ skillId }: { skillId: string }) {
-  const { skill, basePath } = useAiSkill(skillId)
+  const { skill, basePath, faqCollections } = useAiSkill(skillId)
   const sections = [
     {
       key: "faq",
       title: "FAQ",
       description: "Shape clear answers to the questions your team hears most.",
       icon: CircleHelp,
-      detail: skill.knowledgeProfile.faqNotes
-        ? "Saved FAQ notes available · editing preview"
-        : "Editing preview",
+      detail: countLabel(
+        faqCollections[skillId]?.faqs.length ?? skill.faqCount,
+        "saved question",
+      ),
     },
     {
       key: "knowledge-base",
@@ -239,7 +245,7 @@ export function AiSkillOverview({ skillId }: { skillId: string }) {
       description:
         "Bring service information, trusted sources, and linked notes together.",
       icon: BookOpen,
-      detail: "Linked service notes · editing preview",
+      detail: "Saved description and guidance · linked service notes",
     },
     {
       key: "qualification-rules",

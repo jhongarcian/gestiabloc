@@ -283,5 +283,50 @@ test(
       }),
       before,
     )
+    const exactAnswer =
+      "The Registration intake code is Harbor H-27. Allow 3 business days. Bring your original ID."
+    const faq = await prisma.serviceAiFaq.create({
+      data: {
+        tenantId,
+        serviceId: first.id,
+        question:
+          "What is the Registration intake code and what should I bring?",
+        answer: exactAnswer,
+        exactAnswer: true,
+      },
+    })
+    const exact = await ask(
+      "What is the Registration intake code and what do I need to bring?",
+    )
+    assert.equal(exact.answer, exactAnswer)
+    assert.doesNotMatch(exact.answer, /Saludos Harbor/)
+    assert.ok(exact.sources.some((source) => source.section === "faq"))
+    const translated = await ask(
+      "¿Cuál es el código de intake de Registration y qué debo llevar?",
+    )
+    assert.match(translated.answer, /Harbor H-27/)
+    assert.match(translated.answer, /3/)
+    assert.match(translated.answer, /original/)
+    assert.doesNotMatch(translated.answer, /Saludos Harbor/)
+    await prisma.serviceAiFaq.update({
+      where: { id: faq.id },
+      data: {
+        exactAnswer: false,
+        answer:
+          "The Registration intake code is Harbor H-42. Allow 5 business days. Bring your original ID.",
+      },
+    })
+    const adapted = await ask(
+      "What is the Registration intake code? Follow the saved writing preferences.",
+    )
+    assert.match(adapted.answer, /H-42/)
+    assert.match(adapted.answer, /Saludos Harbor/)
+    await prisma.serviceAiFaq.delete({ where: { id: faq.id } })
+    const removed = await ask("What is the Registration intake code?")
+    assert.doesNotMatch(removed.answer, /H-27|H-42/)
+    assert.equal(
+      removed.sources.some((source) => source.section === "faq"),
+      false,
+    )
   },
 )

@@ -54,6 +54,8 @@ Keep one helper per tenant. Account admins manage its configuration and use the 
 
 ### 5. FAQ and Knowledge Base editing
 
+Implemented in [AI content — chunk 5](ai-content-chunk-5.md), including dialog-based FAQ editing and per-answer exact/adapted behavior.
+
 - Persist individual FAQ questions and answers with stable IDs and ordering.
 - Connect the single skill description and advanced guidance to saved service knowledge.
 - Preserve legacy FAQ and operating notes as imported content requiring review; do not invent questions or automatically split prose.

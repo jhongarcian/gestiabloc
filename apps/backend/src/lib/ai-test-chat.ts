@@ -8,6 +8,16 @@ import {
 import { aiSkillSelect, presentAiSkill } from "./ai-skills.js"
 import { enrollableServiceWhere } from "./service-hierarchy.js"
 import { getGroqConfiguration } from "./groq-config.js"
+import { aiFaqSelect } from "./ai-skill-content.js"
+import {
+  FaqMatchSchema,
+  FaqTranslationSchema,
+  faqMatchMessages,
+  faqTranslationMessages,
+  type ChatFaq,
+  type ChatMessages,
+  type ExactFaqProvider,
+} from "./ai-faq-replies.js"
 
 export const AiTestChatInputSchema = z
   .object({
@@ -52,7 +62,8 @@ export type AiTestChatInput = z.infer<typeof AiTestChatInputSchema>
 export type AiChatSource = {
   id: string
   label: string
-  section: "company" | "overview" | "pricing" | "checklist" | "guidance"
+  section: "company" | "overview" | "pricing" | "checklist" | "guidance" | "faq"
+  faqId?: string
   skillId: string | null
   content: string
 }
@@ -60,6 +71,7 @@ export type AiChatSnapshot = {
   helper: AiSettingsFields & { revision: number }
   sources: AiChatSource[]
   skillCount: number
+  faqs?: ChatFaq[]
 }
 export class AiChatError extends Error {
   constructor(
@@ -106,7 +118,13 @@ export async function loadAiChatSnapshot(
     client.service.findMany({
       where: { tenantId, ...enrollableServiceWhere },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }],
-      select: aiSkillSelect,
+      select: {
+        ...aiSkillSelect,
+        aiFaqs: {
+          orderBy: [{ sortOrder: "asc" }, { id: "asc" }],
+          select: aiFaqSelect,
+        },
+      },
     }),
   ])
   if (!company) throw new AiChatError(404, "AI_ACCOUNT_NOT_FOUND")
@@ -140,10 +158,22 @@ export async function loadAiChatSnapshot(
     },
   ]
   let skillCount = 0
+  const faqs: ChatFaq[] = []
   for (const record of services) {
     const skill = presentAiSkill(record)
     if (!skill.availableToAssistant) continue
     skillCount++
+    for (const faq of record.aiFaqs ?? []) {
+      faqs.push({ ...faq, serviceId: skill.id, serviceName: skill.name })
+      sources.push({
+        id: `faq:${faq.id}`,
+        label: `${skill.name} · ${faq.question}`,
+        section: "faq",
+        skillId: skill.id,
+        faqId: faq.id,
+        content: `Question: ${faq.question}\nAnswer: ${faq.answer}`,
+      })
+    }
     const add = (
       section: AiChatSource["section"],
       label: string,
@@ -188,12 +218,16 @@ export async function loadAiChatSnapshot(
     add(
       "guidance",
       "Saved guidance and FAQ notes",
-      [skill.knowledgeProfile.workflowNotes, skill.knowledgeProfile.faqNotes]
+      [
+        skill.knowledgeProfile.workflowNotes,
+        skill.knowledgeProfile.faqNotes,
+        skill.verificationProfile.guidance,
+      ]
         .filter(Boolean)
         .join("\n"),
     )
   }
-  return { helper, sources, skillCount }
+  return { helper, sources, skillCount, faqs }
 }
 
 const aliases: Record<string, string> = {
@@ -257,7 +291,11 @@ export function retrieveAiChatSources(
           (title.includes(token) ? 7 : body.includes(token) ? 1 : 0) * weight,
         0,
       )
-    return points(current, 3) + points(previous, 1)
+    return (
+      points(current, 3) +
+      points(previous, 1) +
+      (source.section === "faq" ? 2 : 0)
+    )
   }
   const company = snapshot.sources.find((source) => source.id === "company")
   const ranked = snapshot.sources
@@ -270,9 +308,16 @@ export function retrieveAiChatSources(
     if (!source || selected.length >= 9 || remaining < 300) continue
     // Include envelope overhead in the bound, not just the reference prose.
     const overhead = JSON.stringify({ ...source, content: "" }).length + 2
+    if (
+      source.section === "faq" &&
+      JSON.stringify(source).length + 2 > remaining
+    )
+      continue
     let content = source.content.slice(
       0,
-      Math.max(0, Math.min(2400, remaining - overhead)),
+      source.section === "faq"
+        ? source.content.length
+        : Math.max(0, Math.min(2400, remaining - overhead)),
     )
     while (
       content &&
@@ -335,16 +380,23 @@ const ProviderOutputSchema = z
     sourceIds: z.array(z.string().max(160)).max(9),
   })
   .strict()
-export type AiChatProvider = (
+export type AiChatProvider = ((
   messages: ReturnType<typeof buildAiChatMessages>,
   signal?: AbortSignal,
-) => Promise<z.infer<typeof ProviderOutputSchema>>
+) => Promise<z.infer<typeof ProviderOutputSchema>>) &
+  ExactFaqProvider
 export function getAiChatProvider(): AiChatProvider | null {
   const config = getGroqConfiguration()
   if (!config) return null
-  return async (messages, signal) => {
+  const { apiKey, model, baseUrl } = config
+  async function requestJson<T extends z.ZodType>(
+    schema: T,
+    messages: ChatMessages,
+    signal?: AbortSignal,
+    maxTokens = 1800,
+  ): Promise<z.output<T>> {
     try {
-      const response = await fetch(config.baseUrl, {
+      const response = await fetch(baseUrl, {
         method: "POST",
         signal: AbortSignal.any([
           AbortSignal.timeout(30000),
@@ -352,13 +404,13 @@ export function getAiChatProvider(): AiChatProvider | null {
         ]),
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.apiKey}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: config.model,
+          model,
           temperature: 0.2,
-          max_completion_tokens: 1800,
-          ...(config.model.startsWith("qwen/")
+          max_completion_tokens: maxTokens,
+          ...(model.startsWith("qwen/")
             ? { reasoning_effort: "none", reasoning_format: "hidden" }
             : {}),
           response_format: { type: "json_object" },
@@ -381,9 +433,7 @@ export function getAiChatProvider(): AiChatProvider | null {
       const choice = payload.choices?.[0]
       if (choice?.finish_reason === "length" || !choice?.message?.content)
         throw new AiChatError(502, "AI_INVALID_RESPONSE")
-      const parsed = ProviderOutputSchema.safeParse(
-        JSON.parse(choice.message.content),
-      )
+      const parsed = schema.safeParse(JSON.parse(choice.message.content))
       if (!parsed.success) throw new AiChatError(502, "AI_INVALID_RESPONSE")
       return parsed.data
     } catch (error) {
@@ -393,6 +443,23 @@ export function getAiChatProvider(): AiChatProvider | null {
       throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
     }
   }
+  const provider: AiChatProvider = (messages, signal) =>
+    requestJson(ProviderOutputSchema, messages, signal)
+  provider.matchFaq = (question, history, faqs, language, signal) =>
+    requestJson(
+      FaqMatchSchema,
+      faqMatchMessages(question, history, faqs, language),
+      signal,
+      500,
+    )
+  provider.translateFaq = (answer, language, signal) =>
+    requestJson(
+      FaqTranslationSchema,
+      faqTranslationMessages(answer, language),
+      signal,
+      3000,
+    )
+  return provider
 }
 
 export async function replyToAiTestChat(
@@ -402,13 +469,57 @@ export async function replyToAiTestChat(
   signal?: AbortSignal,
 ) {
   if (!provider) throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
+  const deadline = AbortSignal.any([
+    AbortSignal.timeout(30000),
+    ...(signal ? [signal] : []),
+  ])
   const context = retrieveAiChatSources(snapshot, input)
-  const result = ProviderOutputSchema.parse(
-    await provider(
-      buildAiChatMessages(snapshot, input, context.sources),
-      signal,
-    ),
+  const exact = (snapshot.faqs ?? []).filter(
+    (faq) =>
+      faq.exactAnswer &&
+      context.sources.some((source) => source.faqId === faq.id),
   )
+  let answerMode: "ADAPTED" | "EXACT" | "TRANSLATED" = "ADAPTED"
+  let result: z.infer<typeof ProviderOutputSchema> | undefined
+  if (exact.length) {
+    if (!provider.matchFaq)
+      throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
+    const match = FaqMatchSchema.parse(
+      await provider.matchFaq(
+        input.question,
+        input.history,
+        exact,
+        snapshot.helper.language,
+        deadline,
+      ),
+    )
+    if (
+      snapshot.helper.language !== "English and Spanish" &&
+      match.language !== snapshot.helper.language
+    )
+      throw new AiChatError(502, "AI_INVALID_RESPONSE")
+    if (match.faqId !== null) {
+      const faq = exact.find((item) => item.id === match.faqId)
+      if (!faq) throw new AiChatError(502, "AI_INVALID_RESPONSE")
+      let answer = faq.answer
+      if (match.translate) {
+        if (!provider.translateFaq)
+          throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
+        answer = FaqTranslationSchema.parse(
+          await provider.translateFaq(faq.answer, match.language, deadline),
+        ).answer
+      }
+      answerMode = match.translate ? "TRANSLATED" : "EXACT"
+      result = { answer, sourceIds: [`faq:${faq.id}`] }
+    }
+  }
+  if (!result)
+    result = ProviderOutputSchema.parse(
+      await provider(
+        buildAiChatMessages(snapshot, input, context.sources),
+        deadline,
+      ),
+    )
   const ids = new Set(result.sourceIds)
   if (
     [...ids].some((id) => !context.sources.some((source) => source.id === id))
@@ -417,6 +528,7 @@ export async function replyToAiTestChat(
   return {
     id: randomUUID(),
     answer: result.answer,
+    answerMode,
     helper: {
       name: snapshot.helper.name,
       language: snapshot.helper.language,

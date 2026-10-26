@@ -1,6 +1,7 @@
 export type AiTestReply = {
   id: string
   answer: string
+  answerMode?: "ADAPTED" | "EXACT" | "TRANSLATED"
   helper: { name: string; language: string; tone: string; revision: number }
   sources: Array<{
     id: string
@@ -8,6 +9,7 @@ export type AiTestReply = {
     section: string
     skillId: string | null
     excerpt: string
+    faqId?: string
   }>
   context: { skillCount: number; limited: boolean }
 }

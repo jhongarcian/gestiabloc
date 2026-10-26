@@ -694,6 +694,7 @@ model Tenant {
   taskActivities                    TaskActivity[]
   linkedEntities                    TenantLinkedEntity[]
   services                          Service[]
+  serviceAiFaqs                     ServiceAiFaq[]
   serviceChecklistItems             ServiceChecklistItem[]
   serviceProfessionals              ServiceProfessional[]
   contactServices                   ContactService[]
@@ -835,6 +836,7 @@ model Service {
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   parentService         Service?                      @relation("ServiceHierarchy", fields: [tenantId, parentServiceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Cascade)
   subServices           Service[]                     @relation("ServiceHierarchy")
+  aiFaqs                ServiceAiFaq[]
   checklistItems        ServiceChecklistItem[]
   professionals         ServiceProfessional[]
   steps                 ServiceStep[]
@@ -851,6 +853,24 @@ model Service {
   @@index([tenantId, isActive, sortOrder])
   @@index([tenantId, kind, parentServiceId, sortOrder])
   @@index([tenantId, parentServiceId, sortOrder])
+}
+
+model ServiceAiFaq {
+  id          String   @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  question    String
+  answer      String
+  exactAnswer Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder, id])
 }
 
 model ServiceStep {
