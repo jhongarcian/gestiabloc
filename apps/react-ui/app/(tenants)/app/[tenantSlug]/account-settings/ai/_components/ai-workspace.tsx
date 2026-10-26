@@ -17,7 +17,6 @@ import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import {
-  createSampleWorkspace,
   draftSnapshots,
   type AiSkillDraft,
   type AiWorkspaceDraft,
@@ -25,22 +24,37 @@ import {
 import type { AiHelperSettings } from "../_lib/helper-settings"
 import { useHelperSettings } from "./use-helper-settings"
 import { AiHelperAvatar } from "./ai-helper-avatar"
+import type { AccountProfileResponse } from "@/lib/account-profile"
+import { useAccountProfile } from "../../_components/use-account-profile"
+import { useAiSkills } from "./use-ai-skills"
+import {
+  toSkillDraft,
+  type AiSkillResponse,
+  type AiSkillsResponse,
+} from "../_lib/skills"
 
-type WorkspaceContext = ReturnType<typeof useHelperSettings> & {
-  basePath: string
-  companyName: string
-  draft: AiWorkspaceDraft
-  setHelper: (helper: AiWorkspaceDraft["helper"]) => void
-  setCompany: (company: AiWorkspaceDraft["company"]) => void
-  updateSkill: (
-    id: string,
-    update: (skill: AiSkillDraft) => AiSkillDraft,
-  ) => void
-  hasChanges: (key: string, value: unknown) => boolean
-  saveDraft: (key: string, value: unknown) => void
-}
+type WorkspaceContext = ReturnType<typeof useHelperSettings> &
+  ReturnType<typeof useAiSkills> & {
+    basePath: string
+    companyName: string
+    companyProfile: ReturnType<typeof useAccountProfile>
+    draft: AiWorkspaceDraft
+    setHelper: (helper: AiWorkspaceDraft["helper"]) => void
+    hasChanges: (key: string, value: unknown) => boolean
+    saveDraft: (key: string, value: unknown) => void
+  }
 
 const AiContext = createContext<WorkspaceContext | null>(null)
+const AiSkillRouteContext = createContext<AiSkillResponse | null>(null)
+export function AiSkillRouteProvider({
+  detail,
+  children,
+}: {
+  detail: AiSkillResponse
+  children: ReactNode
+}) {
+  return <AiSkillRouteContext value={detail}>{children}</AiSkillRouteContext>
+}
 const navigation = [
   { key: "skills", label: "Skills", icon: Layers3 },
   { key: "company-info", label: "Company Info", icon: Building2 },
@@ -56,48 +70,64 @@ export function useAiWorkspace() {
 
 export function useAiSkill(id: string) {
   const workspace = useAiWorkspace()
-  const skill = workspace.draft.skills.find((item) => item.id === id)
-  if (!skill) throw new Error("Unknown sample skill")
-  return { ...workspace, skill }
+  const route = useContext(AiSkillRouteContext)
+  const skill =
+    workspace.draft.skills.find((item) => item.id === id) ??
+    (route?.skill.id === id ? toSkillDraft(route.skill) : undefined)
+  if (!skill) throw new Error("Skill data is required")
+  return {
+    ...workspace,
+    skill,
+    fieldCatalog:
+      workspace.fieldsBySkill[id] ?? route?.fields ?? workspace.fields,
+    updateSkill: (
+      skillId: string,
+      update: (current: AiSkillDraft) => AiSkillDraft,
+    ) => workspace.updateSkill(skillId, update, skill),
+  }
 }
 
 export function AiWorkspace({
   tenantSlug,
   tenantId,
   companyName,
+  initialCompany,
   initialSettings,
+  initialCatalog,
   children,
 }: {
   tenantSlug: string
   tenantId: string
   companyName: string
+  initialCompany: AccountProfileResponse["tenant"] | null
   initialSettings: AiHelperSettings | null
+  initialCatalog: AiSkillsResponse | null
   children: ReactNode
 }) {
   const pathname = usePathname()
-  const [sampleDraft, setDraft] = useState(createSampleWorkspace)
+  const skillState = useAiSkills(tenantId, initialCatalog)
   const helperState = useHelperSettings(tenantId, initialSettings)
-  const draft = { ...sampleDraft, helper: helperState.helper }
+  const companyProfile = useAccountProfile(tenantId, initialCompany, "company")
+  const draft = { skills: skillState.skills, helper: helperState.helper }
   const [saved, setSaved] = useState(() => draftSnapshots(draft))
   const basePath = `/app/${tenantSlug}/account-settings/ai`
   const helperName = draft.helper.name.trim() || "AI Helper"
 
   const context: WorkspaceContext = {
     ...helperState,
+    ...skillState,
     basePath,
-    companyName,
+    companyName: companyProfile.savedProfile?.name ?? companyName,
+    companyProfile,
     draft,
-    setCompany: (company) => setDraft((current) => ({ ...current, company })),
-    updateSkill: (id, update) =>
-      setDraft((current) => ({
-        ...current,
-        skills: current.skills.map((skill) =>
-          skill.id === id ? update(skill) : skill,
-        ),
-      })),
     hasChanges: (key, value) => saved[key] !== JSON.stringify(value),
     saveDraft: (key, value) => {
-      if (key === "helper") return
+      if (
+        key === "helper" ||
+        key === "company" ||
+        key.endsWith("/qualification-rules")
+      )
+        return
       const snapshot = JSON.stringify(value)
       if (saved[key] === snapshot) return
       setSaved((current) => ({ ...current, [key]: snapshot }))
@@ -189,14 +219,32 @@ export function AiWorkspace({
         <div className="flex min-w-0 flex-col gap-4 pb-6">
           <Alert className="rounded-2xl border-blue-100 bg-blue-50/70">
             <AlertTitle>
-              {pathname.endsWith("/settings")
-                ? "Helper settings are saved to your account"
-                : "UI preview — changes are temporary"}
+              {pathname.endsWith("/company-info")
+                ? "Company information is shared with your account"
+                : pathname.endsWith("/settings")
+                  ? "Helper settings are saved to your account"
+                  : pathname.endsWith("/qualification-rules")
+                    ? "Qualification rules are connected"
+                    : pathname.endsWith("/faq") ||
+                        pathname.endsWith("/knowledge-base")
+                      ? "Editing preview — changes are temporary"
+                      : pathname.endsWith("/analytics")
+                        ? "Analytics preview — sample data"
+                        : "Your account’s service skills"}
             </AlertTitle>
             <AlertDescription>
-              {pathname.endsWith("/settings")
-                ? "Avatar changes save immediately. Use Save changes for your helper’s name and preferences. AI conversations will be connected in a later step."
-                : "Skills, Company Info, and Analytics use sample data. Their drafts reset when you refresh or leave. Helper settings and avatar are saved in Settings."}
+              {pathname.endsWith("/company-info")
+                ? "Save changes to update Company Info and Account Settings together. These details will provide company context when AI conversations are connected."
+                : pathname.endsWith("/settings")
+                  ? "Avatar changes save immediately. Use Save changes for your helper’s name and preferences. AI conversations will be connected in a later step."
+                  : pathname.endsWith("/qualification-rules")
+                    ? "Save changes to update the deterministic fit scan. Knowledge, verification, and other service settings are preserved."
+                    : pathname.endsWith("/faq") ||
+                        pathname.endsWith("/knowledge-base")
+                      ? "Existing service notes are shown as saved. FAQ and Knowledge Base edits remain local previews; refreshing or leaving clears them. Qualification rules are saved separately."
+                      : pathname.endsWith("/analytics")
+                        ? "These metrics use sample data. Real activity tracking will be connected in a later chunk."
+                        : "Sub-services and linked notes come from your service catalog. Qualification rules are connected. FAQ and Knowledge Base editing remain previews."}
             </AlertDescription>
           </Alert>
           {children}

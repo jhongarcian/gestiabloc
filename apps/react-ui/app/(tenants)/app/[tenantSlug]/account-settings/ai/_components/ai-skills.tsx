@@ -11,6 +11,7 @@ import {
   Search,
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -22,7 +23,13 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Separator } from "@/components/ui/separator"
-import { AiEmpty, AiPageHeader, SkillBreadcrumbs } from "./ai-ui"
+import {
+  AiEmpty,
+  AiPageHeader,
+  SECONDARY_BUTTON,
+  SkillBreadcrumbs,
+} from "./ai-ui"
+import { qualificationGroups } from "../_lib/qualification"
 import { useAiSkill, useAiWorkspace } from "./ai-workspace"
 
 function countLabel(count: number, noun: string) {
@@ -30,7 +37,15 @@ function countLabel(count: number, noun: string) {
 }
 
 export function AiSkillsGallery() {
-  const { basePath, draft } = useAiWorkspace()
+  const {
+    basePath,
+    draft,
+    catalogReady,
+    catalogError,
+    catalogBusy,
+    reloadSkills,
+    savingSkillId,
+  } = useAiWorkspace()
   const [search, setSearch] = useState("")
   const query = search.trim().toLowerCase()
   const skills = draft.skills.filter((skill) =>
@@ -38,13 +53,41 @@ export function AiSkillsGallery() {
       .toLowerCase()
       .includes(query),
   )
-  const groups = [...new Set(skills.map((skill) => skill.parentName))]
+  const groups = [
+    ...new Map(
+      skills.map((skill) => [
+        skill.parentId,
+        {
+          id: skill.parentId,
+          name: skill.parentName,
+          active: skill.parentActive,
+        },
+      ]),
+    ).values(),
+  ]
 
   return (
     <>
       <AiPageHeader
         title="Skills"
         description="Give your helper the knowledge to guide each service conversation."
+        actions={
+          <>
+            <Button asChild variant="outline" className={SECONDARY_BUTTON}>
+              <Link href={`${basePath.slice(0, -3)}/services`}>
+                Manage services
+              </Link>
+            </Button>
+            <Button
+              variant="outline"
+              className={SECONDARY_BUTTON}
+              disabled={catalogBusy || savingSkillId !== null}
+              onClick={() => void reloadSkills()}
+            >
+              {catalogBusy ? "Refreshing…" : "Refresh services"}
+            </Button>
+          </>
+        }
       >
         <form
           role="search"
@@ -70,14 +113,33 @@ export function AiSkillsGallery() {
       </AiPageHeader>
       <div className="flex items-center justify-between gap-3 px-1">
         <p className="text-sm text-slate-500">Your service skills</p>
-        <Badge variant="secondary">Sample catalog</Badge>
+        <Badge variant="secondary">
+          {countLabel(draft.skills.length, "sub-service")}
+        </Badge>
       </div>
+      {catalogError ? (
+        <Alert variant="destructive" className="rounded-2xl" role="alert">
+          <AlertTitle>Skills could not be loaded</AlertTitle>
+          <AlertDescription>{catalogError}</AlertDescription>
+        </Alert>
+      ) : null}
       {groups.map((group) => (
-        <section key={group} className="flex flex-col gap-3" aria-label={group}>
-          <h2 className="px-1 text-sm font-semibold text-slate-700">{group}</h2>
+        <section
+          key={group.id}
+          className="flex flex-col gap-3"
+          aria-label={group.name}
+        >
+          <div className="flex flex-wrap items-center gap-2 px-1">
+            <h2 className="text-sm font-semibold text-slate-700">
+              {group.name}
+            </h2>
+            {!group.active ? (
+              <Badge variant="outline">Inactive parent</Badge>
+            ) : null}
+          </div>
           <div className="grid gap-4 xl:grid-cols-2 2xl:grid-cols-3">
             {skills
-              .filter((skill) => skill.parentName === group)
+              .filter((skill) => skill.parentId === group.id)
               .map((skill) => (
                 <Link
                   key={skill.id}
@@ -98,19 +160,42 @@ export function AiSkillsGallery() {
                       <CardTitle>
                         <h3 className="text-lg text-slate-950">{skill.name}</h3>
                       </CardTitle>
-                      <CardDescription>{skill.tagline}</CardDescription>
+                      <CardDescription>
+                        {skill.tagline ||
+                          "Manage knowledge and qualification for this sub-service."}
+                      </CardDescription>
+                      <div className="flex flex-wrap gap-2">
+                        <Badge
+                          variant={
+                            skill.availableToAssistant ? "secondary" : "outline"
+                          }
+                        >
+                          {!skill.isActive
+                            ? "Inactive"
+                            : !skill.parentActive
+                              ? "Parent inactive"
+                              : "Active"}
+                        </Badge>
+                        {!skill.availableToAssistant ? (
+                          <span className="text-xs text-slate-500">
+                            Excluded from assistant answers
+                          </span>
+                        ) : null}
+                      </div>
                     </CardHeader>
                     <CardContent className="mt-auto px-5">
                       <Separator />
                     </CardContent>
                     <CardFooter className="flex-wrap justify-between gap-2 px-5 text-xs text-slate-500">
                       <span>
-                        {countLabel(skill.faqs.length, "FAQ")} ·{" "}
                         {countLabel(
-                          skill.knowledge.links.length +
-                            skill.knowledge.files.length,
-                          "source",
-                        )}
+                          skill.qualification.rules.length,
+                          "condition",
+                        )}{" "}
+                        ·{" "}
+                        {skill.qualification.enabled
+                          ? "Qualification enabled"
+                          : "Qualification off"}
                       </span>
                       <span className="font-semibold text-blue-950">
                         Open skill →
@@ -122,10 +207,14 @@ export function AiSkillsGallery() {
           </div>
         </section>
       ))}
-      {!skills.length ? (
+      {catalogReady && !catalogError && !skills.length ? (
         <AiEmpty
-          title="No matching skills"
-          description="Try searching for a service name or parent service."
+          title={query ? "No matching skills" : "No sub-services yet"}
+          description={
+            query
+              ? "Try searching for a service name or parent service."
+              : "Create a parent service and a sub-service in Manage services to add your first skill."
+          }
         />
       ) : null}
     </>
@@ -140,7 +229,9 @@ export function AiSkillOverview({ skillId }: { skillId: string }) {
       title: "FAQ",
       description: "Shape clear answers to the questions your team hears most.",
       icon: CircleHelp,
-      detail: countLabel(skill.faqs.length, "question"),
+      detail: skill.knowledgeProfile.faqNotes
+        ? "Saved FAQ notes available · editing preview"
+        : "Editing preview",
     },
     {
       key: "knowledge-base",
@@ -148,7 +239,7 @@ export function AiSkillOverview({ skillId }: { skillId: string }) {
       description:
         "Bring service information, trusted sources, and linked notes together.",
       icon: BookOpen,
-      detail: `${countLabel(skill.knowledge.links.length, "link")} · ${countLabel(skill.knowledge.files.length, "file")}`,
+      detail: "Linked service notes · editing preview",
     },
     {
       key: "qualification-rules",
@@ -157,7 +248,7 @@ export function AiSkillOverview({ skillId }: { skillId: string }) {
         "Define the requirements and options that guide a service handoff.",
       icon: CheckCheck,
       detail: countLabel(
-        skill.qualification.requirements.length,
+        qualificationGroups(skill.qualification).length,
         "requirement",
       ),
     },
@@ -167,9 +258,26 @@ export function AiSkillOverview({ skillId }: { skillId: string }) {
       <SkillBreadcrumbs skill={skill} />
       <AiPageHeader
         title={skill.name}
-        description={skill.tagline}
+        description={
+          skill.tagline ||
+          "Manage this sub-service’s knowledge and qualification rules."
+        }
         eyebrow={skill.parentName}
       />
+      {!skill.availableToAssistant ? (
+        <Alert className="rounded-2xl">
+          <AlertTitle>
+            {!skill.isActive
+              ? "Inactive sub-service"
+              : "Inactive parent service"}
+          </AlertTitle>
+          <AlertDescription>
+            This skill remains available for administration. It is excluded from
+            assistant answers and fit scans until the sub-service and its parent
+            are active.
+          </AlertDescription>
+        </Alert>
+      ) : null}
       <div className="grid gap-4 xl:grid-cols-3">
         {sections.map(({ key, title, description, icon: Icon, detail }) => (
           <Link

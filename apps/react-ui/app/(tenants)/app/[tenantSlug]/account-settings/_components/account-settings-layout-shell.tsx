@@ -24,6 +24,8 @@ export function AccountSettingsLayoutShell({
   const aiBasePath = `/app/${tenantSlug}/account-settings/ai`
   const isAiRoute =
     pathname === aiBasePath || pathname.startsWith(`${aiBasePath}/`)
+  const isAccountRoute =
+    pathname === `/app/${tenantSlug}/account-settings/account`
 
   if (isAutomationBuilderRoute) {
     return (
@@ -33,7 +35,7 @@ export function AccountSettingsLayoutShell({
 
   return (
     <section className="flex h-full min-h-0 flex-col gap-4">
-      {!isAiRoute ? (
+      {!isAiRoute && !isAccountRoute ? (
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-0.5">
             <h1 className="text-xl font-semibold text-slate-900 sm:text-2xl">
@@ -62,7 +64,7 @@ export function AccountSettingsLayoutShell({
 
       <div
         className={
-          isAutomationListRoute || isAiRoute
+          isAutomationListRoute || isAiRoute || isAccountRoute
             ? "flex min-h-0 flex-1"
             : "flex min-h-0 flex-1 rounded-xl bg-white p-2 md:p-4"
         }

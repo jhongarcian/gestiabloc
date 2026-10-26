@@ -1756,7 +1756,7 @@ paths:
     patch:
       tags: [Account Settings]
       summary: Update tenant information
-      description: Only valid when `section=account`.
+      description: Only valid when `section=account`. Shared with AI Company Info. Requires an active account administrator, an allowed browser origin, and the current account revision. Updates only provided fields.
       security:
         - cookieAuth: []
       parameters:
@@ -1795,6 +1795,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: ACCOUNT_INFO_CONFLICT — review the latest saved account information before retrying
           content:
             application/json:
               schema:
@@ -1849,6 +1855,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AccountSettingsNotImplementedCollectionResponse"
+
   /api/account-settings/{tenantId}/users:
     post:
       tags: [Account Settings]
@@ -6868,8 +6875,95 @@ paths:
           description: Active tenant administrator access and allowed origin required
         "409":
           description: AI_AVATAR_CONFLICT
+  /api/account-settings/{tenantId}/ai/skills:
+    get:
+      tags: [AI]
+      summary: List real account sub-services and qualification fields
+      description: Account admins only. Includes inactive offerings and parent status. Does not load contact records or call AI.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Tenant-scoped skills, including inherited service notes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  skills:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AiSkill"
+                  fields:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AiQualificationField"
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - in: path
+        name: skillId
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [AI]
+      summary: Read a tenant sub-service skill
+      responses:
+        "200":
+          $ref: "#/components/responses/AiSkillSaved"
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+        "404": { description: Offering not found in this tenant }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/qualification:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - in: path
+        name: skillId
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [AI]
+      summary: Save only a skill's qualification configuration
+      description: Uses the existing fit field catalog and deterministic engine validation. Locks the service hierarchy and rejects stale revisions. Preserves knowledge, verification, and all other service configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [revision, qualification]
+              properties:
+                revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+                qualification:
+                  $ref: "#/components/schemas/AiQualification"
+      responses:
+        "200":
+          $ref: "#/components/responses/AiSkillSaved"
+        "400": { description: Invalid request or qualification condition }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access required or untrusted origin }
+        "404": { description: Offering not found in this tenant }
+        "409": { description: AI_QUALIFICATION_CONFLICT or AI_PROFILE_REVIEW_REQUIRED; existing configuration remains unchanged }
 components:
   responses:
+    AiSkillSaved:
+      description: Current skill and its available qualification field catalog
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, enum: [true] }
+              skill:
+                $ref: "#/components/schemas/AiSkill"
+              fields:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AiQualificationField"
     AiHelperSettingsSaved:
       description: Current persisted helper settings, including independent text and avatar revisions
       content:
@@ -6958,6 +7052,122 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    AiQualificationField:
+      type: object
+      properties:
+        source: { type: string, enum: [core, custom, status, tags, derived] }
+        fieldKey: { type: string }
+        label: { type: string }
+        description: { type: string, nullable: true }
+        valueType: { type: string, enum: [string, number, boolean, date, stringArray] }
+        operators:
+          type: array
+          items: { type: string }
+        options:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: string }
+              label: { type: string }
+    AiQualification:
+      type: object
+      additionalProperties: false
+      required: [enabled, summary, rules, requirementMetadata, optionMetadata]
+      properties:
+        enabled: { type: boolean }
+        summary: { type: string, maxLength: 2000 }
+        rules:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, source, fieldKey, valueType, operator, compareValue, required, requiredGroup, requiredBranch, weight, label, explanation]
+            properties:
+              id: { type: string, minLength: 1, maxLength: 120 }
+              source: { type: string, enum: [core, custom, status, tags, derived] }
+              fieldKey: { type: string, minLength: 1, maxLength: 120 }
+              valueType: { type: string, enum: [string, number, boolean, date, stringArray] }
+              operator:
+                type: string
+                enum: [equals, not_equals, contains, not_contains, greater_than, greater_than_or_equal, less_than, less_than_or_equal, between, includes_any, includes_all, excludes_all, is_true, is_false, is_empty, is_not_empty]
+              compareValue:
+                description: Comparison value, an array of strings, a min/max range, or null for presence and boolean operators
+              required: { type: boolean }
+              requiredGroup: { type: string, nullable: true, maxLength: 120 }
+              requiredBranch: { type: string, nullable: true, maxLength: 120 }
+              weight: { type: integer, minimum: 1, maximum: 10 }
+              label: { type: string, nullable: true, maxLength: 160 }
+              explanation: { type: string, nullable: true, maxLength: 300 }
+        requirementMetadata:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [name, description]
+            properties:
+              name: { type: string, minLength: 1, maxLength: 120 }
+              description: { type: string, maxLength: 2000 }
+        optionMetadata:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            additionalProperties: false
+            required: [requirementName, optionName, description]
+            properties:
+              requirementName: { type: string, minLength: 1, maxLength: 120 }
+              optionName: { type: string, minLength: 1, maxLength: 120 }
+              description: { type: string, maxLength: 2000 }
+    AiSkill:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        parentId: { type: string, format: uuid, nullable: true }
+        parentName: { type: string }
+        isActive: { type: boolean }
+        parentActive: { type: boolean }
+        availableToAssistant: { type: boolean }
+        tagline: { type: string }
+        revision: { type: string, pattern: "^[a-f0-9]{64}$" }
+        qualificationReadOnlyReason: { type: string, nullable: true }
+        qualification:
+          $ref: "#/components/schemas/AiQualification"
+        knowledgeProfile:
+          type: object
+          description: Existing normalized service knowledge; read-only in this API
+        verificationProfile:
+          type: object
+          description: Existing normalized verification guidance; read-only in this API
+        notes:
+          type: object
+          description: Effective service overview, pricing and non-archived checklist with owning source service IDs, including parent inheritance
+          properties:
+            overview: { type: string }
+            pricing:
+              type: object
+              properties:
+                basePriceCents: { type: integer }
+                currency: { type: string }
+            checklist:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  label: { type: string }
+                  description: { type: string, nullable: true }
+                  isRequired: { type: boolean }
+                  sortOrder: { type: integer }
+            sources:
+              type: object
+              properties:
+                overview: { type: string, format: uuid }
+                pricing: { type: string, format: uuid }
+                checklist: { type: string, format: uuid }
     AiHelperSettingsUpdate:
       type: object
       additionalProperties: false
@@ -9623,8 +9833,18 @@ components:
           type: integer
     AccountSettingsTenantInfoUpdateRequest:
       type: object
-      required: [name]
+      additionalProperties: false
+      description: Partial update shared by Account Settings and AI Company Info. Include the current revision and at least one edited field. Omitted fields are preserved; blank optional strings clear their values. Billing and timezone settings are preserved when omitted. Stale revisions return ACCOUNT_INFO_CONFLICT (409).
+      required: [revision]
       properties:
+        revision:
+          type: integer
+          minimum: 0
+          maximum: 2147483646
+        description:
+          type: string
+          nullable: true
+          maxLength: 4000
         name:
           type: string
           minLength: 1
@@ -9661,11 +9881,10 @@ components:
           nullable: true
         taxEnabled:
           type: boolean
-          default: false
         taxLabel:
           type: string
           nullable: true
-          maxLength: 80
+          maxLength: 60
         defaultTaxRatePercent:
           type: number
           nullable: true
@@ -9680,6 +9899,13 @@ components:
         tenant:
           type: object
           properties:
+            revision:
+              type: integer
+              minimum: 0
+            description:
+              type: string
+              nullable: true
+              maxLength: 4000
             id:
               type: string
             name:

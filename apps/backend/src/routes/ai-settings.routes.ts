@@ -34,7 +34,7 @@ const upload = multer({
 })
 
 router.use(
-  "/:tenantId/ai",
+  ["/:tenantId/ai/settings", "/:tenantId/ai/avatar"],
   requireAuth,
   requireTenantAdmin({
     tenantIdLookups: [{ source: "params", key: "tenantId" }],

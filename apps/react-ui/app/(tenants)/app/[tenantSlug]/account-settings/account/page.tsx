@@ -1,8 +1,6 @@
-import { headers } from "next/headers"
-import { redirect } from "next/navigation"
-
-import { api, type MeResponse } from "@/lib/api"
-
+import { api } from "@/lib/api"
+import type { AccountProfileResponse } from "@/lib/account-profile"
+import { getTenantMembershipContext } from "../../_lib/tenant-session"
 import { TenantInfoForm } from "../_components/tenant-info-form"
 
 export default async function AccountSettingsAccountPage({
@@ -11,31 +9,24 @@ export default async function AccountSettingsAccountPage({
   params: Promise<{ tenantSlug: string }>
 }) {
   const { tenantSlug } = await params
-
-  let me: MeResponse["user"] | null = null
-
+  const { cookie, tenantId } = await getTenantMembershipContext(tenantSlug)
+  let initialProfile: AccountProfileResponse["tenant"] | null = null
   try {
-    const cookie = (await headers()).get("cookie") ?? ""
-    const { data } = await api.get<MeResponse>("/api/auth/me", {
-      headers: { cookie },
-    })
-
-    me = data?.user ?? null
+    initialProfile = (
+      await api.get<AccountProfileResponse>(
+        `/api/account-settings/${tenantId}/account`,
+        { headers: { cookie } },
+      )
+    ).data.tenant
   } catch {
-    redirect("/login")
+    /* Render a retry state without editable sample data. */
   }
-
-  if (!me?.memberships?.length) {
-    redirect("/login")
-  }
-
-  const membership = me.memberships.find(
-    (item) => item.tenant?.slug === tenantSlug,
+  return (
+    <TenantInfoForm
+      key={tenantId}
+      tenantId={tenantId}
+      tenantSlug={tenantSlug}
+      initialProfile={initialProfile}
+    />
   )
-
-  if (!membership?.tenant?.id) {
-    redirect(`/app/${tenantSlug}`)
-  }
-
-  return <TenantInfoForm tenantId={membership.tenant.id} />
 }

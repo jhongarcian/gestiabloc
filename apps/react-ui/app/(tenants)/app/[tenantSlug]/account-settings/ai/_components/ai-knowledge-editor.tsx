@@ -1,4 +1,5 @@
 "use client"
+import Link from "next/link"
 
 import { useRef, useState, type FormEvent } from "react"
 import { Check, ChevronDown, FileText, Link2, Plus } from "lucide-react"
@@ -34,7 +35,7 @@ import {
 import { useAiSkill } from "./ai-workspace"
 
 export function AiKnowledgeEditor({ skillId }: { skillId: string }) {
-  const { skill, updateSkill } = useAiSkill(skillId)
+  const { skill, updateSkill, basePath } = useAiSkill(skillId)
   const fileInput = useRef<HTMLInputElement>(null)
   const [linkDraft, setLinkDraft] = useState({ id: "", label: "", url: "" })
   const [linkError, setLinkError] = useState("")
@@ -310,13 +311,19 @@ export function AiKnowledgeEditor({ skillId }: { skillId: string }) {
 
       <AiPanel
         title="Linked service notes"
-        description="Read-only summaries from the sample service configuration. These stay linked to their original sources."
+        description="Read-only information from current service configuration, including inherited pricing and checklist items."
       >
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-semibold text-slate-900">Overview</h3>
               <Badge variant="outline">Linked · read-only</Badge>
+              <Link
+                className="rounded text-xs font-medium text-blue-700 underline focus-visible:outline-2"
+                href={`${basePath.slice(0, -3)}/services/${skill.notes.sources.overview}`}
+              >
+                Open source service
+              </Link>
             </div>
             <p className="text-sm leading-6 text-slate-600">
               {skill.notes.overview}
@@ -327,6 +334,12 @@ export function AiKnowledgeEditor({ skillId }: { skillId: string }) {
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="text-sm font-semibold text-slate-900">Pricing</h3>
               <Badge variant="outline">Linked · read-only</Badge>
+              <Link
+                className="rounded text-xs font-medium text-blue-700 underline focus-visible:outline-2"
+                href={`${basePath.slice(0, -3)}/services/${skill.notes.sources.pricing}`}
+              >
+                Open source pricing
+              </Link>
             </div>
             <p className="text-sm leading-6 text-slate-600">
               {skill.notes.pricing}
@@ -339,6 +352,12 @@ export function AiKnowledgeEditor({ skillId }: { skillId: string }) {
                 Checklist
               </h3>
               <Badge variant="outline">Linked · read-only</Badge>
+              <Link
+                className="rounded text-xs font-medium text-blue-700 underline focus-visible:outline-2"
+                href={`${basePath.slice(0, -3)}/services/${skill.notes.sources.checklist}`}
+              >
+                Open source checklist
+              </Link>
             </div>
             <ul className="flex flex-col gap-2">
               {skill.notes.checklist.map((item) => (
@@ -354,9 +373,45 @@ export function AiKnowledgeEditor({ skillId }: { skillId: string }) {
                 </li>
               ))}
             </ul>
+            {!skill.notes.checklist.length ? (
+              <p className="text-sm text-slate-500">
+                No checklist items have been saved.
+              </p>
+            ) : null}
           </div>
         </div>
       </AiPanel>
+
+      {skill.knowledgeProfile.pricingNotes ||
+      skill.knowledgeProfile.workflowNotes ? (
+        <AiPanel
+          title="Existing service guidance"
+          description="Saved notes are preserved as read-only content while knowledge editing remains a preview."
+        >
+          <div className="flex flex-col gap-4 text-sm text-slate-600">
+            {skill.knowledgeProfile.pricingNotes ? (
+              <div>
+                <h3 className="mb-1 font-semibold text-slate-900">
+                  Pricing guidance
+                </h3>
+                <p className="whitespace-pre-wrap break-words">
+                  {skill.knowledgeProfile.pricingNotes}
+                </p>
+              </div>
+            ) : null}
+            {skill.knowledgeProfile.workflowNotes ? (
+              <div>
+                <h3 className="mb-1 font-semibold text-slate-900">
+                  Workflow guidance
+                </h3>
+                <p className="whitespace-pre-wrap break-words">
+                  {skill.knowledgeProfile.workflowNotes}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        </AiPanel>
+      ) : null}
 
       <details className="group rounded-[22px] border border-slate-200 bg-white p-5">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-md text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-700 [&::-webkit-details-marker]:hidden">

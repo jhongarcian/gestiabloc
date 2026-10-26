@@ -156,6 +156,13 @@ const COMPACT_LOCATION_LABELS: Readonly<Record<string, string>> = {
   automations: "Automations",
   "automation-processes": "Automation Processes",
   billing: "Billing",
+  skills: "Skills",
+  "company-info": "Company Info",
+  analytics: "Analytics",
+  settings: "Settings",
+  faq: "FAQ",
+  "knowledge-base": "Knowledge Base",
+  "qualification-rules": "Qualification Rules",
   calendar: "Calendar",
   contacts: "Contacts",
   "custom-fields": "Custom Fields",
@@ -411,6 +418,8 @@ export function TenantShell({
     let acc = basePath
     segments.forEach((segment, index) => {
       acc += `/${segment}`
+      // The workspace supplies a named skill breadcrumb below the app header.
+      if (segments[0] === "account-settings" && segments[1] === "ai" && segments[2] === "skills" && index === 3) return
       const isContactIdSegment = segments[0] === "contacts" && index === 1
       const isServiceEnrollmentRoute =
         segments[0] === "services" && segments[1] === "enrollments"

@@ -1221,7 +1221,7 @@ export function ServiceDetailsPanel({ tenantId, tenantSlug, service }: ServiceDe
                   <p className="text-sm text-slate-500">Manage knowledge, FAQs, and qualification rules in Account Settings → AI.</p>
                 </div>
                 <Button asChild variant="outline" className="h-8 shrink-0 rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 hover:text-slate-950">
-                  <Link href={`/app/${tenantSlug}/account-settings/ai/skills`}>Open AI workspace</Link>
+                  <Link href={`/app/${tenantSlug}/account-settings/ai/skills${service.kind === "OFFERING" ? `/${service.id}` : ""}`}>Open AI workspace</Link>
                 </Button>
               </div>
 

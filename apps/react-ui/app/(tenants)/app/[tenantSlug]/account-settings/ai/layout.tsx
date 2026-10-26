@@ -1,6 +1,8 @@
 import { AiWorkspace } from "./_components/ai-workspace"
 import { api } from "@/lib/api"
 import { getTenantMembershipContext } from "../../_lib/tenant-session"
+import type { AccountProfileResponse } from "@/lib/account-profile"
+import type { AiSkillsResponse } from "./_lib/skills"
 import type {
   AiHelperSettings,
   AiSettingsResponse,
@@ -17,15 +19,26 @@ export default async function AiLayout({
   const { cookie, tenantId, membership } =
     await getTenantMembershipContext(tenantSlug)
   let initialSettings: AiHelperSettings | null = null
-  try {
-    const { data } = await api.get<AiSettingsResponse>(
-      `/api/account-settings/${tenantId}/ai/settings`,
-      { headers: { cookie } },
-    )
-    initialSettings = data.settings
-  } catch {
-    // Keep the workspace available with a retry state, never editable demo settings.
-  }
+  let initialCompany: AccountProfileResponse["tenant"] | null = null
+  const [helperResult, companyResult, catalogResult] = await Promise.allSettled(
+    [
+      api.get<AiSettingsResponse>(
+        `/api/account-settings/${tenantId}/ai/settings`,
+        { headers: { cookie } },
+      ),
+      api.get<AccountProfileResponse>(
+        `/api/account-settings/${tenantId}/account`,
+        { headers: { cookie } },
+      ),
+      api.get<AiSkillsResponse>(`/api/account-settings/${tenantId}/ai/skills`, {
+        headers: { cookie },
+      }),
+    ],
+  )
+  if (helperResult.status === "fulfilled")
+    initialSettings = helperResult.value.data.settings
+  if (companyResult.status === "fulfilled")
+    initialCompany = companyResult.value.data.tenant
   return (
     <AiWorkspace
       key={tenantSlug}
@@ -33,6 +46,10 @@ export default async function AiLayout({
       tenantId={tenantId}
       companyName={membership.tenant.name}
       initialSettings={initialSettings}
+      initialCompany={initialCompany}
+      initialCatalog={
+        catalogResult.status === "fulfilled" ? catalogResult.value.data : null
+      }
     >
       {children}
     </AiWorkspace>

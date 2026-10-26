@@ -68,6 +68,16 @@ export function AiFaqEditor({ skillId }: { skillId: string }) {
           </>
         }
       />
+      {skill.knowledgeProfile.faqNotes ? (
+        <AiPanel
+          title="Saved FAQ notes"
+          description="Imported service notes, kept as written. Structured FAQ saving will be connected in a later chunk."
+        >
+          <p className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-600">
+            {skill.knowledgeProfile.faqNotes}
+          </p>
+        </AiPanel>
+      ) : null}
       {skill.faqs.map((faq, index) => (
         <AiPanel
           key={faq.id}
