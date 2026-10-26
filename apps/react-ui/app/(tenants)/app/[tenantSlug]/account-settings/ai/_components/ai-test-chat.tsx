@@ -82,8 +82,8 @@ export function AiTestChat({
             information.
           </SheetDescription>
           <p className="text-xs leading-5 text-slate-500">
-            Unsaved edits and preview sources are excluded. Messages clear when
-            you refresh or leave the workspace.
+            Unsaved edits and unfinished sources are excluded. Messages clear
+            when you refresh or leave the workspace.
           </p>
         </SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/50 px-4 py-5 [scrollbar-gutter:stable] sm:px-6">
@@ -153,7 +153,7 @@ export function AiTestChat({
                               onClick={() => setOpen(false)}
                               href={
                                 source.skillId
-                                  ? `${basePath}/skills/${source.skillId}/${source.section === "faq" ? `faq${source.faqId ? `#faq-${source.faqId}` : ""}` : "knowledge-base"}`
+                                  ? `${basePath}/skills/${source.skillId}/${source.section === "faq" ? `faq${source.faqId ? `#faq-${source.faqId}` : ""}` : `knowledge-base${source.sourceId ? `#source-${source.sourceId}` : ""}`}`
                                   : `${basePath}/company-info`
                               }
                               className="rounded text-xs font-semibold text-blue-800 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700"

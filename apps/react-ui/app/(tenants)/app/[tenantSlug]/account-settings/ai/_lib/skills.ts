@@ -79,12 +79,6 @@ export function toSkillDraft(skill: AiSkillDto): AiSkillDraft {
         guidance: skill.verificationProfile.guidance,
         triggerKeywords: [...skill.verificationProfile.triggerKeywords],
       },
-      files: [],
-      links: skill.verificationProfile.sourceUrls.map((url, index) => ({
-        id: `legacy-source-${index}`,
-        label: url,
-        url,
-      })),
     },
     notes: {
       overview: skill.notes.overview || "No service overview has been saved.",
@@ -126,11 +120,7 @@ export function mergeSavedSkill(
         JSON.stringify(current.savedQualification)
         ? current.revision
         : next.revision,
-    knowledge: {
-      ...(keepKnowledge ? current.knowledge : next.knowledge),
-      links: current.knowledge.links,
-      files: current.knowledge.files,
-    },
+    knowledge: keepKnowledge ? current.knowledge : next.knowledge,
     savedKnowledge: keepKnowledge
       ? current.savedKnowledge
       : next.savedKnowledge,

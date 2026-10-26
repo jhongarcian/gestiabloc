@@ -7088,6 +7088,309 @@ paths:
         "403": { description: Administrator access or trusted origin required }
         "404": { description: Skill not found in this tenant }
         "409": { description: AI_KNOWLEDGE_CONFLICT or AI_KNOWLEDGE_REVIEW_REQUIRED }
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources:
+    parameters: &a1
+      - &a8
+        $ref: "#/components/parameters/TenantIdPathParam"
+      - &a9
+        $ref: "#/components/parameters/AiSkillId"
+    get:
+      tags:
+        - AI
+      summary: List saved source metadata and processing states
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Metadata only; private keys, extracted text and credentials are omitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  sources:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AiSource"
+        "400": &a2
+          description: Invalid source, request, file or URL
+        "401": &a3
+          description: Authentication required
+        "403": &a4
+          description: Active tenant administrator and trusted mutation origin required
+        "404": &a5
+          description: Skill/source not found in this account
+        "409": &a6
+          description: Stale source revision, upload in progress, or content not ready
+        "429": &a7
+          description: Source mutation/upload limit reached
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/links:
+    parameters: *a1
+    post:
+      tags:
+        - AI
+      summary: Queue a public webpage source
+      security:
+        - cookieAuth: []
+      description: Fetches only the supplied public HTTP(S) page. Enforces DNS/IP,
+        redirect, byte and time limits. No crawling or authenticated page access.
+        Maximum 100 sources per skill.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+                - label
+                - url
+              properties:
+                requestId:
+                  type: string
+                  format: uuid
+                label:
+                  type: string
+                  maxLength: 200
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+      responses:
+        "201":
+          $ref: "#/components/responses/AiSourceSaved"
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/files:
+    parameters: *a1
+    post:
+      tags:
+        - AI
+      summary: Upload one private AI document and queue extraction
+      security:
+        - cookieAuth: []
+      description: PDF, DOCX or UTF-8 TXT up to 10 MB. Original bytes are stored in
+        the private Supabase bucket under
+        tenants/<tenantId>/ai/skills/<skillId>/sources/<sourceId>/. The request ID
+        supports safe upload retries. No public upload URL or service credentials
+        are returned.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - requestId
+                - file
+              properties:
+                requestId:
+                  type: string
+                  format: uuid
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          $ref: "#/components/responses/AiSourceSaved"
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+        "503":
+          description: Private storage unavailable or upload failed
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/{sourceId}:
+    parameters:
+      - *a8
+      - *a9
+      - &a10
+        in: path
+        name: sourceId
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      tags:
+        - AI
+      summary: Rename a source or replace its webpage URL
+      security:
+        - cookieAuth: []
+      description: Revision-protected. URL changes immediately remove prior extracted
+        passages and queue new processing. Preserves independent knowledge and
+        qualification configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - revision
+                - label
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                  maximum: 2147483646
+                label:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                url:
+                  type: string
+                  format: uri
+                  maxLength: 2048
+      responses:
+        "200":
+          $ref: "#/components/responses/AiSourceSaved"
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+    delete:
+      tags:
+        - AI
+      summary: Remove a source from subsequent replies and queue private object cleanup
+      security:
+        - cookieAuth: []
+      description: Removes extracted passages immediately. Durable cleanup survives
+        service/tenant cascades and retries storage failures. Stale workers cannot
+        restore removed passages.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiSourceRevision"
+      responses:
+        "200":
+          description: Removed from assistant retrieval; physical cleanup continues in the
+            background
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/{sourceId}/retry:
+    parameters:
+      - *a8
+      - *a9
+      - *a10
+    post:
+      tags:
+        - AI
+      summary: Retry a failed source extraction
+      security:
+        - cookieAuth: []
+      description: Only failed sources with an available original can be retried. PDFs
+        needing OCR must be made searchable and uploaded again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiSourceRevision"
+      responses:
+        "200":
+          $ref: "#/components/responses/AiSourceSaved"
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/{sourceId}/download:
+    parameters:
+      - *a8
+      - *a9
+      - *a10
+    get:
+      tags:
+        - AI
+      summary: Download an original AI document privately
+      security:
+        - cookieAuth: []
+      description: Checks the active tenant administrator and source ownership, then
+        redirects to a signed Supabase download valid for 60 seconds. No-store.
+      responses:
+        "303":
+          description: Short-lived signed download
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
+  /api/account-settings/{tenantId}/ai/skills/{skillId}/sources/{sourceId}/text:
+    parameters:
+      - *a8
+      - *a9
+      - *a10
+    get:
+      tags:
+        - AI
+      summary: Read paginated extracted passages from a ready source
+      security:
+        - cookieAuth: []
+      parameters:
+        - in: query
+          name: after
+          schema:
+            type: integer
+            minimum: -1
+            maximum: 1000
+            default: -1
+      responses:
+        "200":
+          description: Up to 25 passages with page references
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  hasMore:
+                    type: boolean
+                  chunks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ordinal:
+                          type: integer
+                        page:
+                          type: integer
+                          nullable: true
+                        content:
+                          type: string
+                          maxLength: 1600
+        "400": *a2
+        "401": *a3
+        "403": *a4
+        "404": *a5
+        "409": *a6
+        "429": *a7
   /api/account-settings/{tenantId}/ai/test-chat:
     get:
       tags: [AI]
@@ -7155,6 +7458,17 @@ paths:
         "503": { description: AI_PROVIDER_UNAVAILABLE; provider absent, inaccessible, timed out, or disconnected }
 components:
   responses:
+    AiSourceSaved:
+      description: Current source metadata; raw storage paths and extracted text are excluded
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok:
+                type: boolean
+              source:
+                $ref: "#/components/schemas/AiSource"
     AiFaqSaved:
       description: Ordered saved FAQs, collection revision and unchanged legacy FAQ prose
       content:
@@ -7283,6 +7597,79 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    AiSourceRevision:
+      type: object
+      additionalProperties: false
+      required:
+        - revision
+      properties:
+        revision: &a1
+          type: integer
+          minimum: 1
+          maximum: 2147483646
+    AiSource:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        requestId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum:
+            - FILE
+            - LINK
+        label:
+          type: string
+        url:
+          type: string
+          nullable: true
+        finalUrl:
+          type: string
+          nullable: true
+        filename:
+          type: string
+          nullable: true
+        contentType:
+          type: string
+          nullable: true
+        size:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum:
+            - UPLOADING
+            - QUEUED
+            - PROCESSING
+            - READY
+            - FAILED
+            - OCR_REQUIRED
+            - DELETING
+        progress:
+          type: integer
+          minimum: 0
+          maximum: 100
+        revision: *a1
+        lastError:
+          type: string
+          nullable: true
+        characterCount:
+          type: integer
+        chunkCount:
+          type: integer
+        canDownload:
+          type: boolean
+        canRetry:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
     AiFaqInput:
       type: object
       additionalProperties: false
@@ -7341,9 +7728,11 @@ components:
             properties:
               id: { type: string }
               label: { type: string }
-              section: { type: string, enum: [company, overview, pricing, checklist, guidance, faq] }
+              section: { type: string, enum: [company, overview, pricing, checklist, guidance, faq, document] }
               skillId: { type: string, format: uuid, nullable: true }
               faqId: { type: string, format: uuid }
+              sourceId: { type: string, format: uuid }
+              page: { type: integer }
               excerpt: { type: string, maxLength: 320 }
         context:
           type: object

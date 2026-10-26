@@ -66,6 +66,8 @@ Implemented in [AI content — chunk 5](ai-content-chunk-5.md), including dialog
 
 ### 6. Source links and document ingestion
 
+Implemented in [AI sources — chunk 6](ai-sources-chunk-6.md), with private per-tenant Supabase folders, queued extraction, source management, full-text retrieval and citations.
+
 - Persist each link and file as an individual source attached to its tenant and skill.
 - Store knowledge documents in existing private storage, separate from public avatar images.
 - Support text extraction from PDF, DOCX, and TXT. Identify scanned PDFs requiring OCR instead of marking them ready.

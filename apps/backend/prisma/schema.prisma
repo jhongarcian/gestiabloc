@@ -695,6 +695,7 @@ model Tenant {
   linkedEntities                    TenantLinkedEntity[]
   services                          Service[]
   serviceAiFaqs                     ServiceAiFaq[]
+  serviceAiSources                  ServiceAiSource[]
   serviceChecklistItems             ServiceChecklistItem[]
   serviceProfessionals              ServiceProfessional[]
   contactServices                   ContactService[]
@@ -837,6 +838,7 @@ model Service {
   parentService         Service?                      @relation("ServiceHierarchy", fields: [tenantId, parentServiceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Cascade)
   subServices           Service[]                     @relation("ServiceHierarchy")
   aiFaqs                ServiceAiFaq[]
+  aiSources             ServiceAiSource[]
   checklistItems        ServiceChecklistItem[]
   professionals         ServiceProfessional[]
   steps                 ServiceStep[]
@@ -853,6 +855,92 @@ model Service {
   @@index([tenantId, isActive, sortOrder])
   @@index([tenantId, kind, parentServiceId, sortOrder])
   @@index([tenantId, parentServiceId, sortOrder])
+}
+
+enum AiSourceKind {
+  FILE
+  LINK
+}
+
+enum AiSourceStatus {
+  UPLOADING
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+  OCR_REQUIRED
+  DELETING
+}
+
+model ServiceAiSource {
+  id             String         @id @default(uuid())
+  tenantId       String
+  serviceId      String
+  requestId      String
+  kind           AiSourceKind
+  label          String
+  url            String?
+  finalUrl       String?
+  filename       String?
+  contentType    String?
+  size           Int?
+  checksum       String?
+  storageKey     String?        @unique
+  uploadedAt     DateTime?
+  status         AiSourceStatus @default(QUEUED)
+  progress       Int            @default(0)
+  revision       Int            @default(1)
+  attemptCount   Int            @default(0)
+  availableAt    DateTime       @default(now())
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  characterCount Int            @default(0)
+  chunkCount     Int            @default(0)
+  deletedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service         @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+  chunks  AiSourceChunk[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, requestId])
+  @@index([tenantId, serviceId, deletedAt, createdAt])
+  @@index([status, availableAt])
+}
+
+model AiSourceChunk {
+  id           String   @id @default(uuid())
+  tenantId     String
+  sourceId     String
+  ordinal      Int
+  page         Int?
+  content      String
+  searchText   String
+  searchVector Unsupported("tsvector")? @default(dbgenerated("''::tsvector"))
+
+  source ServiceAiSource @relation(fields: [tenantId, sourceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceId, ordinal])
+  @@index([searchVector], type: Gin)
+}
+
+// Deliberately survives tenant/service cascades so private objects are still removed.
+model AiSourceStorageCleanup {
+  id             String   @id @default(uuid())
+  tenantId       String
+  serviceId      String
+  sourceId       String
+  storageKey     String   @unique
+  availableAt    DateTime @default(now())
+  attemptCount   Int      @default(0)
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([availableAt])
 }
 
 model ServiceAiFaq {

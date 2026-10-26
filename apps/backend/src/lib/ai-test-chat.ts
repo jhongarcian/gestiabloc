@@ -9,6 +9,7 @@ import { aiSkillSelect, presentAiSkill } from "./ai-skills.js"
 import { enrollableServiceWhere } from "./service-hierarchy.js"
 import { getGroqConfiguration } from "./groq-config.js"
 import { aiFaqSelect } from "./ai-skill-content.js"
+import { retrieveAiDocumentSources } from "./ai-source-retrieval.js"
 import {
   FaqMatchSchema,
   FaqTranslationSchema,
@@ -62,8 +63,17 @@ export type AiTestChatInput = z.infer<typeof AiTestChatInputSchema>
 export type AiChatSource = {
   id: string
   label: string
-  section: "company" | "overview" | "pricing" | "checklist" | "guidance" | "faq"
+  section:
+    | "company"
+    | "overview"
+    | "pricing"
+    | "checklist"
+    | "guidance"
+    | "faq"
+    | "document"
   faqId?: string
+  sourceId?: string
+  page?: number
   skillId: string | null
   content: string
 }
@@ -85,8 +95,10 @@ const text = (value: string | null | undefined, limit = 2400) =>
   (value ?? "").trim().slice(0, limit)
 
 export async function loadAiChatSnapshot(
-  client: Pick<PrismaClient, "tenant" | "tenantAiSettings" | "service">,
+  client: Pick<PrismaClient, "tenant" | "tenantAiSettings" | "service"> &
+    Partial<Pick<PrismaClient, "$queryRaw">>,
   tenantId: string,
+  input?: AiTestChatInput,
 ): Promise<AiChatSnapshot> {
   const [company, settings, services] = await Promise.all([
     client.tenant.findUnique({
@@ -227,6 +239,14 @@ export async function loadAiChatSnapshot(
         .join("\n"),
     )
   }
+  if (input && client.$queryRaw)
+    sources.push(
+      ...(await retrieveAiDocumentSources(
+        client as Pick<PrismaClient, "$queryRaw">,
+        tenantId,
+        input,
+      )),
+    )
   return { helper, sources, skillCount, faqs }
 }
 

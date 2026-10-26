@@ -13,6 +13,8 @@ import accountSettingsRoutes from "./routes/account-settings.routes"
 import aiSettingsRoutes from "./routes/ai-settings.routes.js"
 import aiSkillsRoutes from "./routes/ai-skills.routes.js"
 import aiTestChatRoutes from "./routes/ai-test-chat.routes.js"
+import aiSourcesRoutes from "./routes/ai-sources.routes.js"
+import { startAiSourceWorker } from "./lib/ai-source-worker.js"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
 import tasksRoutes from "./routes/tasks.routes"
@@ -109,6 +111,7 @@ app.use("/api/account-settings", automationsRoutes);
 app.use("/api/account-settings", aiSettingsRoutes);
 app.use("/api/account-settings", aiSkillsRoutes);
 app.use("/api/account-settings", aiTestChatRoutes);
+app.use("/api/account-settings", aiSourcesRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/automation-processes", automationProcessesRoutes);
 app.use("/api/contact-imports", contactImportsRoutes);
@@ -224,9 +227,11 @@ io.on("connection", (socket) => {
   })
 })
 
+let stopAiSources: (() => Promise<void>) | undefined
 const start = async () => {
   await prisma.$connect()
   setRealtimeServer(io)
+  if (process.env.AI_SOURCE_WORKER_ENABLED !== "false") stopAiSources = startAiSourceWorker()
 
   await refreshTaskPrioritiesForTenants().catch((error) => {
     console.error("Failed to refresh task priorities on startup:", error)
@@ -351,12 +356,17 @@ const start = async () => {
   })
 }
 
+let shuttingDown = false
 const shutdown = async (signal: string) => {
+  if (shuttingDown) return
+  shuttingDown = true
   console.log(`Received ${signal}, shutting down...`)
+  // Release the listener before waiting for document work so dev restarts can bind.
+  const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+  io.close()
+  await Promise.all([closed, stopAiSources?.()])
   await prisma.$disconnect()
-  server.close(() => {
-    process.exit(0)
-  })
+  process.exit(0)
 }
 
 process.on("SIGINT", () => void shutdown("SIGINT"))

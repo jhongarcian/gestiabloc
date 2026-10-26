@@ -50,16 +50,18 @@ const dto: AiSkillDto = {
     sources: { overview: "skill", pricing: "parent", checklist: "parent" },
   },
 }
-test("local links/files do not mark persisted knowledge dirty or leak into its payload", () => {
+test("source data stays outside the independent knowledge payload", () => {
   const draft = toSkillDraft(dto)
-  draft.knowledge.links.push({
-    id: "preview",
-    label: "Preview",
-    url: "https://example.test/local",
-  })
+  const inputWithSources = {
+    ...draft.knowledge,
+    links: [
+      { id: "preview", label: "Preview", url: "https://example.test/local" },
+    ],
+    files: [],
+  }
   assert.equal(knowledgeDirty(draft), false)
-  assert.equal("links" in knowledgeInput(draft.knowledge), false)
-  assert.equal("files" in knowledgeInput(draft.knowledge), false)
+  assert.equal("links" in knowledgeInput(inputWithSources), false)
+  assert.equal("files" in knowledgeInput(inputWithSources), false)
   draft.knowledge.description = "Edited description"
   assert.equal(knowledgeDirty(draft), true)
 })
@@ -82,7 +84,6 @@ test("section saves retain other unsaved forms and use safe revisions for later 
   assert.equal(next.revision, "profile-2")
   assert.equal(next.knowledge.description, "Saved new knowledge")
   assert.equal(knowledgeDirty(next), false)
-  assert.deepEqual(next.knowledge.links, draft.knowledge.links)
   const foreignRules = {
     ...savedKnowledge,
     revision: "profile-3",

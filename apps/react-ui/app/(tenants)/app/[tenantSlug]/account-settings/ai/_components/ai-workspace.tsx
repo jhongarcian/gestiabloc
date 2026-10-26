@@ -24,6 +24,7 @@ import type { AccountProfileResponse } from "@/lib/account-profile"
 import { useAccountProfile } from "../../_components/use-account-profile"
 import { useAiSkills } from "./use-ai-skills"
 import { useAiFaqs } from "./use-ai-faqs"
+import { useAiSources } from "./use-ai-sources"
 import {
   toSkillDraft,
   type AiSkillResponse,
@@ -31,6 +32,7 @@ import {
 } from "../_lib/skills"
 
 type WorkspaceContext = ReturnType<typeof useHelperSettings> &
+  ReturnType<typeof useAiSources> &
   ReturnType<typeof useAiFaqs> &
   ReturnType<typeof useAiSkills> & {
     basePath: string
@@ -103,6 +105,7 @@ export function AiWorkspace({
   const pathname = usePathname()
   const skillState = useAiSkills(tenantId, initialCatalog)
   const faqState = useAiFaqs(tenantId)
+  const sourceState = useAiSources(tenantId)
   const helperState = useHelperSettings(tenantId, initialSettings)
   const companyProfile = useAccountProfile(tenantId, initialCompany, "company")
   const draft = { skills: skillState.skills, helper: helperState.helper }
@@ -113,6 +116,7 @@ export function AiWorkspace({
     ...helperState,
     ...skillState,
     ...faqState,
+    ...sourceState,
     basePath,
     companyName: companyProfile.savedProfile?.name ?? companyName,
     companyProfile,
@@ -229,10 +233,10 @@ export function AiWorkspace({
                     ? "Save changes to update the deterministic fit scan. Knowledge, verification, and other service settings are preserved."
                     : pathname.endsWith("/faq") ||
                         pathname.endsWith("/knowledge-base")
-                      ? "FAQ answers, descriptions, and guidance are saved for Test helper. Links and files remain local source previews until they are connected."
+                      ? "Saved FAQs, guidance, and ready sources are available to Test helper. Files are stored privately for your account."
                       : pathname.endsWith("/analytics")
                         ? "These metrics use sample data. Real activity tracking will be connected in a later chunk."
-                        : "Sub-services and linked notes come from your service catalog. Saved FAQs, knowledge, and qualification rules are connected. Links and files remain previews."}
+                        : "Sub-services and linked notes come from your service catalog. Saved FAQs, knowledge, sources, and qualification rules are connected."}
             </AlertDescription>
           </Alert>
           {children}

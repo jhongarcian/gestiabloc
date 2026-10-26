@@ -77,7 +77,7 @@ export function createAiTestChatRouter(
     }
     res.once("close", disconnected)
     try {
-      const snapshot = await load(prisma, tenantId)
+      const snapshot = await load(prisma, tenantId, input)
       const reply = await replyToAiTestChat(
         snapshot,
         input,

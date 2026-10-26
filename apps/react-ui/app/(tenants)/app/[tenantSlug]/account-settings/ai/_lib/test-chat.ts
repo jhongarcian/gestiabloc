@@ -10,6 +10,8 @@ export type AiTestReply = {
     skillId: string | null
     excerpt: string
     faqId?: string
+    sourceId?: string
+    page?: number
   }>
   context: { skillCount: number; limited: boolean }
 }
