@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { getGroqConfiguration } from "./groq-config.js"
 
 export type ServiceFitExplanationStatus = "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
 
@@ -297,20 +298,12 @@ class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider
 }
 
 export function getServiceFitExplanationProvider(): ServiceFitExplanationProvider | null {
-  const provider = normalizeText(process.env.SERVICE_FIT_AI_PROVIDER).toLowerCase()
-  if (provider !== "groq") {
-    return null
-  }
-
-  const apiKey = normalizeText(process.env.GROQ_API_KEY)
-  if (!apiKey) {
-    return null
-  }
-
+  const config = getGroqConfiguration()
+  if (!config) return null
   return new GroqServiceFitExplanationProvider(
-    apiKey,
-    normalizeText(process.env.GROQ_MODEL) || "llama-3.1-8b-instant",
-    normalizeText(process.env.GROQ_BASE_URL) || "https://api.groq.com/openai/v1/chat/completions",
+    config.apiKey,
+    config.model,
+    config.baseUrl,
   )
 }
 

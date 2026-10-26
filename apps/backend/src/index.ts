@@ -12,6 +12,7 @@ import filesRoutes from "./routes/files.routes"
 import accountSettingsRoutes from "./routes/account-settings.routes"
 import aiSettingsRoutes from "./routes/ai-settings.routes.js"
 import aiSkillsRoutes from "./routes/ai-skills.routes.js"
+import aiTestChatRoutes from "./routes/ai-test-chat.routes.js"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
 import tasksRoutes from "./routes/tasks.routes"
@@ -107,6 +108,7 @@ app.use("/api/files", filesRoutes);
 app.use("/api/account-settings", automationsRoutes);
 app.use("/api/account-settings", aiSettingsRoutes);
 app.use("/api/account-settings", aiSkillsRoutes);
+app.use("/api/account-settings", aiTestChatRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/automation-processes", automationProcessesRoutes);
 app.use("/api/contact-imports", contactImportsRoutes);

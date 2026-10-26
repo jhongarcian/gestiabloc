@@ -417,7 +417,7 @@ export function AiSettings() {
             </div>
             <p className="text-xs leading-5 text-slate-500">
               Save your preferences now. Language, tone, and instructions will
-              guide replies once AI conversations are connected.
+              guide replies in Test helper after you save your changes.
             </p>
           </div>
         </AiPanel>

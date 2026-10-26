@@ -6948,6 +6948,71 @@ paths:
         "403": { description: Administrator access required or untrusted origin }
         "404": { description: Offering not found in this tenant }
         "409": { description: AI_QUALIFICATION_CONFLICT or AI_PROFILE_REVIEW_REQUIRED; existing configuration remains unchanged }
+  /api/account-settings/{tenantId}/ai/test-chat:
+    get:
+      tags: [AI]
+      summary: Check whether the workspace test chat is configured
+      description: Active tenant administrators only. Reports configuration availability without an AI request or exposed provider settings. No messages are stored.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Server-side configuration availability; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  available: { type: boolean }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+  /api/account-settings/{tenantId}/ai/test-chat/messages:
+    post:
+      tags: [AI]
+      summary: Ask the saved account helper a read-only test question
+      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching, actions, business-data writes, or transcript persistence. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [question]
+              properties:
+                question: { type: string, minLength: 1, maxLength: 2000 }
+                history:
+                  type: array
+                  maxItems: 12
+                  description: Completed user/assistant pairs in chronological order, with at most 12000 total content characters
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [role, content]
+                    properties:
+                      role: { type: string, enum: [user, assistant] }
+                      content: { type: string, minLength: 1, maxLength: 6000 }
+      responses:
+        "200":
+          description: Real generated reply with validated references to current saved sources; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  reply:
+                    $ref: "#/components/schemas/AiTestReply"
+        "400": { description: Invalid question/history or client-supplied configuration overrides }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required or untrusted origin }
+        "404": { description: Account no longer available }
+        "429": { description: AI_CHAT_RATE_LIMITED or AI_PROVIDER_BUSY. One concurrent reply and ten requests per minute per administrator/account per server instance }
+        "502": { description: AI_INVALID_RESPONSE; incomplete output or invalid citations }
+        "503": { description: AI_PROVIDER_UNAVAILABLE; provider absent, inaccessible, timed out, or disconnected }
 components:
   responses:
     AiSkillSaved:
@@ -7052,6 +7117,34 @@ components:
         enum: [10, 25]
         default: 10
   schemas:
+    AiTestReply:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        answer: { type: string, maxLength: 6000 }
+        helper:
+          type: object
+          properties:
+            name: { type: string }
+            language: { type: string, enum: [English, Spanish, English and Spanish] }
+            tone: { type: string, enum: [Professional, Warm, Direct] }
+            revision: { type: integer, minimum: 0 }
+        sources:
+          type: array
+          maxItems: 9
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              label: { type: string }
+              section: { type: string, enum: [company, overview, pricing, checklist, guidance] }
+              skillId: { type: string, format: uuid, nullable: true }
+              excerpt: { type: string, maxLength: 320 }
+        context:
+          type: object
+          properties:
+            skillCount: { type: integer }
+            limited: { type: boolean }
     AiQualificationField:
       type: object
       properties:

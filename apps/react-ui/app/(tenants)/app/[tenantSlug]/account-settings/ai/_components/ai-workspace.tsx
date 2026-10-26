@@ -24,6 +24,7 @@ import {
 import type { AiHelperSettings } from "../_lib/helper-settings"
 import { useHelperSettings } from "./use-helper-settings"
 import { AiHelperAvatar } from "./ai-helper-avatar"
+import { AiTestChat } from "./ai-test-chat"
 import type { AccountProfileResponse } from "@/lib/account-profile"
 import { useAccountProfile } from "../../_components/use-account-profile"
 import { useAiSkills } from "./use-ai-skills"
@@ -209,6 +210,13 @@ export function AiWorkspace({
               )
             })}
           </nav>
+          <div className="px-3 pb-3">
+            <AiTestChat
+              tenantId={tenantId}
+              basePath={basePath}
+              helper={helperState.savedHelper}
+            />
+          </div>
           <div className="hidden flex-col gap-2 px-5 pt-3 pb-5 lg:flex">
             <Separator className="mb-2" />
             <p className="text-xs leading-5 text-slate-500">
@@ -234,9 +242,9 @@ export function AiWorkspace({
             </AlertTitle>
             <AlertDescription>
               {pathname.endsWith("/company-info")
-                ? "Save changes to update Company Info and Account Settings together. These details will provide company context when AI conversations are connected."
+                ? "Save changes to update Company Info and Account Settings together. Use Test helper to try the saved company context."
                 : pathname.endsWith("/settings")
-                  ? "Avatar changes save immediately. Use Save changes for your helper’s name and preferences. AI conversations will be connected in a later step."
+                  ? "Avatar changes save immediately. Save your helper’s name and preferences, then use Test helper to try them in a conversation."
                   : pathname.endsWith("/qualification-rules")
                     ? "Save changes to update the deterministic fit scan. Knowledge, verification, and other service settings are preserved."
                     : pathname.endsWith("/faq") ||
