@@ -14,6 +14,7 @@ import aiSettingsRoutes from "./routes/ai-settings.routes.js"
 import aiSkillsRoutes from "./routes/ai-skills.routes.js"
 import aiTestChatRoutes from "./routes/ai-test-chat.routes.js"
 import aiSourcesRoutes from "./routes/ai-sources.routes.js"
+import aiAnalyticsRoutes from "./routes/ai-analytics.routes.js"
 import { startAiSourceWorker } from "./lib/ai-source-worker.js"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
@@ -112,6 +113,7 @@ app.use("/api/account-settings", aiSettingsRoutes);
 app.use("/api/account-settings", aiSkillsRoutes);
 app.use("/api/account-settings", aiTestChatRoutes);
 app.use("/api/account-settings", aiSourcesRoutes);
+app.use("/api/account-settings", aiAnalyticsRoutes);
 app.use("/api/account-settings", accountSettingsRoutes);
 app.use("/api/automation-processes", automationProcessesRoutes);
 app.use("/api/contact-imports", contactImportsRoutes);

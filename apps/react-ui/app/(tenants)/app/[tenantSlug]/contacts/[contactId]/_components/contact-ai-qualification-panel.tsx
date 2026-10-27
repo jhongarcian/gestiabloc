@@ -1,13 +1,12 @@
 "use client"
 
 import Link from "next/link"
+import { isCancel } from "axios"
 import { useEffect, useMemo, useRef, useState } from "react"
 import {
   Loader2,
   MessageSquare,
-  PanelLeftOpen,
   RefreshCcw,
-  Sparkles,
 } from "lucide-react"
 import { toast } from "sonner"
 
@@ -15,11 +14,13 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
+import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { api } from "@/lib/api"
+import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
+import { defaultAiHelperIdentity, type AiHelperIdentity, type AiHelperSource } from "@/lib/ai-helper"
 import {
-  buildAllScopeServiceNarrative,
   FIT_STATUS_STYLES,
   getEnrollmentSummary,
   groupServiceFitResults,
@@ -33,9 +34,13 @@ type ContactAiQualificationPanelProps = {
   tenantSlug: string
   contactId: string
   contactName: string
+  initialHelper?: AiHelperIdentity
 }
 
 type AssistantScopeMode = "idle" | "all" | "service"
+
+const PRIMARY_BUTTON = "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-blue-900 disabled:cursor-not-allowed"
+const SECONDARY_BUTTON = "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed"
 
 type AssistantMessage = {
   id: string
@@ -43,8 +48,11 @@ type AssistantMessage = {
   title?: string
   body: string
   bullets?: string[]
-  suggestedQuestions?: string[]
   showServiceChoices?: boolean
+  helperName?: string
+  replySource?: "KNOWLEDGE" | "CONTACT" | "RULES" | "FALLBACK"
+  answerMode?: "ADAPTED" | "EXACT" | "TRANSLATED"
+  sources?: AiHelperSource[]
   citations?: Array<{
     url: string
     title: string
@@ -53,6 +61,8 @@ type AssistantMessage = {
 
 type ServiceFitAssistantResponse = {
   ok: boolean
+  helper?: AiHelperIdentity
+  items?: ServiceFitScanItem[]
   scope: {
     mode: "all" | "service"
     serviceId: string | null
@@ -62,7 +72,9 @@ type ServiceFitAssistantResponse = {
     title: string
     summary: string
     bullets: string[]
-    suggestedQuestions: string[]
+    replySource?: AssistantMessage["replySource"]
+    answerMode?: AssistantMessage["answerMode"]
+    sources?: AiHelperSource[]
     citations?: Array<{
       url: string
       title: string
@@ -99,18 +111,18 @@ function buildInitialAssistantMessage(items: ServiceFitScanItem[]) {
       role: "assistant",
       title: "No active service rules found",
       body:
-        "There are no active services with qualification rules available for this contact yet. Add or enable fit rules first, then rerun the analysis.",
+        "There are no active qualification rules to evaluate yet. You can still ask about your company, saved FAQs, and active service knowledge.",
       bullets: [
-        "No service options are available to analyze in this workspace.",
+        "Qualification decisions become available when service rules are enabled.",
       ],
     })
   }
 
   return createMessage({
     role: "assistant",
-    title: "Choose a qualification scope",
-    body: `I reviewed ${items.length} active services for this contact. ${grouped.eligible.length} look ready to move forward, ${grouped.needsInfo.length} may qualify with more information, and ${grouped.notEligible.length} are currently blocked. Choose a service below to see the reason in more detail.`,
-    bullets: items.slice(0, 4).map((item) => buildAllScopeServiceNarrative(item)),
+    title: "Service review",
+    body: `I reviewed ${items.length} active ${items.length === 1 ? "service" : "services"} for this contact. ${grouped.eligible.length} meet the qualification checks, ${grouped.needsInfo.length} need more information, and ${grouped.notEligible.length} do not currently qualify. Ask me about this contact or name any service. You can also select a service below for a closer look.`,
+    bullets: items.slice(0, 4).map((item) => item.explanation || `${item.serviceName}: ${toSentence(item.eligibilityStatus)}.`),
     showServiceChoices: true,
   })
 }
@@ -118,11 +130,13 @@ function buildInitialAssistantMessage(items: ServiceFitScanItem[]) {
 function buildAssistantReplyMessage(response: ServiceFitAssistantResponse) {
   return createMessage({
     role: "assistant",
-    title: response.answer.title,
     body: response.answer.summary,
     bullets: response.answer.bullets,
-    suggestedQuestions: response.answer.suggestedQuestions,
     citations: response.answer.citations,
+    helperName: ["KNOWLEDGE", "CONTACT"].includes(response.answer.replySource ?? "") ? response.answer.title : response.helper?.name,
+    replySource: response.answer.replySource,
+    answerMode: response.answer.answerMode,
+    sources: response.answer.sources,
   })
 }
 
@@ -169,6 +183,7 @@ export function ContactAiQualificationPanel({
   tenantSlug,
   contactId,
   contactName,
+  initialHelper = defaultAiHelperIdentity,
 }: ContactAiQualificationPanelProps) {
   const [items, setItems] = useState<ServiceFitScanItem[]>([])
   const [messages, setMessages] = useState<AssistantMessage[]>([])
@@ -177,8 +192,14 @@ export function ContactAiQualificationPanel({
   const [isSending, setIsSending] = useState(false)
   const [scopeMode, setScopeMode] = useState<AssistantScopeMode>("idle")
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
+  const [selectedServiceName, setSelectedServiceName] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
+  const [helper, setHelper] = useState(initialHelper)
+  const activeRequest = useRef<AbortController | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const tracking = useRef(new AiActivityTracker())
+  const runAttempt = useRef<ReturnType<AiActivityTracker["forRequest"]> | null>(null)
+  const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([])
 
   const hasRun = messages.length > 0
   const groupedItems = useMemo(() => groupServiceFitResults(items), [items])
@@ -190,7 +211,9 @@ export function ContactAiQualificationPanel({
   const selectedServiceAction = selectedService
     ? getServiceAction(selectedService, tenantSlug, contactId)
     : null
-  const canAskQuestions = scopeMode === "all" || (scopeMode === "service" && Boolean(selectedService))
+  const canAskQuestions = hasRun && scopeMode !== "idle"
+
+  useEffect(() => () => activeRequest.current?.abort(), [])
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
@@ -201,28 +224,40 @@ export function ContactAiQualificationPanel({
   }
 
   const runQualificationAnalysis = async () => {
+    if (activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
     setIsLoadingAnalysis(true)
-    setScopeMode("idle")
-    setSelectedServiceId(null)
     setDraft("")
 
+    if (!runAttempt.current) {
+      tracking.current.newConversation()
+      runAttempt.current = tracking.current.forRequest("run")
+    }
+    const activity = runAttempt.current
+
     try {
-      const { data } = await api.get<ServiceFitScanResponse>(
-        `/api/services/${encodeURIComponent(tenantId)}/fit-scan`,
-        {
-          params: {
-            contactId,
-          },
-        },
+      const { data } = await api.post<ServiceFitScanResponse & { helper?: AiHelperIdentity }>(
+        `/api/services/${encodeURIComponent(tenantId)}/fit-scan/run`,
+        { contactId, ...activity },
+        { signal: controller.signal },
       )
+      tracking.current.complete(activity.requestId)
+      runAttempt.current = null
+      if (data.helper) setHelper(data.helper)
 
       const nextItems = data.items ?? []
       setItems(nextItems)
+      setScopeMode("all")
+      setSelectedServiceId(null)
+      setSelectedServiceName(null)
+      history.current = []
       setRanAt(new Date())
       setMessages([buildInitialAssistantMessage(nextItems)])
-    } catch {
-      toast.error("Could not run qualification analysis.")
+    } catch (error) {
+      if (!isCancel(error)) toast.error("Could not run qualification analysis.")
     } finally {
+      if (activeRequest.current === controller) activeRequest.current = null
       setIsLoadingAnalysis(false)
     }
   }
@@ -232,24 +267,49 @@ export function ContactAiQualificationPanel({
     serviceId?: string | null
     question?: string
   }) => {
-    const { data } = await api.post<ServiceFitAssistantResponse>(
-      `/api/services/${encodeURIComponent(tenantId)}/fit-scan/assistant`,
-      {
-        contactId,
-        scope: options.scope,
-        serviceId: options.serviceId ?? undefined,
-        question: options.question?.trim() || undefined,
-      },
-    )
+    if (activeRequest.current) return
+    const controller = new AbortController()
+    activeRequest.current = controller
+    try {
+      const activity = tracking.current.forRequest(JSON.stringify([contactId, options]))
+      const { data } = await api.post<ServiceFitAssistantResponse>(
+        `/api/services/${encodeURIComponent(tenantId)}/fit-scan/assistant`,
+        {
+          contactId,
+          scope: options.scope,
+          serviceId: options.serviceId ?? undefined,
+          question: options.question?.trim() || undefined,
+          history: history.current,
+          ...activity,
+        },
+        { signal: controller.signal, timeout: 60000 },
+      )
+      tracking.current.complete(activity.requestId)
+      if (data.helper) setHelper(data.helper)
+      const updatedItems = data.items
+      if (updatedItems) setItems(updatedItems)
 
-    setScopeMode(data.scope.mode)
-    setSelectedServiceId(data.scope.serviceId)
-    appendMessage(buildAssistantReplyMessage(data))
+      if (options.question) {
+        const next = [...history.current,
+          { role: "user" as const, content: options.question.trim() },
+          { role: "assistant" as const, content: data.answer.summary.trim().slice(0, 6000) },
+        ]
+        while (next.length > 12 || next.reduce((size, entry) => size + entry.content.length, 0) > 12000) next.splice(0, 2)
+        history.current = next
+      }
+
+      setScopeMode(data.scope.mode)
+      setSelectedServiceId(data.scope.serviceId)
+      setSelectedServiceName(data.scope.serviceName)
+      appendMessage(buildAssistantReplyMessage(data))
+    } finally {
+      if (activeRequest.current === controller) activeRequest.current = null
+    }
   }
 
   const handleAnalyzeService = async (serviceId: string) => {
     const service = items.find((item) => item.serviceId === serviceId)
-    if (!service) return
+    if (!service || activeRequest.current) return
 
     appendMessage(
       createMessage({
@@ -264,28 +324,8 @@ export function ContactAiQualificationPanel({
         scope: "service",
         serviceId,
       })
-    } catch {
-      toast.error("Could not analyze that service.")
-    } finally {
-      setIsSending(false)
-    }
-  }
-
-  const handleAnalyzeAll = async () => {
-    appendMessage(
-      createMessage({
-        role: "user",
-        body: "Scan all active services.",
-      }),
-    )
-
-    setIsSending(true)
-    try {
-      await requestAssistant({
-        scope: "all",
-      })
-    } catch {
-      toast.error("Could not summarize all services.")
+    } catch (error) {
+      if (!isCancel(error)) toast.error("Could not analyze that service.")
     } finally {
       setIsSending(false)
     }
@@ -293,10 +333,10 @@ export function ContactAiQualificationPanel({
 
   const handleSendQuestion = async (question: string) => {
     const trimmedQuestion = question.trim()
-    if (!trimmedQuestion) return
+    if (!trimmedQuestion || trimmedQuestion.length > 500 || isSending || isLoadingAnalysis || activeRequest.current) return
 
     if (!canAskQuestions) {
-      toast.error("Choose a service or scan all services first.")
+      toast.error("Start the conversation first.")
       return
     }
 
@@ -306,7 +346,6 @@ export function ContactAiQualificationPanel({
         body: trimmedQuestion,
       }),
     )
-    setDraft("")
     setIsSending(true)
 
     try {
@@ -315,8 +354,9 @@ export function ContactAiQualificationPanel({
         serviceId: scopeMode === "service" ? selectedServiceId : undefined,
         question: trimmedQuestion,
       })
-    } catch {
-      toast.error("Could not send that question.")
+      setDraft("")
+    } catch (error) {
+      if (!isCancel(error)) toast.error("Could not send that question.")
     } finally {
       setIsSending(false)
     }
@@ -330,20 +370,20 @@ export function ContactAiQualificationPanel({
   }
 
   return (
-    <section className="overflow-hidden rounded-[32px] border border-slate-200/80 bg-[radial-gradient(circle_at_top,_rgba(255,243,213,0.95),_rgba(240,244,255,0.9)_34%,_rgba(255,255,255,0.92)_70%)] shadow-[0_24px_80px_-48px_rgba(15,23,42,0.55)]">
-      <div className="border-b border-white/70 px-5 py-4 backdrop-blur md:px-7">
+    <section className="flex min-w-0 flex-col gap-4">
+      <header className="rounded-[26px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_48%,#fff7ed_100%)] p-4 sm:p-5">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/80 bg-white/70 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-600 shadow-sm">
-              <Sparkles className="h-3.5 w-3.5 text-amber-600" />
-              AI Qualification
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex items-center gap-2 text-xs font-semibold text-blue-700">
+              <AiHelperAvatar name={helper.name} avatar={helper.avatar} className="size-8" />
+              <span className="min-w-0">AI helper</span>
             </div>
             <div>
-              <h1 className="text-xl font-semibold tracking-tight text-slate-950 md:text-2xl">
-                {contactName}
-              </h1>
+              <h2 className="break-words text-2xl font-semibold text-slate-950">
+                {helper.name}
+              </h2>
               <p className="mt-1 text-sm text-slate-600">
-                Qualification assistant chat grounded in the current service-fit rules.
+                Company knowledge and service rules for {contactName}.
               </p>
             </div>
           </div>
@@ -356,7 +396,7 @@ export function ContactAiQualificationPanel({
                 </span>
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
                   {scopeMode === "service"
-                    ? selectedService?.serviceName ?? "Selected service"
+                    ? selectedServiceName ?? "Selected service"
                     : scopeMode === "all"
                       ? "All active services"
                       : "Choose a scope"}
@@ -366,7 +406,7 @@ export function ContactAiQualificationPanel({
             <Button
               type="button"
               variant="outline"
-              className="border-white/80 bg-white/75 text-slate-700 shadow-sm hover:bg-white"
+              className={SECONDARY_BUTTON}
               onClick={() => {
                 void runQualificationAnalysis()
               }}
@@ -374,54 +414,47 @@ export function ContactAiQualificationPanel({
             >
               {isLoadingAnalysis ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
                   Running
                 </>
               ) : hasRun ? (
                 <>
-                  <RefreshCcw className="h-4 w-4" />
+                  <RefreshCcw data-icon="inline-start" aria-hidden="true" />
                   Run again
                 </>
               ) : (
                 <>
-                  <Sparkles className="h-4 w-4" />
+                  <MessageSquare data-icon="inline-start" aria-hidden="true" />
                   Start
                 </>
               )}
             </Button>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="grid min-h-[760px] grid-rows-[1fr_auto]">
-        <ScrollArea className="min-h-0">
+      <div className="grid min-h-[640px] min-w-0 grid-rows-[1fr_auto] overflow-hidden rounded-[26px] border border-slate-200 bg-slate-50/70">
+        <ScrollArea className="min-h-0 min-w-0 [&_[data-slot=scroll-area-viewport]>div]:block!">
           {!hasRun ? (
             <div className="flex min-h-[620px] items-center justify-center px-6 py-10">
               <div className="mx-auto flex w-full max-w-2xl flex-col items-center text-center">
-                <div className="relative flex h-28 w-28 items-center justify-center rounded-full bg-[radial-gradient(circle_at_30%_30%,rgba(255,255,255,0.95),rgba(238,242,255,0.88)_45%,rgba(226,232,240,0.72)_100%)] shadow-[0_24px_70px_-38px_rgba(15,23,42,0.45)]">
-                  <div className="absolute inset-2 rounded-full border border-white/70 bg-white/35" />
-                  <div className="relative rounded-full bg-slate-950 p-4 text-white shadow-lg">
-                    <Sparkles className="h-7 w-7" />
-                  </div>
-                </div>
+                <AiHelperAvatar name={helper.name} avatar={helper.avatar} className="size-16" />
 
                 <div className="mt-8 space-y-3">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.32em] text-slate-400">
-                    Chat Workspace
+                  <p className="text-xs font-medium text-slate-500">
+                    Your account’s AI helper
                   </p>
                   <h2 className="text-3xl font-semibold tracking-tight text-slate-950">
-                    Start AI qualification
+                    Talk with {helper.name}
                   </h2>
                   <p className="mx-auto max-w-xl text-sm leading-7 text-slate-600">
-                    Open the qualification conversation, scan active services for this contact, and
-                    then drill into one service at a time without loading every result card at once.
+                    Review this contact’s service rules, then ask about your company, FAQs, or saved service knowledge.
                   </p>
                 </div>
 
                 <Button
                   type="button"
-                  size="lg"
-                  className="mt-8 h-12 rounded-full bg-slate-950 px-7 text-white shadow-[0_20px_45px_-22px_rgba(15,23,42,0.65)] hover:bg-slate-900"
+                  className={cn(PRIMARY_BUTTON, "mt-8")}
                   onClick={() => {
                     void runQualificationAnalysis()
                   }}
@@ -429,28 +462,27 @@ export function ContactAiQualificationPanel({
                 >
                   {isLoadingAnalysis ? (
                     <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Starting AI qualification
+                      <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+                      Reviewing services…
                     </>
                   ) : (
                     <>
-                      <Sparkles className="h-4 w-4" />
-                      Start AI qualification
+                      <MessageSquare data-icon="inline-start" aria-hidden="true" />
+                      Start conversation
                     </>
                   )}
                 </Button>
 
                 <p className="mt-4 text-xs text-slate-500">
-                  The first message will ask which active service you want to analyze, or you can
-                  scan all active services.
+                  Qualification comes from saved rules. Messages clear when you leave this page or refresh.
                 </p>
               </div>
             </div>
           ) : (
-            <div className="space-y-6 px-5 py-6 md:px-7 md:py-7">
+            <div className="flex min-w-0 flex-col gap-6 px-5 py-6 md:px-7 md:py-7">
               <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-                  {analysisMeta.serviceCount} services reviewed
+                  {analysisMeta.serviceCount} {analysisMeta.serviceCount === 1 ? "service" : "services"} reviewed
                 </span>
                 <Badge className={FIT_STATUS_STYLES.ELIGIBLE}>
                   {analysisMeta.eligibleCount} eligible
@@ -467,11 +499,12 @@ export function ContactAiQualificationPanel({
                 <div
                   key={message.id}
                   className={cn(
-                    "flex",
+                    "flex min-w-0",
                     message.role === "user" ? "justify-end" : "justify-start",
                   )}
                 >
-                  <div className={cn("max-w-[92%] md:max-w-[72%]", message.role === "assistant" ? "pr-8 md:pr-20" : "pl-8 md:pl-20")}>
+                  <div className="min-w-0 max-w-[94%] xl:max-w-[72%]">
+                    {message.role === "assistant" ? <p className="mb-2 break-words px-1 text-xs font-medium text-slate-600">{message.helperName ?? helper.name}</p> : null}
                     <div
                       className={cn(
                         "rounded-[26px] px-5 py-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.6)]",
@@ -492,7 +525,7 @@ export function ContactAiQualificationPanel({
                       ) : null}
                       <p
                         className={cn(
-                          "text-sm leading-6",
+                          "whitespace-pre-wrap break-words text-sm leading-6",
                           message.title ? "mt-1.5" : "",
                           message.role === "user" ? "text-slate-100" : "text-slate-700",
                         )}
@@ -519,14 +552,34 @@ export function ContactAiQualificationPanel({
                         </ul>
                       ) : null}
 
+                      {message.replySource ? <div className="mt-3 flex flex-col gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant="outline">{message.replySource === "CONTACT" ? "Contact analysis" : message.replySource === "KNOWLEDGE" ? "Saved knowledge" : "Qualification guidance"}</Badge>
+                          {message.answerMode === "EXACT" ? <Badge variant="secondary">As written</Badge> : null}
+                          {message.answerMode === "TRANSLATED" ? <Badge variant="secondary">Translated answer</Badge> : null}
+                        </div>
+                        {message.replySource === "FALLBACK" ? <p className="text-xs leading-relaxed text-slate-500">A conversational reply is unavailable right now. These are the current qualification checks.</p> : null}
+                      </div> : null}
+
+                      {message.sources?.length ? <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                        <summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">Sources ({message.sources.length})</summary>
+                        <ul className="mt-3 flex flex-col gap-3">
+                          {message.sources.map((source) => <li key={source.id} className="flex flex-col gap-1">
+                            <p className="break-words font-medium">{source.label}</p>
+                            <p className="whitespace-pre-wrap break-words leading-relaxed text-slate-600">{source.excerpt}</p>
+                          </li>)}
+                        </ul>
+                      </details> : null}
+
                       {message.showServiceChoices && items.length > 0 ? (
                         <div className="mt-4 flex flex-wrap gap-2">
                           {items.map((item) => (
-                            <button
+                            <Button
+                              variant="outline"
                               key={item.serviceId}
                               type="button"
                               className={cn(
-                                "rounded-full border px-3 py-1.5 text-xs font-semibold transition",
+                                SECONDARY_BUTTON,
                                 selectedServiceId === item.serviceId
                                   ? "border-slate-950 bg-slate-950 text-white"
                                   : "border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-100",
@@ -537,35 +590,7 @@ export function ContactAiQualificationPanel({
                               disabled={isSending}
                             >
                               {item.serviceName}
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 transition hover:bg-amber-100"
-                            onClick={() => {
-                              void handleAnalyzeAll()
-                            }}
-                            disabled={isSending}
-                          >
-                            Scan all
-                          </button>
-                        </div>
-                      ) : null}
-
-                      {message.suggestedQuestions?.length && message.role === "assistant" ? (
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {message.suggestedQuestions.map((question) => (
-                            <button
-                              key={question}
-                              type="button"
-                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
-                              onClick={() => {
-                                void handleSendQuestion(question)
-                              }}
-                              disabled={isSending || !canAskQuestions}
-                            >
-                              {question}
-                            </button>
+                            </Button>
                           ))}
                         </div>
                       ) : null}
@@ -578,7 +603,7 @@ export function ContactAiQualificationPanel({
                               href={citation.url}
                               target="_blank"
                               rel="noreferrer"
-                              className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
+                              className={cn(SECONDARY_BUTTON, "max-w-full")}
                             >
                               Source: {citation.title}
                             </Link>
@@ -586,19 +611,8 @@ export function ContactAiQualificationPanel({
                         </div>
                       ) : null}
 
-                      {message.role === "assistant" && selectedService && message.id === messages[messages.length - 1]?.id ? (
+                      {message.role === "assistant" && selectedServiceAction && message.id === messages[messages.length - 1]?.id ? (
                         <div className="mt-4 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
-                            onClick={() => {
-                              void handleAnalyzeAll()
-                            }}
-                            disabled={isSending}
-                          >
-                            <PanelLeftOpen className="h-3.5 w-3.5" />
-                            Scan all services
-                          </button>
                           {selectedServiceAction ? (
                             <Button
                               asChild
@@ -606,8 +620,7 @@ export function ContactAiQualificationPanel({
                               variant={selectedServiceAction.variant}
                               className={cn(
                                 selectedServiceAction.variant === "default"
-                                  ? "rounded-full bg-slate-950 text-white hover:bg-slate-900"
-                                  : "rounded-full border-slate-200 text-slate-700 hover:bg-slate-50",
+                                  ? PRIMARY_BUTTON : SECONDARY_BUTTON,
                               )}
                             >
                               <Link href={selectedServiceAction.href}>{selectedServiceAction.label}</Link>
@@ -619,6 +632,7 @@ export function ContactAiQualificationPanel({
 
                     {message.role === "assistant" && selectedService && message.id === messages[messages.length - 1]?.id ? (
                       <div className="mt-3 flex flex-wrap items-center gap-2 px-1">
+                        <span className="text-xs text-slate-500">From saved rules</span>
                         <Badge className={FIT_STATUS_STYLES[selectedService.eligibilityStatus]}>
                           {toSentence(selectedService.eligibilityStatus)}
                         </Badge>
@@ -641,8 +655,8 @@ export function ContactAiQualificationPanel({
                   <div className="max-w-[92%] pr-8 md:max-w-[72%] md:pr-20">
                     <div className="rounded-[26px] border border-white/80 bg-white/88 px-5 py-4 text-sm text-slate-600 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.6)] backdrop-blur">
                       <div className="flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Assistant is reviewing the qualification context.
+                        <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
+                        {helper.name} is preparing a reply…
                       </div>
                     </div>
                   </div>
@@ -658,17 +672,19 @@ export function ContactAiQualificationPanel({
           <div className="rounded-[28px] border border-white/80 bg-white/78 p-3 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.4)]">
             <div className="flex items-end gap-3">
               <Textarea
+                id="contact-helper-question"
+                aria-label="Your question"
+                aria-describedby="contact-helper-question-help"
+                maxLength={500}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 placeholder={
                   canAskQuestions
-                    ? scopeMode === "service" && selectedService
-                      ? `Ask about ${selectedService.serviceName}...`
-                      : "Ask about the active services..."
+                    ? "Ask about this contact or any service..."
                     : "Start AI qualification to open the conversation."
                 }
-                className="min-h-[64px] border-none bg-transparent px-2 py-2 text-sm text-slate-700 shadow-none focus-visible:ring-0"
-                disabled={isSending || isLoadingAnalysis || !hasRun}
+                className="min-h-[64px] min-w-0 flex-1 rounded-xl border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-none focus-visible:ring-2"
+                disabled={isSending || isLoadingAnalysis || !hasRun || !canAskQuestions}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault()
@@ -678,8 +694,9 @@ export function ContactAiQualificationPanel({
               />
               <Button
                 type="button"
-                size="icon"
-                className="mb-1 h-11 w-11 rounded-full bg-slate-950 text-white hover:bg-slate-900"
+                size="icon-sm"
+                aria-label={hasRun ? "Send question" : "Start conversation"}
+                className={cn(PRIMARY_BUTTON, "mb-1 size-8 px-0")}
                 onClick={() => {
                   if (!hasRun) {
                     void runQualificationAnalysis()
@@ -694,45 +711,37 @@ export function ContactAiQualificationPanel({
                 }
               >
                 {isLoadingAnalysis || isSending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
                 ) : (
-                  <MessageSquare className="h-4 w-4" />
+                  <MessageSquare aria-hidden="true" />
                 )}
               </Button>
             </div>
 
             <div className="flex flex-col gap-2 px-2 pb-1 pt-2 md:flex-row md:items-center md:justify-between">
-              <p className="text-xs text-slate-500">
+              <p id="contact-helper-question-help" className="text-xs text-slate-500">
                 {!hasRun
-                  ? "This chat stays empty until you trigger the first qualification scan."
+                  ? "Start a conversation to review service rules and ask about saved knowledge."
                   : canAskQuestions
-                    ? "Questions stay scoped to the current service or the all-services summary."
-                    : "Choose a service scope before asking follow-up questions."}
+                    ? "Follow up naturally or name another service. 500 characters maximum."
+                    : "Start the conversation before asking follow-up questions."}
               </p>
-              {hasRun ? (
+              {hasRun && scopeMode === "service" ? (
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
-                    onClick={() => {
-                      void handleAnalyzeAll()
-                    }}
-                    disabled={isSending || items.length === 0}
-                  >
-                    Scan all active services
-                  </button>
-                  {selectedService ? (
-                    <button
+                  {scopeMode === "service" ? (
+                    <Button
+                      variant="outline"
                       type="button"
-                      className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-100 hover:text-slate-900"
+                      className={SECONDARY_BUTTON}
                       onClick={() => {
                         setSelectedServiceId(null)
-                        setScopeMode("idle")
+                        setSelectedServiceName(null)
+                        setScopeMode("all")
                       }}
                       disabled={isSending}
                     >
-                      Clear selected service
-                    </button>
+                      All services
+                    </Button>
                   ) : null}
                 </div>
               ) : null}

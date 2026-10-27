@@ -3,7 +3,7 @@
 import { Bot, Compass, Lightbulb, Sparkles } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
-import type { AiHelperSettings } from "../_lib/helper-settings"
+import type { AiHelperIdentity } from "@/lib/ai-helper"
 
 export const AVATAR_ICONS = {
   bot: Bot,
@@ -23,7 +23,7 @@ export function AiHelperAvatar({
   name,
   className,
 }: {
-  avatar?: AiHelperSettings["avatar"]
+  avatar?: AiHelperIdentity["avatar"]
   name: string
   className?: string
 }) {

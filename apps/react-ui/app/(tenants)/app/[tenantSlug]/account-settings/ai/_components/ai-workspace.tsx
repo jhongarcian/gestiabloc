@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils"
 import { type AiSkillDraft, type AiWorkspaceDraft } from "../_lib/demo-data"
 import type { AiHelperSettings } from "../_lib/helper-settings"
 import { useHelperSettings } from "./use-helper-settings"
-import { AiHelperAvatar } from "./ai-helper-avatar"
+import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { AiTestChat } from "./ai-test-chat"
 import type { AccountProfileResponse } from "@/lib/account-profile"
 import { useAccountProfile } from "../../_components/use-account-profile"
@@ -36,6 +36,7 @@ type WorkspaceContext = ReturnType<typeof useHelperSettings> &
   ReturnType<typeof useAiFaqs> &
   ReturnType<typeof useAiSkills> & {
     basePath: string
+    tenantId: string
     companyName: string
     companyProfile: ReturnType<typeof useAccountProfile>
     draft: AiWorkspaceDraft
@@ -118,6 +119,7 @@ export function AiWorkspace({
     ...faqState,
     ...sourceState,
     basePath,
+    tenantId,
     companyName: companyProfile.savedProfile?.name ?? companyName,
     companyProfile,
     draft,
@@ -221,7 +223,7 @@ export function AiWorkspace({
                         pathname.endsWith("/knowledge-base")
                       ? "Service knowledge is connected"
                       : pathname.endsWith("/analytics")
-                        ? "Analytics preview — sample data"
+                        ? "Account activity is connected"
                         : "Your account’s service skills"}
             </AlertTitle>
             <AlertDescription>
@@ -235,7 +237,7 @@ export function AiWorkspace({
                         pathname.endsWith("/knowledge-base")
                       ? "Saved FAQs, guidance, and ready sources are available to Test helper. Files are stored privately for your account."
                       : pathname.endsWith("/analytics")
-                        ? "These metrics use sample data. Real activity tracking will be connected in a later chunk."
+                        ? "View recorded test and contact-assistant activity. Counts begin when tracking is enabled; earlier activity is not backfilled."
                         : "Sub-services and linked notes come from your service catalog. Saved FAQs, knowledge, sources, and qualification rules are connected."}
             </AlertDescription>
           </Alert>

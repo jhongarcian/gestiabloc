@@ -7391,6 +7391,171 @@ paths:
         "404": *a5
         "409": *a6
         "429": *a7
+  /api/account-settings/{tenantId}/ai/analytics:
+    get:
+      tags: [AI]
+      summary: Read recorded account AI activity
+      description: Active tenant administrators only. Completed server interactions are aggregated into UTC calendar days including today. Distinct conversations are counted across the whole selected period, not summed from daily counts. No transcripts, contact IDs or source contents are returned. Tracking starts at deployment; earlier activity is not backfilled.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: query
+          name: days
+          schema: { type: string, enum: ["7", "30", "90"], default: "30" }
+        - in: query
+          name: channel
+          schema: { type: string, enum: [ALL, TEST, CONTACT_ASSISTANT], default: ALL }
+      responses:
+        "200":
+          description: Zero-filled daily series and period totals; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  analytics:
+                    type: object
+                    properties:
+                      days: { type: integer, enum: [7, 30, 90] }
+                      channel: { type: string, enum: [ALL, TEST, CONTACT_ASSISTANT] }
+                      timezone: { type: string, enum: [UTC] }
+                      from: { type: string, format: date-time }
+                      through: { type: string, format: date-time }
+                      totals: { $ref: "#/components/schemas/AiActivityMetrics" }
+                      daily:
+                        type: array
+                        minItems: 7
+                        maxItems: 90
+                        items:
+                          allOf:
+                            - $ref: "#/components/schemas/AiActivityMetrics"
+                            - type: object
+                              properties:
+                                date: { type: string, format: date }
+        "400": { description: Unsupported filters or unknown query parameters }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+  /api/services/{tenantId}/fit-scan/helper:
+    get:
+      tags: [AI]
+      summary: Read the shared helper name and avatar for the contact assistant
+      description: Active tenant members may read this public helper identity. Does not expose instructions, language/tone configuration, source contents, or administration permissions. Does not run qualification or generate a reply.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Saved helper identity, or default AI Helper identity; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  helper: { $ref: "#/components/schemas/AiHelperIdentity" }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant membership required }
+  /api/services/{tenantId}/fit-scan/run:
+    post:
+      tags: [AI]
+      summary: Explicitly run and record a contact qualification scan
+      description: Same deterministic scan and active tenant membership restrictions as the existing fit-scan GET. Uses deterministic explanations so contact values are not sent to generation. Records one qualification run on successful completion. Passive GET scans and configuration previews do not write analytics. No contact ID or qualification result is stored in analytics. Requires a trusted origin.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [contactId]
+              properties:
+                contactId: { type: string, minLength: 1 }
+                conversationId: { type: string, format: uuid }
+                requestId: { type: string, format: uuid, description: Reuse for retries of this logical request }
+      responses:
+        "200": { description: Existing fit-scan items response plus helper name/avatar; Cache-Control no-store }
+        "400": { description: Invalid request }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant membership required or untrusted origin }
+        "404": { description: Contact not found in the selected tenant }
+  /api/services/{tenantId}/fit-scan/assistant:
+    post:
+      tags: [AI]
+      summary: Ask the existing contact qualification assistant
+      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Each completed explicit request records one qualification run. Tracking IDs deduplicate metadata only; replies are not persisted or replayed. Active tenant membership and trusted origin required.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [contactId]
+              properties:
+                contactId: { type: string, minLength: 1 }
+                scope: { type: string, enum: [all, service], default: service }
+                serviceId: { type: string }
+                question: { type: string, minLength: 1, maxLength: 500, nullable: true }
+                history:
+                  type: array
+                  maxItems: 12
+                  description: Up to six completed user/assistant pairs, at most 12000 total characters. Not stored. Fresh server facts override history.
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [role, content]
+                    properties:
+                      role: { type: string, enum: [user, assistant] }
+                      content: { type: string, minLength: 1, maxLength: 6000 }
+                conversationId: { type: string, format: uuid }
+                requestId: { type: string, format: uuid, description: Reuse for retries of this logical request }
+      responses:
+        "200":
+          description: Scope, current deterministic items, public helper identity and answer; Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  helper: { $ref: "#/components/schemas/AiHelperIdentity" }
+                  items: { type: array, description: "Current deterministic scan results, independent of generated text", items: { type: object } }
+                  scope:
+                    type: object
+                    properties:
+                      mode: { type: string, enum: [all, service] }
+                      serviceId: { type: string, nullable: true }
+                      serviceName: { type: string, nullable: true }
+                  answer:
+                    type: object
+                    properties:
+                      title: { type: string }
+                      summary: { type: string }
+                      bullets: { type: array, items: { type: string } }
+                      suggestedQuestions: { type: array, items: { type: string } }
+                      outcome: { type: string, enum: [ANSWERED, NEEDS_REVIEW] }
+                      replySource: { type: string, enum: [KNOWLEDGE, CONTACT, RULES, FALLBACK] }
+                      answerMode: { type: string, enum: [ADAPTED, EXACT, TRANSLATED] }
+                      sources:
+                        type: array
+                        maxItems: 9
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            label: { type: string }
+                            skillId: { type: string, nullable: true }
+                            section: { type: string }
+                            sourceId: { type: string }
+                            excerpt: { type: string, maxLength: 320 }
+                            page: { type: integer }
+        "400": { description: Invalid request }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant membership required or untrusted origin }
+        "404": { description: Contact or service not found in the selected tenant }
   /api/account-settings/{tenantId}/ai/test-chat:
     get:
       tags: [AI]
@@ -7414,7 +7579,7 @@ paths:
     post:
       tags: [AI]
       summary: Ask the saved account helper a read-only test question
-      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching, actions, business-data writes, or transcript persistence. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
+      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching, actions, business-data writes, or transcript persistence. Completed replies record metadata for Analytics. Optional conversationId and requestId UUIDs group chats and deduplicate retries per tenant, actor and channel; clients without IDs remain supported as separate interactions. Deduplication affects counts, not provider execution or reply replay. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7426,6 +7591,8 @@ paths:
               additionalProperties: false
               required: [question]
               properties:
+                conversationId: { type: string, format: uuid }
+                requestId: { type: string, format: uuid }
                 question: { type: string, minLength: 1, maxLength: 2000 }
                 history:
                   type: array
@@ -7707,12 +7874,31 @@ components:
               type: array
               maxItems: 12
               items: { type: string, minLength: 1, maxLength: 120 }
+    AiHelperIdentity:
+      type: object
+      properties:
+        name: { type: string }
+        avatar:
+          type: object
+          properties:
+            presetId: { type: string, enum: [bot, sparkles, compass, lightbulb] }
+            imageUrl: { type: string, nullable: true }
+            revision: { type: integer, minimum: 0 }
+    AiActivityMetrics:
+      type: object
+      required: [conversations, answered, needsReview, qualificationRuns]
+      properties:
+        conversations: { type: integer, minimum: 0, description: Distinct actor/channel/conversation combinations active in the selected period }
+        answered: { type: integer, minimum: 0, description: Questions marked ANSWERED by the reply path }
+        needsReview: { type: integer, minimum: 0, description: Questions flagged for missing knowledge or agency help; not a human review queue }
+        qualificationRuns: { type: integer, minimum: 0, description: Completed explicit contact analysis requests, including scans for assistant follow-up questions }
     AiTestReply:
       type: object
       properties:
         id: { type: string, format: uuid }
         answer: { type: string, maxLength: 6000 }
         answerMode: { type: string, enum: [ADAPTED, EXACT, TRANSLATED] }
+        outcome: { type: string, enum: [ANSWERED, NEEDS_REVIEW] }
         helper:
           type: object
           properties:

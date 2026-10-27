@@ -69,6 +69,32 @@ function createWebVerifiedItem() {
 }
 
 describe("routeServiceQuestion", () => {
+  test("reports unanswered fallbacks for review without changing deterministic guidance", async () => {
+    const original = createItem()
+    const item = {
+      ...original,
+      fitProfile: {
+        ...original.fitProfile,
+        knowledgeProfile: {
+          overview: "", pricingNotes: "", workflowNotes: "", faqNotes: "",
+          adapter: "NONE" as const,
+        },
+      },
+    }
+    const unknown = await routeServiceQuestion({
+      items: [item], scope: "service", serviceId: item.serviceId,
+      question: "What is the Mars launch date?",
+    })
+    assert.equal(unknown.outcome, "NEEDS_REVIEW")
+    const fit = await routeServiceQuestion({
+      items: [item], scope: "service", serviceId: item.serviceId,
+      question: "What is missing?",
+    })
+    assert.equal(fit.outcome, "ANSWERED")
+    assert.equal(item.eligibilityStatus, "ELIGIBLE")
+    assert.ok(fit.summary)
+  })
+
   test("uses tenant knowledge for pricing questions before falling back to fit-only answers", async () => {
     const reply = await routeServiceQuestion({
       scope: "service",

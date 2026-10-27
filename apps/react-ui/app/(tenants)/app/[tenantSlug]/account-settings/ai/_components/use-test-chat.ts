@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react"
 import { isAxiosError } from "axios"
 import { api } from "@/lib/api"
+import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import {
   chatHistory,
   type AiTestReply,
@@ -32,6 +33,7 @@ export function useTestChat(tenantId: string) {
   const [checking, setChecking] = useState(false)
   const [truncated, setTruncated] = useState(false)
   const request = useRef<AbortController | null>(null)
+  const tracking = useRef(new AiActivityTracker())
   const statusRequest = useRef<AbortController | null>(null)
   const path = `/api/account-settings/${tenantId}/ai/test-chat`
   useEffect(
@@ -75,13 +77,16 @@ export function useTestChat(tenantId: string) {
     request.current = controller
     setPending(content)
     setError("")
+    const activity = tracking.current.forRequest(JSON.stringify([content, turns.at(-1)?.reply.id]))
     try {
       const { data } = await api.post<{ ok: true; reply: AiTestReply }>(
         `${path}/messages`,
-        { question: content, history: chatHistory(turns) },
+        { question: content, history: chatHistory(turns), ...activity },
         { signal: controller.signal, timeout: 40000 },
       )
       if (controller.signal.aborted) return
+      tracking.current.complete(activity.requestId)
+      window.dispatchEvent(new Event("ai-activity-recorded"))
       setTurns((current) =>
         [...current, { question: content, reply: data.reply }].slice(-20),
       )
@@ -103,6 +108,7 @@ export function useTestChat(tenantId: string) {
   }
   function clear() {
     if (request.current) return
+    tracking.current.newConversation()
     setTurns([])
     setError("")
     setQuestion("")

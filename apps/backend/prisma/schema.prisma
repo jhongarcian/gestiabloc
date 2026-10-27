@@ -735,9 +735,38 @@ model Tenant {
   automationBirthdayClaims          AutomationBirthdayClaim[]
   automationSideEffects             AutomationSideEffect[]
   contactImports                    ContactImport[]
+  aiInteractions                    AiInteraction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+enum AiActivityChannel {
+  TEST
+  CONTACT_ASSISTANT
+}
+
+enum AiQuestionOutcome {
+  ANSWERED
+  NEEDS_REVIEW
+}
+
+// Metadata only: never store questions, answers, histories, or contact IDs here.
+model AiInteraction {
+  id               String            @id @default(uuid())
+  tenantId         String
+  actorId          String
+  channel          AiActivityChannel
+  conversationId   String            @db.Uuid
+  requestId        String            @db.Uuid
+  questionOutcome  AiQuestionOutcome?
+  qualificationRun Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, actorId, channel, requestId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, channel, createdAt])
 }
 
 model TenantAiSettings {

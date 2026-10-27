@@ -67,7 +67,8 @@ import {
 import { prisma } from "../lib/prisma.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
-import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
+import { createContactAssistantRouter } from "./contact-assistant.routes.js"
+import { buildContactAssistantContext } from "../lib/contact-assistant-context.js"
 import {
   buildServiceFitFieldCatalog,
   evaluateServiceFitProfile,
@@ -110,6 +111,7 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
 router.use(createServiceBillingRouter(requireActiveMembership))
+router.use(createContactAssistantRouter({ requireMembership: requireActiveMembership, evaluate: evaluateServiceFitScan }))
 const prismaWithServices = prisma as any
 
 const normalizeSearchValue = (value: string | null | undefined) =>
@@ -347,13 +349,6 @@ const ContactServicesListQuerySchema = z.object({
 const FitScanQuerySchema = z.object({
   contactId: z.string().trim().min(1),
   serviceId: z.string().trim().min(1).optional(),
-})
-
-const FitScanAssistantBodySchema = z.object({
-  contactId: z.string().trim().min(1),
-  serviceId: z.string().trim().min(1).optional(),
-  scope: z.enum(["all", "service"]).default("service"),
-  question: z.string().trim().min(1).max(500).optional().nullable(),
 })
 
 const ServiceFitRuleSourceSchema = z.enum(["core", "status", "tags", "custom", "derived"])
@@ -1349,6 +1344,7 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
       select: {
         id: true,
         key: true,
+        isEncrypted: true,
       },
     }),
     prisma.contactCustomFieldValue.findMany({
@@ -1376,13 +1372,20 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
   )
 
   const customFieldValuesByKey: Record<string, unknown> = {}
+  const assistantValuesByKey: Record<string, unknown> = {}
+  const restrictedCustomKeys = new Set<string>(customFields.filter((field: any) => field.isEncrypted).map((field: any) => field.key))
   for (const item of customFieldValues as Array<any>) {
     const key = fieldKeyById.get(item.fieldId)
     if (!key) continue
     customFieldValuesByKey[key] = decodeCustomFieldValue(item)
+    if (restrictedCustomKeys.has(key) || item.valueCiphertext || item.valueIv || item.valueAuthTag) {
+      restrictedCustomKeys.add(key)
+      delete assistantValuesByKey[key]
+    }
+    else assistantValuesByKey[key] = item.value
   }
 
-  return {
+  const snapshot = {
     id: contact.id,
     firstName: contact.firstName ?? null,
     middleName: contact.middleName ?? null,
@@ -1401,13 +1404,16 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
     tagIds: tags.map((item: any) => item.tagId),
     customFieldValues: customFieldValuesByKey,
   }
+  return { ...snapshot, assistantSnapshot: { ...snapshot, customFieldValues: assistantValuesByKey }, restrictedCustomKeys: [...restrictedCustomKeys] }
 }
 
-async function evaluateServiceFitScan(params: {
+export async function evaluateServiceFitScan(params: {
   tenantId: string
   contactId: string
   serviceId?: string
   fitProfileOverrideByServiceId?: Record<string, unknown>
+  explainWithAi?: boolean
+  includeContactContext?: boolean
 }) {
   const { tenantId, contactId, serviceId, fitProfileOverrideByServiceId } = params
 
@@ -1574,7 +1580,7 @@ async function evaluateServiceFitScan(params: {
         matchedRules: item.matchedRules,
         blockingRules: item.blockingRules,
         missingRules: item.missingRules,
-      })
+      }, params.explainWithAi === false ? null : undefined)
 
       return {
         ...item,
@@ -1588,6 +1594,11 @@ async function evaluateServiceFitScan(params: {
 
   return {
     items: itemsWithExplanations,
+    ...(params.includeContactContext ? { contactContext: buildContactAssistantContext({
+      contact: contact.assistantSnapshot, restrictedCustomKeys: contact.restrictedCustomKeys,
+      catalog, items: itemsWithExplanations, timezone,
+      skills: services.map((service: any) => ({ serviceId: service.id, serviceName: service.name })),
+    }) } : {}),
   }
 }
 
@@ -2701,56 +2712,6 @@ router.get("/:tenantId/fit-scan", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: result.items,
-    })
-  } catch (error) {
-    return next(error)
-  }
-})
-
-router.post("/:tenantId/fit-scan/assistant", requireAuth, async (req, res, next) => {
-  try {
-    const authed = req as AuthedRequest
-    const { tenantId } = TenantPathSchema.parse(req.params)
-    const payload = FitScanAssistantBodySchema.parse(req.body)
-
-    const membership = await requireActiveMembership(authed, res, tenantId)
-    if (!membership) return
-
-    const scope = payload.scope === "service" && payload.serviceId ? "service" : "all"
-    const result = await evaluateServiceFitScan({
-      tenantId,
-      contactId: payload.contactId,
-      serviceId: scope === "service" ? payload.serviceId : undefined,
-    })
-
-    if ("error" in result) {
-      return res.status(404).json({ error: result.error })
-    }
-
-    if (scope === "service" && result.items.length === 0) {
-      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
-    }
-
-    const serviceItem =
-      scope === "service"
-        ? result.items.find((item) => item.serviceId === payload.serviceId) ?? result.items[0] ?? null
-        : null
-
-    const answer = await routeServiceQuestion({
-      items: result.items,
-      scope,
-      serviceId: payload.serviceId,
-      question: payload.question ?? null,
-    })
-
-    return res.json({
-      ok: true,
-      scope: {
-        mode: scope,
-        serviceId: serviceItem?.serviceId ?? null,
-        serviceName: serviceItem?.serviceName ?? null,
-      },
-      answer,
     })
   } catch (error) {
     return next(error)

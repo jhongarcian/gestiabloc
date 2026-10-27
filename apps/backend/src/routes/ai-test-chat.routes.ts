@@ -4,6 +4,8 @@ import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { prisma } from "../lib/prisma.js"
+import { recordAiInteraction } from "../lib/ai-analytics.js"
+import { AiReplyLimit } from "../lib/ai-reply-limit.js"
 import {
   AiChatError,
   AiTestChatInputSchema,
@@ -16,6 +18,7 @@ type Dependencies = {
   load: typeof loadAiChatSnapshot
   getProvider: typeof getAiChatProvider
   now: () => number
+  recordActivity: typeof recordAiInteraction
 }
 export function createAiTestChatRouter(
   dependencies: Partial<Dependencies> = {},
@@ -24,13 +27,10 @@ export function createAiTestChatRouter(
     load = loadAiChatSnapshot,
     getProvider = getAiChatProvider,
     now = Date.now,
+    recordActivity = recordAiInteraction,
   } = dependencies
   const router = Router()
-  // Bounded, per-process cost guard. No question or answer text is retained here.
-  const requests = new Map<
-    string,
-    { count: number; startedAt: number; active: boolean }
-  >()
+  const limit = new AiReplyLimit()
   const path = "/:tenantId/ai/test-chat"
   const tenantPath = z.object({ tenantId: z.uuid() })
   router.use(
@@ -51,26 +51,12 @@ export function createAiTestChatRouter(
     const input = AiTestChatInputSchema.parse(req.body)
     const provider = getProvider()
     if (!provider) throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
-    const timestamp = now()
-    for (const [key, record] of requests)
-      if (!record.active && timestamp - record.startedAt >= 60000)
-        requests.delete(key)
     const key = `${tenantId}:${(req as unknown as AuthedRequest).user.id}`
-    let record = requests.get(key)
-    if (
-      record?.active ||
-      (record && record.count >= 10) ||
-      (requests.size >= 2000 && !record)
-    ) {
+    const release = limit.acquire(key, now())
+    if (!release) {
       res.setHeader("Retry-After", "60")
       throw new AiChatError(429, "AI_CHAT_RATE_LIMITED")
     }
-    if (!record) {
-      record = { count: 0, startedAt: timestamp, active: false }
-      requests.set(key, record)
-    }
-    record.count++
-    record.active = true
     const controller = new AbortController()
     const disconnected = () => {
       if (!res.writableEnded) controller.abort()
@@ -85,10 +71,19 @@ export function createAiTestChatRouter(
         controller.signal,
       )
       if (controller.signal.aborted) return
+      await recordActivity(prisma, {
+        tenantId,
+        actorId: (req as unknown as AuthedRequest).user.id,
+        channel: "TEST",
+        conversationId: input.conversationId,
+        requestId: input.requestId,
+        questionOutcome: reply.outcome,
+        qualificationRun: false,
+      })
       res.setHeader("Cache-Control", "no-store")
       res.json({ ok: true, reply })
     } finally {
-      record.active = false
+      release()
       res.removeListener("close", disconnected)
     }
   })

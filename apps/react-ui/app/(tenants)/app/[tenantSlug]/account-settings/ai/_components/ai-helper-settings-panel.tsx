@@ -21,7 +21,7 @@ import {
   AI_TONES,
   type AiAvatarPreset,
 } from "../_lib/helper-settings"
-import { AiHelperAvatar, AVATAR_ICONS, AVATAR_LABELS } from "./ai-helper-avatar"
+import { AiHelperAvatar, AVATAR_ICONS, AVATAR_LABELS } from "@/components/ai-helper-avatar"
 import {
   AiPageHeader,
   AiPanel,

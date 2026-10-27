@@ -22,7 +22,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
-import { AiHelperAvatar } from "./ai-helper-avatar"
+import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, TEXTAREA_CLASS } from "./ai-ui"
 import { useTestChat } from "./use-test-chat"
 import type { AiHelperSettings } from "../_lib/helper-settings"

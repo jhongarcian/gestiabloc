@@ -757,7 +757,7 @@ function getCompareValueLabel(field: ServiceFitFieldDefinition, compareValue: un
   return String(compareValue ?? "")
 }
 
-function resolveRuleValue(
+export function resolveServiceFitRuleValue(
   rule: ServiceFitRule,
   contact: ServiceFitContactSnapshot,
   timezone?: string | null,
@@ -971,7 +971,7 @@ export function evaluateServiceFitProfile(params: {
     const field = fieldMap.get(`${rule.source}:${rule.fieldKey}`)
     if (!field) return null
 
-    const currentValue = resolveRuleValue(rule, contact, timezone)
+    const currentValue = resolveServiceFitRuleValue(rule, contact, timezone)
     const isMissing =
       rule.source === "tags"
         ? false

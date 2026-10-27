@@ -1,247 +1,126 @@
 "use client"
 
-import { useId, useState } from "react"
+import { useState } from "react"
+import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
+import { RefreshCw } from "lucide-react"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
+import { Skeleton } from "@/components/ui/skeleton"
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
-import { AiPageHeader, AiPanel } from "./ai-ui"
+import { AiEmpty, AiPageHeader, AiPanel, SECONDARY_BUTTON } from "./ai-ui"
+import { useAiWorkspace } from "./ai-workspace"
+import { useAiAnalytics } from "./use-ai-analytics"
+import type { AiAnalyticsChannel, AiAnalyticsPeriod } from "../_lib/analytics"
 
-const periods = {
-  "7": {
-    labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
-    values: [18, 26, 21, 38, 32, 24, 30],
-    unit: "Day",
-  },
-  "30": {
-    labels: ["Week 1", "Week 2", "Week 3", "Week 4"],
-    values: [118, 163, 142, 189],
-    unit: "Week",
-  },
-  "90": {
-    labels: [
-      "Week 1",
-      "Week 2",
-      "Week 3",
-      "Week 4",
-      "Week 5",
-      "Week 6",
-      "Week 7",
-      "Week 8",
-      "Week 9",
-      "Week 10",
-      "Week 11",
-      "Week 12",
-      "Week 13",
-    ],
-    values: [78, 95, 88, 118, 110, 133, 126, 153, 146, 175, 163, 184, 198],
-    unit: "Week",
-  },
-} as const
+const chartConfig = {
+  conversations: { label: "Conversations", color: "var(--chart-3)" },
+  answered: { label: "Answered", color: "var(--chart-2)" },
+  needsReview: { label: "Needs review", color: "var(--chart-1)" },
+} satisfies ChartConfig
+const metrics = [
+  { key: "conversations", label: "Conversations", description: "Distinct chats active in this period" },
+  { key: "answered", label: "Questions answered", description: "Replies marked as answered" },
+  { key: "qualificationRuns", label: "Qualification runs", description: "Explicit contact analysis requests" },
+  { key: "needsReview", label: "Questions needing review", description: "Replies that need more knowledge or help" },
+] as const
+const channels: { value: AiAnalyticsChannel; label: string }[] = [
+  { value: "ALL", label: "All activity" },
+  { value: "TEST", label: "Test helper" },
+  { value: "CONTACT_ASSISTANT", label: "Contact assistant" },
+]
+const dateLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDateString("en-US", {
+  month: "short", day: "numeric", timeZone: "UTC",
+})
+const toggleClass = "h-8 cursor-pointer rounded-full px-3 text-xs font-semibold data-[state=on]:bg-blue-950 data-[state=on]:text-white"
 
 export function AiAnalytics() {
-  const [period, setPeriod] = useState<keyof typeof periods>("30")
-  const gradientId = `usage-${useId().replace(/:/g, "")}`
-  const data = periods[period]
-  const total = data.values.reduce(
-    (sum: number, value: number) => sum + value,
-    0,
-  )
-  const metrics = [
-    {
-      label: "Conversations",
-      value: total,
-      description: "Sample conversations with your helper.",
-    },
-    {
-      label: "Questions answered",
-      value: Math.round(total * 1.7),
-      description: "Example answers across all skills.",
-    },
-    {
-      label: "Qualification checks",
-      value: Math.round(total * 0.42),
-      description: "Sample service readiness reviews.",
-    },
-    {
-      label: "Team handoffs",
-      value: Math.round(total * 0.14),
-      description: "Example conversations passed to your team.",
-    },
-  ]
-  const maximum = Math.ceil(Math.max(...data.values) / 20) * 20
-  const points = data.values.map((value, index) => ({
-    x: 48 + index * (600 / (data.values.length - 1)),
-    y: 200 - (value / maximum) * 160,
-    value,
-    label: data.labels[index],
-  }))
-  const line = points.map(({ x, y }) => `${x},${y}`).join(" ")
-  const labelStep = period === "90" ? 3 : 1
+  const { tenantId } = useAiWorkspace()
+  const [period, setPeriod] = useState<AiAnalyticsPeriod>("30")
+  const [channel, setChannel] = useState<AiAnalyticsChannel>("ALL")
+  const { data, loading, error, refresh } = useAiAnalytics(tenantId, period, channel)
+  const hasActivity = data && data.totals.conversations > 0
+
   return (
-    <>
-      <AiPageHeader
-        title="Analytics"
-        description="Explore how helper activity and service conversations could appear."
-        actions={
-          <ToggleGroup
-            type="single"
-            spacing={1}
-            value={period}
-            onValueChange={(value) => {
-              if (value in periods) setPeriod(value as keyof typeof periods)
-            }}
-            aria-label="Sample analytics period"
-            className="rounded-full border border-slate-200 bg-white/70 p-1"
-          >
-            {(["7", "30", "90"] as const).map((value) => (
-              <ToggleGroupItem
-                key={value}
-                value={value}
-                className="h-8 rounded-full px-3 text-xs font-semibold text-slate-600 data-[state=on]:bg-white data-[state=on]:text-blue-950 data-[state=on]:shadow-sm"
-              >
-                {value} days
-              </ToggleGroupItem>
-            ))}
-          </ToggleGroup>
-        }
-      >
-        <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
-          {metrics.map((metric) => (
-            <Card
-              key={metric.label}
-              className="min-w-0 gap-0 rounded-[22px] border-white/80 bg-white/70 py-0 shadow-sm"
-            >
-              <CardHeader className="gap-0 px-4 pt-4 pb-0">
-                <CardTitle className="text-xs font-semibold text-slate-500">
-                  {metric.label}
-                </CardTitle>
+    <div className="flex min-w-0 flex-col gap-4" aria-busy={loading}>
+      <AiPageHeader title="Analytics" description="Follow your helper’s conversations, answers, and qualification activity."
+        actions={<Button variant="outline" className={SECONDARY_BUTTON} onClick={refresh} disabled={loading}>
+          <RefreshCw data-icon="inline-start" aria-hidden="true" />{loading ? "Loading…" : "Refresh"}
+        </Button>}>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <ToggleGroup type="single" value={channel} spacing={1} aria-label="Activity source"
+              className="max-w-full flex-wrap rounded-full bg-white/80 p-1"
+              onValueChange={(value) => { if (channels.some((item) => item.value === value)) setChannel(value as AiAnalyticsChannel) }}>
+              {channels.map((item) => <ToggleGroupItem key={item.value} value={item.value} className={toggleClass}>{item.label}</ToggleGroupItem>)}
+            </ToggleGroup>
+            <ToggleGroup type="single" value={period} spacing={1} aria-label="Analytics period"
+              className="rounded-full bg-white/80 p-1"
+              onValueChange={(value) => { if (["7", "30", "90"].includes(value)) setPeriod(value as AiAnalyticsPeriod) }}>
+              {(["7", "30", "90"] as const).map((value) => <ToggleGroupItem key={value} value={value} className={toggleClass}>{value} days</ToggleGroupItem>)}
+            </ToggleGroup>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4" aria-label="Activity totals">
+            {metrics.map((metric) => <Card key={metric.key} className="gap-2 rounded-2xl border-white/80 bg-white/85 py-4 shadow-none">
+              <CardHeader className="gap-1 px-4">
+                <CardTitle className="text-xs font-medium text-slate-600">{metric.label}</CardTitle>
+                <CardDescription className="text-xs">{metric.description}</CardDescription>
               </CardHeader>
-              <CardContent className="px-4 pt-2 pb-4">
-                <p className="text-xl font-semibold tabular-nums text-slate-950">
-                  {metric.value.toLocaleString("en-US")}
-                </p>
-                <CardDescription className="mt-1 text-xs">
-                  {metric.description}
-                </CardDescription>
+              <CardContent className="px-4">
+                {loading ? <Skeleton className="h-8 w-16" /> : <p className="text-2xl font-semibold text-slate-950 tabular-nums">{data ? data.totals[metric.key].toLocaleString() : "—"}</p>}
               </CardContent>
-            </Card>
-          ))}
+            </Card>)}
+          </div>
         </div>
       </AiPageHeader>
-      <AiPanel
-        title="Conversation activity"
-        description={`Fictional activity over a ${period}-day period.`}
-        actions={<Badge variant="secondary">Sample data</Badge>}
-      >
-        <figure className="min-w-0">
-          <svg
-            viewBox="0 0 696 240"
-            className="h-auto w-full"
-            role="img"
-            aria-labelledby={`${gradientId}-title ${gradientId}-description`}
-          >
-            <title id={`${gradientId}-title`}>
-              Sample conversation activity over {period} days
-            </title>
-            <desc id={`${gradientId}-description`}>
-              Fictional usage values, available in the accompanying table.
-            </desc>
-            <defs>
-              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#dbeafe" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#eff6ff" stopOpacity="0.15" />
-              </linearGradient>
-            </defs>
-            {[0, 1, 2, 3, 4].map((tick) => (
-              <g key={tick}>
-                <line
-                  x1="48"
-                  x2="648"
-                  y1={200 - tick * 40}
-                  y2={200 - tick * 40}
-                  stroke="#e2e8f0"
-                  strokeDasharray="4 5"
-                />
-                <text
-                  x="36"
-                  y={204 - tick * 40}
-                  textAnchor="end"
-                  fontSize="11"
-                  fill="#64748b"
-                >
-                  {(maximum * tick) / 4}
-                </text>
-              </g>
-            ))}
-            <polygon
-              points={`48,200 ${line} 648,200`}
-              fill={`url(#${gradientId})`}
-            />
-            <polyline
-              points={line}
-              fill="none"
-              stroke="#172554"
-              strokeWidth="2.5"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-            {points.map((point, index) => (
-              <g key={point.label}>
-                <circle
-                  cx={point.x}
-                  cy={point.y}
-                  r="3.5"
-                  fill="#fff"
-                  stroke="#172554"
-                  strokeWidth="2"
-                >
-                  <title>
-                    {point.label}: {point.value} conversations
-                  </title>
-                </circle>
-                {index % labelStep === 0 || index === points.length - 1 ? (
-                  <text
-                    x={point.x}
-                    y="226"
-                    fontSize="11"
-                    textAnchor="middle"
-                    fill="#64748b"
-                  >
-                    {point.label}
-                  </text>
-                ) : null}
-              </g>
-            ))}
-          </svg>
-          <figcaption className="mt-3 text-xs leading-5 text-slate-500">
-            Preview only. These figures are fictional and do not represent
-            account usage.
-          </figcaption>
-          <table className="sr-only">
-            <caption>Sample conversations for the {period}-day period</caption>
-            <thead>
-              <tr>
-                <th scope="col">{data.unit}</th>
-                <th scope="col">Conversations</th>
-              </tr>
-            </thead>
-            <tbody>
-              {points.map((point) => (
-                <tr key={point.label}>
-                  <th scope="row">{point.label}</th>
-                  <td>{point.value}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </figure>
-      </AiPanel>
-    </>
+
+      {error ? <Alert variant="destructive" role="alert"><AlertTitle>Analytics unavailable</AlertTitle><AlertDescription>{error} Counts are unavailable, rather than zero.</AlertDescription></Alert> : null}
+      {loading ? <div role="status" aria-label="Loading Analytics" className="flex flex-col gap-3"><Skeleton className="h-80 w-full rounded-[22px]" /><span className="sr-only">Loading activity…</span></div> : null}
+      {data ? <>
+        <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500">
+          <p>{dateLabel(data.from.slice(0, 10))} – {dateLabel(data.through.slice(0, 10))} · Daily totals in UTC</p>
+          <Badge variant="outline">Recorded activity</Badge>
+        </div>
+        {!hasActivity ? <AiEmpty title="No activity in this period" description="Try Test helper or run a contact qualification analysis. Recorded activity will appear here; you can also change the source or date range." /> : <>
+          <AiPanel title="Conversation activity" description="Chats active each day. A chat spanning several days is counted once in the period total.">
+            <ChartContainer config={chartConfig} className="h-64 w-full aspect-auto focus-within:rounded-md focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 sm:h-72" aria-label="Daily conversations">
+              <AreaChart accessibilityLayer data={data.daily} margin={{ left: 0, right: 12, top: 12 }}>
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={false} minTickGap={32} tickFormatter={dateLabel} />
+                <YAxis allowDecimals={false} tickLine={false} axisLine={false} width={32} tickCount={3} domain={[0, (maximum: number) => Math.max(1, maximum)]} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={(value) => dateLabel(String(value))} />} />
+                <Area dataKey="conversations" type="linear" stroke="var(--color-conversations)" fill="var(--color-conversations)" fillOpacity={0.12} strokeWidth={2} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
+          </AiPanel>
+          <AiPanel title="Answer outcomes" description="Answered questions and replies flagged for more knowledge or agency help.">
+            <ChartContainer config={chartConfig} className="h-64 w-full aspect-auto focus-within:rounded-md focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2" aria-label="Daily answered questions and questions needing review">
+              <BarChart accessibilityLayer data={data.daily} margin={{ left: 0, right: 12, top: 12 }}>
+                <CartesianGrid vertical={false} />
+                <XAxis dataKey="date" tickLine={false} axisLine={false} minTickGap={32} tickFormatter={dateLabel} />
+                <YAxis allowDecimals={false} tickLine={false} axisLine={false} width={32} tickCount={3} domain={[0, (maximum: number) => Math.max(1, maximum)]} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={(value) => dateLabel(String(value))} />} />
+                <ChartLegend content={<ChartLegendContent />} />
+                <Bar dataKey="answered" stackId="questions" fill="var(--color-answered)" maxBarSize={32} isAnimationActive={false} />
+                <Bar dataKey="needsReview" stackId="questions" fill="var(--color-needsReview)" maxBarSize={32} isAnimationActive={false} />
+              </BarChart>
+            </ChartContainer>
+          </AiPanel>
+          <details className="rounded-2xl border border-slate-200 bg-white p-4 text-sm">
+            <summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">View daily activity table</summary>
+            <div className="mt-3 max-w-full overflow-x-auto" role="region" aria-label="Daily activity table" tabIndex={0}>
+              <table className="w-full text-left text-xs tabular-nums">
+                <caption className="sr-only">Daily activity in UTC for the selected source and period</caption>
+                <thead><tr>{["Date (UTC)", ...metrics.map((metric) => metric.label)].map((label) => <th key={label} scope="col" className="p-2 font-medium">{label}</th>)}</tr></thead>
+                <tbody>{data.daily.map((day) => <tr key={day.date} className="border-t border-slate-100"><th scope="row" className="whitespace-nowrap p-2 font-normal">{dateLabel(day.date)}</th>{metrics.map((metric) => <td key={metric.key} className="p-2">{day[metric.key].toLocaleString()}</td>)}</tr>)}</tbody>
+              </table>
+            </div>
+          </details>
+        </>}
+        <p className="px-1 text-xs leading-relaxed text-slate-500">Completed replies and scans are counted. Failed requests and test replies stopped before completion are excluded. Test helper never runs qualification checks. Contact analysis counts each explicit scan, including scans performed for follow-up questions. “Needs review” includes contact questions answered with rule guidance when saved knowledge is unavailable; it is not a human review queue. Questions and replies are not retained in Analytics.</p>
+      </> : null}
+    </div>
   )
 }

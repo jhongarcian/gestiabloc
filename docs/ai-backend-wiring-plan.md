@@ -80,6 +80,8 @@ Implemented in [AI sources — chunk 6](ai-sources-chunk-6.md), with private per
 
 ### 7. Real analytics
 
+Implemented. See [chunk 7 implementation and validation](ai-analytics-chunk-7.md).
+
 - Record server-side conversation and interaction metadata without retaining full transcripts.
 - Replace sample values with conversations, answered questions, actual qualification runs, and questions needing review.
 - Replace the placeholder handoff metric until a real handoff workflow exists.
@@ -89,6 +91,8 @@ Implemented in [AI sources — chunk 6](ai-sources-chunk-6.md), with private per
 **Complete when:** known test interactions produce the expected totals and chart values without counting retries twice.
 
 ### 8. Existing contact assistant integration
+
+Implemented. See [chunk 8 implementation and validation](ai-contact-assistant-chunk-8.md).
 
 - Apply the saved helper identity, company context, FAQs, and retrieved knowledge to the existing contact assistant.
 - Reuse the shared reply service with the contact assistant’s existing authorization and data-access restrictions.

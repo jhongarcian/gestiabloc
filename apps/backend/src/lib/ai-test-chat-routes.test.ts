@@ -10,7 +10,7 @@ import {
   type AiChatSnapshot,
 } from "./ai-test-chat.js"
 
-test("test chat routes require active tenant admins, enforce origin and limits, and handle provider failure without writes", async (t) => {
+test("test chat routes require active tenant admins, enforce origin and limits, and handle provider failure without business-data writes", async (t) => {
   process.env.DATABASE_URL ??= "postgresql://test:test@localhost:5432/test"
   const { prisma } = await import("./prisma.js")
   const { createAiTestChatRouter } =
@@ -81,6 +81,11 @@ test("test chat routes require active tenant admins, enforce origin and limits, 
       },
       getProvider: () => provider,
       now: () => timestamp,
+      recordActivity: async (_client, activity) => {
+        assert.equal(activity.channel, "TEST")
+        assert.equal(activity.qualificationRun, false)
+        return { count: 1 }
+      },
     }),
   )
   const handleError: ErrorRequestHandler = (error, _req, res, _next) => {
