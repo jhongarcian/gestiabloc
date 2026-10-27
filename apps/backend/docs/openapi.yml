@@ -4682,6 +4682,11 @@ paths:
               - IN_PROGRESS
               - COMPLETED
               - CANCELED
+        - in: query
+          name: readOnly
+          required: false
+          description: Skip workflow synchronization, checklist backfill and completion reconciliation for passive header reads
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Contact service processes returned
@@ -7479,11 +7484,47 @@ paths:
         "401": { description: Authentication required }
         "403": { description: Active tenant membership required or untrusted origin }
         "404": { description: Contact not found in the selected tenant }
+  /api/services/{tenantId}/fit-scan/cases:
+    get:
+      tags: [AI]
+      summary: List the current contact's purchased cases without changing workflow
+      description: Includes completed, canceled and inactive-service purchases. Requires active tenant membership. No generation, qualification runs, workflow sync, checklist backfill or analytics writes. Returns Cache-Control no-store.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: contactId, required: true, schema: { type: string } }
+        - { in: query, name: serviceId, schema: { type: string } }
+        - { in: query, name: q, schema: { type: string, maxLength: 160 } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1, maximum: 100000, default: 1 } }
+        - { in: query, name: pageSize, schema: { type: integer, enum: [10, 25], default: 10 } }
+      responses:
+        "200": { description: "Purchase identities (contactServiceId, reference, serviceId, serviceName, serviceActive, status, purchasedAt, createdAt), service catalog and pagination" }
+        "400": { description: Invalid query }
+        "401": { description: Authentication required }
+        "403": { description: Active membership required }
+        "404": { description: Contact not found in this tenant }
+  /api/services/{tenantId}/fit-scan/cases/{contactServiceId}:
+    get:
+      tags: [AI]
+      summary: Read current purchased-case facts and paginated payment/note history
+      description: Purchase must belong to both tenant and contact. Reuses current billing calculations and captured checklist values. Returns no attachments, encrypted custom fields, or retired executable configuration. No business-data or analytics writes. Cache-Control no-store.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: path, name: contactServiceId, required: true, schema: { type: string } }
+        - { in: query, name: contactId, required: true, schema: { type: string } }
+        - { in: query, name: paymentsPage, schema: { type: integer, minimum: 1, maximum: 100000, default: 1 } }
+        - { in: query, name: notesPage, schema: { type: integer, minimum: 1, maximum: 100000, default: 1 } }
+        - { in: query, name: q, description: Search this purchase's linked notes, schema: { type: string, maxLength: 160 } }
+      responses:
+        "200": { description: "item contains identity, billing, checklist, steps, followUps, 20 payment records, 10 merged service/linked-contact notes and history pagination" }
+        "400": { description: Invalid query }
+        "401": { description: Authentication required }
+        "403": { description: Active membership required }
+        "404": { description: Purchase not found for this contact and tenant }
   /api/services/{tenantId}/fit-scan/assistant:
     post:
       tags: [AI]
       summary: Ask the existing contact qualification assistant
-      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Each completed explicit request records one qualification run. Tracking IDs deduplicate metadata only; replies are not persisted or replayed. Active tenant membership and trusted origin required.
+      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Case-only questions do not run qualification or increment qualification runs. An explicit qualification question about a selected purchase runs the existing rules engine and records that actual run. Multiple matching purchases require selection unless comparison is explicitly requested; comparisons are limited to five validated purchases. Case history is read-only and refreshed for each question. Tracking IDs deduplicate metadata only; replies are not persisted or replayed. Active tenant membership and trusted origin required.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7496,8 +7537,17 @@ paths:
               required: [contactId]
               properties:
                 contactId: { type: string, minLength: 1 }
-                scope: { type: string, enum: [all, service], default: service }
+                scope: { type: string, enum: [all, service, case], default: service }
                 serviceId: { type: string }
+                contactServiceId: { type: string, description: Exact purchase; must match tenant and contact }
+                compareContactServiceIds: { type: array, minItems: 2, maxItems: 5, uniqueItems: true, items: { type: string } }
+                caseHistory:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    paymentsPage: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+                    notesPage: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+                    q: { type: string, maxLength: 160, default: "" }
                 question: { type: string, minLength: 1, maxLength: 500, nullable: true }
                 history:
                   type: array
@@ -7526,9 +7576,14 @@ paths:
                   scope:
                     type: object
                     properties:
-                      mode: { type: string, enum: [all, service] }
+                      mode: { type: string, enum: [all, service, case] }
                       serviceId: { type: string, nullable: true }
                       serviceName: { type: string, nullable: true }
+                      contactServiceId: { type: string, nullable: true }
+                  selectedCase: { type: object, nullable: true, description: Current facts for one selected purchase }
+                  comparedCases: { type: array, maxItems: 5, items: { type: object } }
+                  caseChoices: { type: array, description: Matching purchase identities requiring selection, items: { type: object } }
+                  casePagination: { type: object }
                   answer:
                     type: object
                     properties:
@@ -7537,7 +7592,15 @@ paths:
                       bullets: { type: array, items: { type: string } }
                       suggestedQuestions: { type: array, items: { type: string } }
                       outcome: { type: string, enum: [ANSWERED, NEEDS_REVIEW] }
-                      replySource: { type: string, enum: [KNOWLEDGE, CONTACT, RULES, FALLBACK] }
+                      replySource: { type: string, enum: [KNOWLEDGE, CONTACT, CASE, RULES, FALLBACK] }
+                      recordReferences:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            contactServiceId: { type: string }
+                            view: { type: string, enum: [overview, transaction, follow-up, notes] }
+                            label: { type: string }
                       answerMode: { type: string, enum: [ADAPTED, EXACT, TRANSLATED] }
                       sources:
                         type: array

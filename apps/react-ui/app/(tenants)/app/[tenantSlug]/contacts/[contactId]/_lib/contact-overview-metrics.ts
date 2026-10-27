@@ -80,6 +80,7 @@ export const getAllContactServices = cache(
           contactId,
           page: 1,
           pageSize: 25,
+          readOnly: true,
         },
       },
     )
@@ -99,6 +100,7 @@ export const getAllContactServices = cache(
               contactId,
               page: index + 2,
               pageSize: 25,
+              readOnly: true,
             },
           },
         ),

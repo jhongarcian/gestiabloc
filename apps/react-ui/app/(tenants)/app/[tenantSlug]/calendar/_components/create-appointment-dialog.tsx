@@ -68,6 +68,9 @@ type CreateAppointmentDialogProps = {
   currentUserId: string
   initialContact?: ContactSearchItem | null
   lockContact?: boolean
+  initialServiceId?: string | null
+  lockService?: boolean
+  defaultToCurrentUser?: boolean
   open?: boolean
   onOpenChange?: (open: boolean) => void
   hideTrigger?: boolean
@@ -156,6 +159,9 @@ export function CreateAppointmentDialog({
   currentUserId,
   initialContact = null,
   lockContact = false,
+  initialServiceId = null,
+  lockService = false,
+  defaultToCurrentUser = true,
   open: controlledOpen,
   onOpenChange,
   hideTrigger = false,
@@ -180,11 +186,11 @@ export function CreateAppointmentDialog({
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [title, setTitle] = useState("")
   const [notes, setNotes] = useState("")
-  const [serviceId, setServiceId] = useState("__NONE__")
+  const [serviceId, setServiceId] = useState(initialServiceId ?? "__NONE__")
   const [servicePickerOpen, setServicePickerOpen] = useState(false)
   const [serviceQuery, setServiceQuery] = useState("")
   const [debouncedServiceQuery, setDebouncedServiceQuery] = useState("")
-  const [assignedToUserId, setAssignedToUserId] = useState(currentUserId)
+  const [assignedToUserId, setAssignedToUserId] = useState(initialAssignedToUserId ?? (defaultToCurrentUser ? currentUserId : ""))
   const [contactQuery, setContactQuery] = useState("")
   const [debouncedContactQuery, setDebouncedContactQuery] = useState("")
   const [selectedContact, setSelectedContact] = useState<ContactSearchItem | null>(null)
@@ -213,11 +219,11 @@ export function CreateAppointmentDialog({
     setFieldErrors({})
     setTitle("")
     setNotes("")
-    setServiceId("__NONE__")
+    setServiceId(initialServiceId ?? "__NONE__")
     setServicePickerOpen(false)
     setServiceQuery("")
     setDebouncedServiceQuery("")
-    setAssignedToUserId(initialAssignedToUserId ?? currentUserId)
+    setAssignedToUserId(initialAssignedToUserId ?? (defaultToCurrentUser ? currentUserId : ""))
     setContactQuery("")
     setDebouncedContactQuery("")
     setSelectedContact(initialContact)
@@ -232,6 +238,8 @@ export function CreateAppointmentDialog({
   }, [
     currentUserId,
     initialAssignedToUserId,
+    initialServiceId,
+    defaultToCurrentUser,
     initialContact,
     initialDate,
     preferredSlotStartAt,
@@ -625,7 +633,7 @@ export function CreateAppointmentDialog({
               </SheetTitle>
               <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
                 {lockContact
-                  ? "Choose an owner and available time for this contact."
+                  ? `Choose an agent and available time for ${initialContact?.fullName ?? "this contact"}.`
                   : "Choose a contact, owner, and available time for the appointment."}
               </SheetDescription>
             </div>
@@ -803,12 +811,13 @@ export function CreateAppointmentDialog({
 
                   <Field data-disabled={isSubmitting} className="gap-2">
                     <FieldLabel htmlFor="create-appointment-service">
-                      Sub-service <span className="text-xs font-normal text-slate-500">Optional</span>
+                      Sub-service {!lockService ? <span className="text-xs font-normal text-slate-500">Optional</span> : null}
                     </FieldLabel>
+                    {lockService ? <Input id="create-appointment-service" readOnly value={selectedServiceName ?? "Selected service unavailable"} className="h-11 rounded-xl bg-slate-50/60" /> : (
                     <Popover
                       open={servicePickerOpen}
                       onOpenChange={(nextOpen) => {
-                        if (isSubmitting) return
+                        if (isSubmitting || lockService) return
                         setServicePickerOpen(nextOpen)
                         if (!nextOpen) {
                           setServiceQuery("")
@@ -821,7 +830,7 @@ export function CreateAppointmentDialog({
                           id="create-appointment-service"
                           type="button"
                           variant="outline"
-                          disabled={isSubmitting}
+                          disabled={isSubmitting || lockService}
                           aria-expanded={servicePickerOpen}
                           className="h-11 w-full justify-between rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none hover:bg-slate-50/60 focus-visible:border-blue-400 focus-visible:ring-blue-100"
                         >
@@ -905,8 +914,9 @@ export function CreateAppointmentDialog({
                         </Command>
                       </PopoverContent>
                     </Popover>
+                    )}
                     <FieldDescription>
-                      Search services; up to five matches are shown.
+                      {lockService ? "Selected from the AI conversation." : "Search services; up to five matches are shown."}
                     </FieldDescription>
                   </Field>
                 </FieldGroup>
@@ -1182,7 +1192,7 @@ export function CreateAppointmentDialog({
               resetForm()
             }}
             disabled={isSubmitting}
-            className="border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+            className="h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-100"
           >
             Cancel
           </Button>
@@ -1190,7 +1200,7 @@ export function CreateAppointmentDialog({
             type="button"
             onClick={() => void onSubmit()}
             disabled={isSubmitting}
-            className="min-w-40 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
+            className="h-8 min-w-40 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-blue-900"
           >
             {isSubmitting ? (
               <LoaderCircle data-icon="inline-start" className="animate-spin" />

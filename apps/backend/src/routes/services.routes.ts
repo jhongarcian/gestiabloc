@@ -344,6 +344,7 @@ const ContactServicesListQuerySchema = z.object({
     .default(10),
   contactId: z.string().trim().min(1).optional(),
   status: ContactServiceStatusSchema.optional(),
+  readOnly: z.enum(["true", "false"]).default("false"),
 })
 
 const FitScanQuerySchema = z.object({
@@ -1559,6 +1560,7 @@ export async function evaluateServiceFitScan(params: {
         description: service.description ?? null,
         fitProfile: profile,
         ...enrollmentSummary,
+        purchaseCount: (contactServicesByServiceId.get(service.id) ?? []).length,
         ...evaluation,
       }
     })
@@ -2772,7 +2774,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, contactId, status } = ContactServicesListQuerySchema.parse(req.query)
+    const { page, pageSize, contactId, status, readOnly } = ContactServicesListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
@@ -2893,7 +2895,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
       }),
     ])
 
-    const syncResults = await prisma.$transaction(async (tx) => {
+    const syncResults = readOnly === "true" ? { activatedIds: [], checklistBackfilled: false, statusReconciled: false } : await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
       const activatedIds: string[] = []
       let checklistBackfilled = false

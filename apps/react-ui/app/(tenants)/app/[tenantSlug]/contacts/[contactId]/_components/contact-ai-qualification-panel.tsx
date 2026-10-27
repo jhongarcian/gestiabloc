@@ -20,6 +20,9 @@ import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
 import { defaultAiHelperIdentity, type AiHelperIdentity, type AiHelperSource } from "@/lib/ai-helper"
+import { ContactAiBooking, type ContactAiBookingContext } from "./contact-ai-booking"
+import { ContactAiCases, ContactAiCaseChoices, ContactAiCaseHistory } from "./contact-ai-cases"
+import { contactCaseLabel, type ContactCaseSummary, type ContactCaseEvidence, type ContactCaseReference, type CaseHistory, type CasePagination } from "../_lib/contact-ai-cases"
 import {
   FIT_STATUS_STYLES,
   getEnrollmentSummary,
@@ -35,9 +38,11 @@ type ContactAiQualificationPanelProps = {
   contactId: string
   contactName: string
   initialHelper?: AiHelperIdentity
+  canStartService: boolean
+  bookingContext: ContactAiBookingContext
 }
 
-type AssistantScopeMode = "idle" | "all" | "service"
+type AssistantScopeMode = "idle" | "all" | "service" | "case"
 
 const PRIMARY_BUTTON = "h-8 shrink-0 cursor-pointer rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-white shadow-sm hover:bg-blue-900 disabled:cursor-not-allowed"
 const SECONDARY_BUTTON = "h-8 shrink-0 cursor-pointer rounded-full border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed"
@@ -50,7 +55,11 @@ type AssistantMessage = {
   bullets?: string[]
   showServiceChoices?: boolean
   helperName?: string
-  replySource?: "KNOWLEDGE" | "CONTACT" | "RULES" | "FALLBACK"
+  replySource?: "KNOWLEDGE" | "CONTACT" | "CASE" | "RULES" | "FALLBACK"
+  caseChoices?: ContactCaseSummary[]
+  casePagination?: CasePagination
+  caseServiceId?: string | null
+  recordReferences?: ContactCaseReference[]
   answerMode?: "ADAPTED" | "EXACT" | "TRANSLATED"
   sources?: AiHelperSource[]
   citations?: Array<{
@@ -64,14 +73,20 @@ type ServiceFitAssistantResponse = {
   helper?: AiHelperIdentity
   items?: ServiceFitScanItem[]
   scope: {
-    mode: "all" | "service"
+    mode: "all" | "service" | "case"
     serviceId: string | null
     serviceName: string | null
+    contactServiceId?: string | null
   }
+  selectedCase?: ContactCaseEvidence | null
+  comparedCases?: ContactCaseEvidence[]
+  caseChoices?: ContactCaseSummary[]
+  casePagination?: CasePagination
   answer: {
     title: string
     summary: string
     bullets: string[]
+    recordReferences?: ContactCaseReference[]
     replySource?: AssistantMessage["replySource"]
     answerMode?: AssistantMessage["answerMode"]
     sources?: AiHelperSource[]
@@ -134,6 +149,10 @@ function buildAssistantReplyMessage(response: ServiceFitAssistantResponse) {
     bullets: response.answer.bullets,
     citations: response.answer.citations,
     helperName: ["KNOWLEDGE", "CONTACT"].includes(response.answer.replySource ?? "") ? response.answer.title : response.helper?.name,
+    caseChoices: response.caseChoices,
+    casePagination: response.casePagination,
+    caseServiceId: response.scope.serviceId,
+    recordReferences: response.answer.recordReferences,
     replySource: response.answer.replySource,
     answerMode: response.answer.answerMode,
     sources: response.answer.sources,
@@ -144,7 +163,9 @@ function getServiceAction(
   item: ServiceFitScanItem,
   tenantSlug: string,
   contactId: string,
+  canStartService: boolean,
 ) {
+  if ((item.hasPurchased || item.hasActiveEnrollment) && (item.purchaseCount ?? 1) > 1) return null
   if (item.hasActiveEnrollment && item.currentContactServiceId) {
     return {
       label: "Open service",
@@ -167,7 +188,7 @@ function getServiceAction(
     }
   }
 
-  if (item.eligibilityStatus === "ELIGIBLE") {
+  if (item.eligibilityStatus === "ELIGIBLE" && canStartService) {
     return {
       label: "Start service",
       href: `/app/${tenantSlug}/contacts/${contactId}/services?create=1&serviceId=${encodeURIComponent(item.serviceId)}`,
@@ -184,6 +205,8 @@ export function ContactAiQualificationPanel({
   contactId,
   contactName,
   initialHelper = defaultAiHelperIdentity,
+  canStartService,
+  bookingContext,
 }: ContactAiQualificationPanelProps) {
   const [items, setItems] = useState<ServiceFitScanItem[]>([])
   const [messages, setMessages] = useState<AssistantMessage[]>([])
@@ -193,6 +216,11 @@ export function ContactAiQualificationPanel({
   const [scopeMode, setScopeMode] = useState<AssistantScopeMode>("idle")
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(null)
   const [selectedServiceName, setSelectedServiceName] = useState<string | null>(null)
+  const [selectedCase, setSelectedCase] = useState<ContactCaseEvidence | null>(null)
+  const [comparisonIds, setComparisonIds] = useState<string[]>([])
+  const [caseVersion, setCaseVersion] = useState(0)
+  const [caseHistory, setCaseHistory] = useState<CaseHistory>({ paymentsPage: 1, notesPage: 1, q: "" })
+  const [loadingChoices, setLoadingChoices] = useState(false)
   const [draft, setDraft] = useState("")
   const [helper, setHelper] = useState(initialHelper)
   const activeRequest = useRef<AbortController | null>(null)
@@ -208,10 +236,12 @@ export function ContactAiQualificationPanel({
     [items, selectedServiceId],
   )
   const selectedEnrollmentSummary = selectedService ? getEnrollmentSummary(selectedService) : null
-  const selectedServiceAction = selectedService
-    ? getServiceAction(selectedService, tenantSlug, contactId)
+  const selectedServiceAction = selectedCase ? { label: "Open service", href: getServiceEnrollmentHref({ tenantSlug, contactServiceId: selectedCase.contactServiceId }), variant: "outline" as const } : scopeMode === "case" ? null : selectedService
+    ? getServiceAction(selectedService, tenantSlug, contactId, canStartService)
     : null
   const canAskQuestions = hasRun && scopeMode !== "idle"
+  const canBook = Boolean(selectedServiceId && (scopeMode !== "case" || selectedCase?.serviceActive))
+  const canChoosePurchase = scopeMode !== "case" && Boolean(selectedService && (selectedService.purchaseCount ?? 0) > 1)
 
   useEffect(() => () => activeRequest.current?.abort(), [])
 
@@ -251,6 +281,9 @@ export function ContactAiQualificationPanel({
       setScopeMode("all")
       setSelectedServiceId(null)
       setSelectedServiceName(null)
+      setSelectedCase(null)
+      setComparisonIds([])
+      setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
       history.current = []
       setRanAt(new Date())
       setMessages([buildInitialAssistantMessage(nextItems)])
@@ -263,8 +296,10 @@ export function ContactAiQualificationPanel({
   }
 
   const requestAssistant = async (options: {
-    scope: "all" | "service"
+    scope: "all" | "service" | "case"
     serviceId?: string | null
+    contactServiceId?: string
+    compareContactServiceIds?: string[]
     question?: string
   }) => {
     if (activeRequest.current) return
@@ -278,6 +313,9 @@ export function ContactAiQualificationPanel({
           contactId,
           scope: options.scope,
           serviceId: options.serviceId ?? undefined,
+          contactServiceId: options.contactServiceId,
+          compareContactServiceIds: options.compareContactServiceIds,
+          caseHistory: options.scope === "case" && options.contactServiceId === selectedCase?.contactServiceId ? caseHistory : undefined,
           question: options.question?.trim() || undefined,
           history: history.current,
           ...activity,
@@ -287,7 +325,7 @@ export function ContactAiQualificationPanel({
       tracking.current.complete(activity.requestId)
       if (data.helper) setHelper(data.helper)
       const updatedItems = data.items
-      if (updatedItems) setItems(updatedItems)
+      if (updatedItems) { setItems(updatedItems); setRanAt(new Date()) }
 
       if (options.question) {
         const next = [...history.current,
@@ -301,10 +339,51 @@ export function ContactAiQualificationPanel({
       setScopeMode(data.scope.mode)
       setSelectedServiceId(data.scope.serviceId)
       setSelectedServiceName(data.scope.serviceName)
+      setSelectedCase(data.selectedCase ?? null)
+      setComparisonIds(data.comparedCases?.map((item) => item.contactServiceId) ?? [])
+      setCaseVersion((value) => value + 1)
+      if (data.selectedCase) setCaseHistory({ paymentsPage: data.selectedCase.history.paymentsPage, notesPage: data.selectedCase.history.notesPage, q: data.selectedCase.history.search })
+      else setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
       appendMessage(buildAssistantReplyMessage(data))
     } finally {
       if (activeRequest.current === controller) activeRequest.current = null
     }
+  }
+
+  const handleAnalyzeCase = async (item: ContactCaseSummary) => {
+    if (activeRequest.current) return
+    setIsSending(true)
+    appendMessage(createMessage({ role: "user", body: `Review ${contactCaseLabel(item, bookingContext.tenantTimezone)}.` }))
+    try { await requestAssistant({ scope: "case", serviceId: item.serviceId, contactServiceId: item.contactServiceId }) }
+    catch (error) { if (!isCancel(error)) toast.error("Could not review that purchase.") }
+    finally { setIsSending(false) }
+  }
+
+  const handleReviewPurchases = async () => {
+    if (!selectedServiceId || activeRequest.current) return
+    setIsSending(true)
+    try { await requestAssistant({ scope: "case", serviceId: selectedServiceId }) }
+    catch (error) { if (!isCancel(error)) toast.error("Could not load purchases for this service.") }
+    finally { setIsSending(false) }
+  }
+
+  const handleCompareCases = async (ids: string[]) => {
+    if (activeRequest.current) return
+    setIsSending(true)
+    appendMessage(createMessage({ role: "user", body: "Compare the selected purchases." }))
+    try { await requestAssistant({ scope: "case", compareContactServiceIds: ids, question: "Compare the selected purchases." }) }
+    catch (error) { if (!isCancel(error)) toast.error("Could not compare those purchases.") }
+    finally { setIsSending(false) }
+  }
+
+  const loadCaseChoices = async (message: AssistantMessage, page: number) => {
+    if (loadingChoices) return
+    setLoadingChoices(true)
+    try {
+      const { data } = await api.get<{ items: ContactCaseSummary[]; pagination: CasePagination }>(`/api/services/${tenantId}/fit-scan/cases`, { params: { contactId, serviceId: message.caseServiceId ?? undefined, page, pageSize: 25 } })
+      setMessages((current) => current.map((entry) => entry.id === message.id ? { ...entry, caseChoices: data.items, casePagination: data.pagination } : entry))
+    } catch { toast.error("Could not load more purchases.") }
+    finally { setLoadingChoices(false) }
   }
 
   const handleAnalyzeService = async (serviceId: string) => {
@@ -350,8 +429,10 @@ export function ContactAiQualificationPanel({
 
     try {
       await requestAssistant({
-        scope: scopeMode === "all" ? "all" : "service",
-        serviceId: scopeMode === "service" ? selectedServiceId : undefined,
+        scope: scopeMode === "case" ? "case" : scopeMode === "all" ? "all" : "service",
+        serviceId: scopeMode === "all" ? undefined : selectedServiceId,
+        contactServiceId: scopeMode === "case" ? selectedCase?.contactServiceId : undefined,
+        compareContactServiceIds: scopeMode === "case" && comparisonIds.length > 1 ? comparisonIds : undefined,
         question: trimmedQuestion,
       })
       setDraft("")
@@ -392,10 +473,10 @@ export function ContactAiQualificationPanel({
             {hasRun ? (
               <>
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-                  Last run {formatRunTimestamp(ranAt)}
+                  {ranAt ? `Last scan ${formatRunTimestamp(ranAt)}` : "Purchased service review"}
                 </span>
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
-                  {scopeMode === "service"
+                  {scopeMode === "case" ? selectedCase ? `${selectedCase.serviceName} · ${selectedCase.reference}` : comparisonIds.length ? `Comparing ${comparisonIds.length} purchases` : "Choose a purchase" : scopeMode === "service"
                     ? selectedServiceName ?? "Selected service"
                     : scopeMode === "all"
                       ? "All active services"
@@ -432,6 +513,14 @@ export function ContactAiQualificationPanel({
           </div>
         </div>
       </header>
+
+      <div className="flex min-w-0 flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-3"><ContactAiCases tenantId={tenantId} contactId={contactId} timezone={bookingContext.tenantTimezone}
+          disabled={isSending || isLoadingAnalysis} onSelect={(item) => void handleAnalyzeCase(item)} onCompare={(ids) => void handleCompareCases(ids)} />
+          <span className="text-xs text-slate-500">Review existing purchases separately from qualification.</span>
+        </div>
+        {selectedCase ? <ContactAiCaseHistory key={`${selectedCase.contactServiceId}:${caseVersion}`} tenantId={tenantId} contactId={contactId} item={selectedCase} onHistoryChange={setCaseHistory} /> : null}
+      </div>
 
       <div className="grid min-h-[640px] min-w-0 grid-rows-[1fr_auto] overflow-hidden rounded-[26px] border border-slate-200 bg-slate-50/70">
         <ScrollArea className="min-h-0 min-w-0 [&_[data-slot=scroll-area-viewport]>div]:block!">
@@ -480,7 +569,7 @@ export function ContactAiQualificationPanel({
             </div>
           ) : (
             <div className="flex min-w-0 flex-col gap-6 px-5 py-6 md:px-7 md:py-7">
-              <div className="flex flex-wrap items-center justify-center gap-2">
+              {ranAt ? <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
                   {analysisMeta.serviceCount} {analysisMeta.serviceCount === 1 ? "service" : "services"} reviewed
                 </span>
@@ -493,7 +582,7 @@ export function ContactAiQualificationPanel({
                 <Badge className={FIT_STATUS_STYLES.NOT_ELIGIBLE}>
                   {analysisMeta.notEligibleCount} not eligible
                 </Badge>
-              </div>
+              </div> : null}
 
               {messages.map((message) => (
                 <div
@@ -554,11 +643,11 @@ export function ContactAiQualificationPanel({
 
                       {message.replySource ? <div className="mt-3 flex flex-col gap-2">
                         <div className="flex flex-wrap gap-2">
-                          <Badge variant="outline">{message.replySource === "CONTACT" ? "Contact analysis" : message.replySource === "KNOWLEDGE" ? "Saved knowledge" : "Qualification guidance"}</Badge>
+                          <Badge variant="outline">{message.replySource === "CASE" ? "Purchase review" : message.replySource === "CONTACT" ? "Contact analysis" : message.replySource === "KNOWLEDGE" ? "Saved knowledge" : message.recordReferences?.length ? "Purchase guidance" : "Qualification guidance"}</Badge>
                           {message.answerMode === "EXACT" ? <Badge variant="secondary">As written</Badge> : null}
                           {message.answerMode === "TRANSLATED" ? <Badge variant="secondary">Translated answer</Badge> : null}
                         </div>
-                        {message.replySource === "FALLBACK" ? <p className="text-xs leading-relaxed text-slate-500">A conversational reply is unavailable right now. These are the current qualification checks.</p> : null}
+                        {message.replySource === "FALLBACK" ? <p className="text-xs leading-relaxed text-slate-500">A conversational reply is unavailable right now. These are the current {message.recordReferences?.length ? "purchase records" : "qualification checks"}.</p> : null}
                       </div> : null}
 
                       {message.sources?.length ? <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
@@ -569,6 +658,19 @@ export function ContactAiQualificationPanel({
                             <p className="whitespace-pre-wrap break-words leading-relaxed text-slate-600">{source.excerpt}</p>
                           </li>)}
                         </ul>
+                      </details> : null}
+
+                      {message.caseChoices?.length ? <div className="mt-4 flex flex-col gap-3">
+                        <ContactAiCaseChoices items={message.caseChoices} timezone={bookingContext.tenantTimezone} disabled={isSending} onSelect={(item) => void handleAnalyzeCase(item)} />
+                        {message.casePagination && message.casePagination.totalPages > 1 ? <div className="flex flex-wrap items-center gap-2">
+                          <Button variant="outline" className={SECONDARY_BUTTON} disabled={loadingChoices || message.casePagination.page <= 1} onClick={() => void loadCaseChoices(message, message.casePagination!.page - 1)}>Previous purchases</Button>
+                          <span className="text-xs">{message.casePagination.page} / {message.casePagination.totalPages}</span>
+                          <Button variant="outline" className={SECONDARY_BUTTON} disabled={loadingChoices || message.casePagination.page >= message.casePagination.totalPages} onClick={() => void loadCaseChoices(message, message.casePagination!.page + 1)}>Next purchases</Button>
+                        </div> : null}
+                      </div> : null}
+
+                      {message.recordReferences?.length ? <details className="mt-3 rounded-xl border border-slate-200 p-3 text-xs"><summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">Case references ({message.recordReferences.length})</summary>
+                        <ul className="mt-3 flex flex-col gap-2">{message.recordReferences.map((reference) => <li key={`${reference.contactServiceId}:${reference.view}`}><Link className="break-words underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring" href={getServiceEnrollmentHref({ tenantSlug, contactServiceId: reference.contactServiceId, view: reference.view })}>{reference.label}</Link></li>)}</ul>
                       </details> : null}
 
                       {message.showServiceChoices && items.length > 0 ? (
@@ -611,8 +713,10 @@ export function ContactAiQualificationPanel({
                         </div>
                       ) : null}
 
-                      {message.role === "assistant" && selectedServiceAction && message.id === messages[messages.length - 1]?.id ? (
+                      {message.role === "assistant" && (canBook || canChoosePurchase || selectedServiceAction) && message.id === messages[messages.length - 1]?.id ? (
                         <div className="mt-4 flex flex-wrap items-center gap-2">
+                          {canBook && selectedServiceId ? <ContactAiBooking tenantId={tenantId} serviceId={selectedServiceId} context={bookingContext} className={SECONDARY_BUTTON} disabled={isSending} /> : null}
+                          {canChoosePurchase ? <Button type="button" variant="outline" className={SECONDARY_BUTTON} disabled={isSending} onClick={() => void handleReviewPurchases()}>Review purchases</Button> : null}
                           {selectedServiceAction ? (
                             <Button
                               asChild
@@ -630,7 +734,7 @@ export function ContactAiQualificationPanel({
                       ) : null}
                     </div>
 
-                    {message.role === "assistant" && selectedService && message.id === messages[messages.length - 1]?.id ? (
+                    {message.role === "assistant" && selectedService && scopeMode !== "case" && message.id === messages[messages.length - 1]?.id ? (
                       <div className="mt-3 flex flex-wrap items-center gap-2 px-1">
                         <span className="text-xs text-slate-500">From saved rules</span>
                         <Badge className={FIT_STATUS_STYLES[selectedService.eligibilityStatus]}>
@@ -726,9 +830,9 @@ export function ContactAiQualificationPanel({
                     ? "Follow up naturally or name another service. 500 characters maximum."
                     : "Start the conversation before asking follow-up questions."}
               </p>
-              {hasRun && scopeMode === "service" ? (
+              {hasRun && (scopeMode === "service" || scopeMode === "case") ? (
                 <div className="flex flex-wrap gap-2">
-                  {scopeMode === "service" ? (
+                  {scopeMode === "service" || scopeMode === "case" ? (
                     <Button
                       variant="outline"
                       type="button"
@@ -736,6 +840,9 @@ export function ContactAiQualificationPanel({
                       onClick={() => {
                         setSelectedServiceId(null)
                         setSelectedServiceName(null)
+                        setSelectedCase(null)
+                        setComparisonIds([])
+                        setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
                         setScopeMode("all")
                       }}
                       disabled={isSending}

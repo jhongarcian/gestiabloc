@@ -150,8 +150,11 @@ export function contactContextForPrompt(context: ContactAssistantContext, servic
   }
   const skills = context.skills ?? context.services
   return { contactName: context.contactName, facts, services: included,
-    catalog: skills.slice(0, 100).map(({ serviceId, serviceName }) => ({ serviceId, serviceName,
-      status: context.services.find((service) => service.serviceId === serviceId)?.status ?? "NOT_CONFIGURED" })),
+    catalog: skills.slice(0, 100).map(({ serviceId, serviceName }) => {
+      const evaluation = context.services.find((service) => service.serviceId === serviceId)
+      return { serviceId, serviceName, qualificationConfigured: Boolean(evaluation),
+        ...(!serviceIds || serviceIds.includes(serviceId) ? { status: evaluation?.status ?? null } : {}) }
+    }),
     limited: included.length !== selected.length || facts.length !== context.facts.length || skills.length > 100 }
 }
 

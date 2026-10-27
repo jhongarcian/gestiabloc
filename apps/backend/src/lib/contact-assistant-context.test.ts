@@ -87,3 +87,12 @@ test("typed service names change scope; ambiguous names stay broad and exact nam
   assert.equal(resolveContactServiceScope("Compare Medicare and registration", skills, "medicare"), undefined)
   assert.equal(resolveContactServiceScope("Tell me about renewal", skills, "medicare"), "renewal")
 })
+
+test("unconfigured qualification is unknown, while other services' verdicts stay outside a selected-service prompt", () => {
+  const { context } = fixture()
+  context.skills = [{ serviceId: "medicare", serviceName: "Medicare" }, { serviceId: "consult", serviceName: "Consultation" }]
+  const prompt = contactContextForPrompt(context, ["consult"])
+  assert.deepEqual(prompt.catalog.find((service) => service.serviceId === "consult"), { serviceId: "consult", serviceName: "Consultation", qualificationConfigured: false, status: null })
+  assert.equal("status" in prompt.catalog.find((service) => service.serviceId === "medicare")!, false)
+  assert.equal(prompt.services.length, 0)
+})

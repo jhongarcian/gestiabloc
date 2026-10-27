@@ -11,13 +11,14 @@ export default async function ContactAiQualificationPage({
 }) {
   const { tenantSlug, contactId } = await params
   const { cookie, tenantId } = await getTenantMembershipContext(tenantSlug)
-  const [{ contact }, identity] = await Promise.all([
+  const [details, identity] = await Promise.all([
     getContactDetailsContext(tenantSlug, contactId),
     api.get<{ helper: AiHelperIdentity }>(`/api/services/${tenantId}/fit-scan/helper`, {
       headers: { cookie },
     }).catch(() => null),
   ])
   const helper = identity?.data.helper ?? defaultAiHelperIdentity
+  const { contact, currentUserId, tenantTimezone, membershipRole, membershipSecurityLevel } = details
 
   return (
     <ContactAiQualificationPanel
@@ -27,6 +28,8 @@ export default async function ContactAiQualificationPage({
       contactId={contactId}
       contactName={contact.fullName}
       initialHelper={helper}
+      canStartService={membershipRole === "TENANT_ADMIN" || membershipSecurityLevel !== "LOW"}
+      bookingContext={{ currentUserId, tenantTimezone, contact: { id: contactId, fullName: contact.fullName, phoneNumber: contact.phoneNumber, email: contact.email } }}
     />
   )
 }

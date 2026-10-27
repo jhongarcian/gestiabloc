@@ -19,6 +19,7 @@ export type ServiceFitScanItem = {
   configurationGapNotes: string[]
   recommendedUpdates: string[]
   hasPurchased: boolean
+  purchaseCount?: number
   hasActiveEnrollment: boolean
   currentContactServiceId: string | null
   currentContactServiceStatus:
