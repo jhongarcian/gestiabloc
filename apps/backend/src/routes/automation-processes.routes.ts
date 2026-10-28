@@ -1,3 +1,4 @@
+import { isServiceTrigger } from "../lib/service-automation-triggers.js"
 import { type Response, Router } from "express"
 import { z } from "zod"
 
@@ -140,6 +141,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
     if (!automation) {
       return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
     }
+    if (isServiceTrigger(automation.triggerType)) return res.status(400).json({ error: "SERVICE_CONTEXT_REQUIRED", message: "Service workflows start from their enrollment events." })
     const process = await prismaWithProcesses.automationProcess.create({
       data: {
         tenantId,

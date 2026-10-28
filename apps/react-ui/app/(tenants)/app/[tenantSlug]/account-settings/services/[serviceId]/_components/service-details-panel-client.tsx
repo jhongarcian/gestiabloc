@@ -20,5 +20,5 @@ const ServiceDetailsPanel = dynamic(
 )
 
 export function ServiceDetailsPanelClient(props: ServiceDetailsPanelProps) {
-  return <ServiceDetailsPanel {...props} />
+  return <ServiceDetailsPanel key={props.service.id} {...props} />
 }

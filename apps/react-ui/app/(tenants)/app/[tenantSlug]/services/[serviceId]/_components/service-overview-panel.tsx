@@ -1,5 +1,13 @@
 "use client"
 
+import { paymentOptionsLabel, type PaymentSettings, type EnrollmentBillingValue } from "@/lib/service-billing"
+
+import { ServicePaymentFields } from "@/components/service-payment-fields"
+import { ServiceWorkflowSummary } from "@/components/service-workflow-summary"
+import { ServiceWorkflowTimeline } from "@/components/service-workflow-timeline"
+import { serviceWorkflowError, serviceOfferingLabel } from "@/lib/service-hierarchy"
+import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
+
 import { format } from "date-fns"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
@@ -17,7 +25,7 @@ import {
   Users,
   Wallet,
 } from "lucide-react"
-import { type ReactNode, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { type DateRange } from "react-day-picker"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -105,32 +113,25 @@ type ServiceChecklistItem = {
   sortOrder: number
 }
 
-type ServiceFollowUpTemplate = {
-  id: string
-  name: string
-  isPublished: boolean
-  sortOrder: number
-  flowNodeCount: number
-  flowEdgeCount: number
-}
-
 export type ServiceOverviewPanelProps = {
   tenantId: string
   tenantSlug: string
   service: {
+    steps: ServiceStepItem[]
+    parentService?: { id: string; name: string } | null
     id: string
     name: string
     description: string | null
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
+    paymentSettings?: PaymentSettings
     allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
     isActive: boolean
     checklistItems: ServiceChecklistItem[]
-    followUpTemplates: ServiceFollowUpTemplate[]
     professionals: ServiceProfessional[]
     tenantBilling: {
       taxEnabled: boolean
@@ -174,11 +175,8 @@ type CreateContactServiceResponse = {
 
 type TransactionFormState = {
   contactId: string
-  templateId: string
   assignedProfessionalId: string
   followUpAssignedToUserId: string
-  paymentMode: "FULL" | "PARTIAL" | "LATER"
-  initialPaymentUsd: string
   notes: string
 }
 
@@ -241,38 +239,6 @@ function formatCurrency(valueCents: number, currency: string) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
-}
-
-function centsToUsdInput(valueCents: number) {
-  return ((valueCents || 0) / 100).toFixed(2)
-}
-
-function parseUsdToCents(value: string) {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-
-  return Math.round(parsed * 100)
-}
-
-function getServiceTotalWithTaxCents({
-  basePriceCents,
-  isTaxExempt,
-  taxEnabled,
-  defaultTaxRatePercent,
-}: {
-  basePriceCents: number
-  isTaxExempt: boolean
-  taxEnabled: boolean
-  defaultTaxRatePercent: number | null
-}) {
-  if (!taxEnabled || isTaxExempt || defaultTaxRatePercent === null) {
-    return basePriceCents
-  }
-
-  return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
 }
 
 function formatDateOnly(date: Date) {
@@ -700,25 +666,13 @@ function CreateTransactionDialog({
   const [contactResults, setContactResults] = useState<ContactSearchResult[]>([])
   const [contactSearchQuery, setContactSearchQuery] = useState("")
   const [debouncedContactSearchQuery, setDebouncedContactSearchQuery] = useState("")
-  const [templateId, setTemplateId] = useState("")
   const [assignedProfessionalId, setAssignedProfessionalId] = useState("")
   const [followUpAssignedToUserId, setFollowUpAssignedToUserId] = useState("")
-  const [paymentMode, setPaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
-  const [initialPaymentUsd, setInitialPaymentUsd] = useState("")
+  const [enrollmentBilling, setEnrollmentBilling] = useState<EnrollmentBillingValue | null>(null)
+  const enrollmentRequestKey = useRef("")
+  const enrollmentSaving = useRef(false)
   const [notes, setNotes] = useState("")
   const [errors, setErrors] = useState<TransactionFormErrors>({})
-  const totalWithTaxCents = getServiceTotalWithTaxCents({
-    basePriceCents: service.basePriceCents,
-    isTaxExempt: service.isTaxExempt,
-    taxEnabled: service.tenantBilling.taxEnabled,
-    defaultTaxRatePercent: service.tenantBilling.defaultTaxRatePercent,
-  })
-  const selectedFollowUpAssignee = useMemo(
-    () =>
-      followUpAssigneeOptions.find((item) => item.value === followUpAssignedToUserId) ?? null,
-    [followUpAssignedToUserId, followUpAssigneeOptions],
-  )
-
   const contactStepSchema = useMemo(
     () =>
       z.object({
@@ -731,22 +685,10 @@ function CreateTransactionDialog({
     () =>
       z
         .object({
-          templateId: optionalStringIdSchema,
           assignedProfessionalId: optionalStringIdSchema,
           followUpAssignedToUserId: optionalStringIdSchema,
         })
         .superRefine((value, ctx) => {
-          if (
-            value.templateId &&
-            !service.followUpTemplates.some((template) => template.id === value.templateId)
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["templateId"],
-              message: "Select a valid follow-up template.",
-            })
-          }
-
           if (
             value.assignedProfessionalId &&
             !service.professionals.some(
@@ -773,67 +715,12 @@ function CreateTransactionDialog({
             })
           }
         }),
-    [followUpAssigneeOptions, service.followUpTemplates, service.professionals],
+    [followUpAssigneeOptions, service.professionals],
   )
 
-  const paymentStepSchema = useMemo(
-    () =>
-      z
-        .object({
-          paymentMode: z.enum(["FULL", "PARTIAL", "LATER"]),
-          initialPaymentUsd: z.string(),
-          notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
-        })
-        .superRefine((value, ctx) => {
-          if (value.paymentMode === "PARTIAL" && !service.allowPartialPayments) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["paymentMode"],
-              message: "This service does not allow partial payments.",
-            })
-          }
-
-          if (value.paymentMode !== "PARTIAL") {
-            return
-          }
-
-          const initialPaymentCents = parseUsdToCents(value.initialPaymentUsd)
-
-          if (initialPaymentCents === null || initialPaymentCents <= 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Enter a valid partial payment amount in USD.",
-            })
-            return
-          }
-
-          if (initialPaymentCents > totalWithTaxCents) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment cannot be greater than total amount.",
-            })
-          }
-
-          if (
-            service.minimumPartialPaymentCents !== null &&
-            service.minimumPartialPaymentCents !== undefined &&
-            initialPaymentCents < service.minimumPartialPaymentCents
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment is below the minimum allowed for this service.",
-            })
-          }
-        }),
-    [
-      service.allowPartialPayments,
-      service.minimumPartialPaymentCents,
-      totalWithTaxCents,
-    ],
-  )
+  const paymentStepSchema = z.object({
+    notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
+  })
 
   const clearFieldError = (field: keyof TransactionFormErrors) => {
     setErrors((current) => {
@@ -881,8 +768,9 @@ function CreateTransactionDialog({
   }
 
   const validateFollowUpStep = () => {
+    const error = serviceWorkflowError(service)
+    if (error) { toast.error(error); return false }
     const result = followUpStepSchema.safeParse({
-      templateId,
       assignedProfessionalId,
       followUpAssignedToUserId,
     })
@@ -890,7 +778,6 @@ function CreateTransactionDialog({
     if (result.success) {
       setErrors((current) => ({
         ...current,
-        templateId: undefined,
         assignedProfessionalId: undefined,
         followUpAssignedToUserId: undefined,
       }))
@@ -898,7 +785,6 @@ function CreateTransactionDialog({
     }
 
     applySchemaErrors(result, [
-      "templateId",
       "assignedProfessionalId",
       "followUpAssignedToUserId",
     ])
@@ -906,24 +792,13 @@ function CreateTransactionDialog({
   }
 
   const validatePaymentStep = () => {
-    const result = paymentStepSchema.safeParse({
-      paymentMode,
-      initialPaymentUsd,
-      notes,
-    })
-
-    if (result.success) {
-      setErrors((current) => ({
-        ...current,
-        paymentMode: undefined,
-        initialPaymentUsd: undefined,
-        notes: undefined,
-      }))
-      return true
+    const result = paymentStepSchema.safeParse({ notes })
+    if (!result.success) {
+      applySchemaErrors(result, ["notes"])
+      return false
     }
-
-    applySchemaErrors(result, ["paymentMode", "initialPaymentUsd", "notes"])
-    return false
+    clearFieldError("notes")
+    return true
   }
 
   const resetForm = () => {
@@ -933,11 +808,11 @@ function CreateTransactionDialog({
     setContactResults([])
     setContactSearchQuery("")
     setDebouncedContactSearchQuery("")
-    setTemplateId("")
     setAssignedProfessionalId("")
     setFollowUpAssignedToUserId("")
-    setPaymentMode("FULL")
-    setInitialPaymentUsd("")
+    setEnrollmentBilling(null)
+    enrollmentRequestKey.current = ""
+    enrollmentSaving.current = false
     setNotes("")
     setErrors({})
   }
@@ -1040,11 +915,6 @@ function CreateTransactionDialog({
       return
     }
 
-    if (!validatePaymentStep()) {
-      toast.error("Review the payment details.")
-      return
-    }
-
     setStep(4)
   }
 
@@ -1077,15 +947,16 @@ function CreateTransactionDialog({
       return
     }
 
-    const totalPriceCents = totalWithTaxCents
+    if (!enrollmentBilling) {
+      toast.error("Review the payment preview before creating the service.")
+      return
+    }
+    if (enrollmentSaving.current) return
 
-    const initialPaymentCents =
-      paymentMode === "FULL"
-        ? totalPriceCents
-        : paymentMode === "LATER"
-          ? 0
-          : parseUsdToCents(initialPaymentUsd)
-
+    const workflowError = serviceWorkflowError(service)
+    if (workflowError) { toast.error(workflowError); return }
+    enrollmentSaving.current = true
+    enrollmentRequestKey.current ||= crypto.randomUUID()
     setIsSaving(true)
 
     try {
@@ -1094,10 +965,11 @@ function CreateTransactionDialog({
         {
           contactId: selectedContact.id,
           serviceId: service.id,
-          ...(templateId ? { followUpTemplateId: templateId } : {}),
+          workflowKind: "SERVICE_STEPS",
           ...(followUpAssignedToUserId ? { followUpAssignedToUserId } : {}),
           ...(assignedProfessionalId ? { assignedProfessionalId } : {}),
-          ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
+          ...enrollmentBilling,
+          requestKey: enrollmentRequestKey.current,
           ...(notes.trim() ? { notes: notes.trim() } : {}),
         },
       )
@@ -1125,6 +997,7 @@ function CreateTransactionDialog({
         toast.error("Could not create service transaction.")
       }
     } finally {
+      enrollmentSaving.current = false
       setIsSaving(false)
     }
   }
@@ -1141,7 +1014,7 @@ function CreateTransactionDialog({
         <DialogHeader className="shrink-0">
           <DialogTitle>Create service transaction</DialogTitle>
           <DialogDescription>
-            This transaction is already tied to {service.name}.
+            This transaction is already tied to {serviceOfferingLabel(service)}.
           </DialogDescription>
         </DialogHeader>
 
@@ -1149,7 +1022,7 @@ function CreateTransactionDialog({
           <div className="flex items-center gap-2">
             {[
               { value: 1, label: "Contact" },
-              { value: 2, label: "Follow up" },
+              { value: 2, label: "Workflow" },
               { value: 3, label: "Checklist" },
               { value: 4, label: "Payment" },
             ].map((item) => {
@@ -1188,7 +1061,7 @@ function CreateTransactionDialog({
             <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
               Selected service
             </p>
-            <p className="mt-1 text-sm font-medium text-slate-900">{service.name}</p>
+            <p className="mt-1 text-sm font-medium text-slate-900">{serviceOfferingLabel(service)}</p>
             <p className="mt-1 text-sm text-slate-600">
               {formatCurrency(service.basePriceCents, service.currency)}
             </p>
@@ -1280,55 +1153,7 @@ function CreateTransactionDialog({
 
           {step === 2 ? (
             <section className="space-y-3">
-              <div className="rounded-2xl border border-violet-100 bg-violet-50/70 p-3.5">
-                <p className="text-sm font-semibold text-violet-950">
-                  Set up the follow-up workflow for this service
-                </p>
-                <p className="mt-1 text-sm leading-5 text-violet-900/80">
-                  Choose the template, optionally assign a professional, and decide who should own the follow-up work.
-                </p>
-              </div>
-
-              <FlowStepCard
-                stepNumber="1"
-                title="Which follow-up template should start?"
-                description="Use the default published template or choose one of the published templates already configured for this service."
-              >
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-template">Follow-Up Template</Label>
-                  <Select
-                    value={templateId || "default"}
-                    onValueChange={(value) => {
-                      clearFieldError("templateId")
-                      setTemplateId(value === "default" ? "" : value)
-                    }}
-                  >
-                    <SelectTrigger id="service-transaction-template">
-                      <SelectValue placeholder="Use default template selection" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="default">Use default published template</SelectItem>
-                      {service.followUpTemplates.map((template) => (
-                        <SelectItem key={template.id} value={template.id}>
-                          {template.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {service.followUpTemplates.length === 0 ? (
-                    <p className="text-xs text-slate-500">
-                      No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                    </p>
-                  ) : (
-                    <p className="text-xs text-slate-500">
-                      Leaving this on default uses the service&apos;s standard published template.
-                    </p>
-                  )}
-                  {errors.templateId ? (
-                    <p className="text-xs text-rose-600">{errors.templateId}</p>
-                  ) : null}
-                </div>
-              </FlowStepCard>
+              <ServiceWorkflowTimeline steps={service.steps} serviceName={service.name} />
 
               <FlowStepCard
                 stepNumber="2"
@@ -1362,11 +1187,11 @@ function CreateTransactionDialog({
 
               <FlowStepCard
                 stepNumber="3"
-                title="Who should be in charge of the follow up?"
-                description="Optional. This user will be assigned to the follow-up steps created from the selected template."
+                title="Who should coordinate this enrollment?"
+                description="Optional. This person coordinates the enrollment; individual step owners can be assigned separately."
               >
                 <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-follow-up-assignee">Follow-Up Owner</Label>
+                  <Label htmlFor="service-transaction-follow-up-assignee">Enrollment coordinator</Label>
                   <FollowUpAssigneePicker
                     assignees={followUpAssigneeOptions}
                     value={followUpAssignedToUserId}
@@ -1380,7 +1205,7 @@ function CreateTransactionDialog({
                     <p className="text-xs text-slate-500">Loading tenant users...</p>
                   ) : (
                     <p className="text-xs text-slate-500">
-                      You can leave this unassigned and route follow-up later.
+                      You can leave this unassigned and choose a coordinator later.
                     </p>
                   )}
                   {errors.followUpAssignedToUserId ? (
@@ -1412,7 +1237,7 @@ function CreateTransactionDialog({
                 <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
                   <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
                     <p className="text-sm font-semibold text-slate-900">
-                      Checklist for {service.name}
+                      Checklist for {serviceOfferingLabel(service)}
                     </p>
                     <p className="mt-1 text-sm text-slate-600">
                       Required items should be completed for the contact before the service is considered finished.
@@ -1470,142 +1295,23 @@ function CreateTransactionDialog({
             </section>
           ) : null}
 
-          {step === 4 ? (
-            <section className="grid gap-4">
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-type">Payment Type</Label>
-                  <Select
-                    value={paymentMode}
-                    onValueChange={(value) => {
-                      clearFieldError("paymentMode")
-                      clearFieldError("initialPaymentUsd")
-                      setPaymentMode(value as "FULL" | "PARTIAL" | "LATER")
-                    }}
-                  >
-                    <SelectTrigger id="service-transaction-payment-type">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="FULL">Pay in Full</SelectItem>
-                      <SelectItem value="PARTIAL" disabled={!service.allowPartialPayments}>
-                        Partial Payment
-                      </SelectItem>
-                      <SelectItem value="LATER">Pay Later</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  {!service.allowPartialPayments ? (
-                    <p className="text-xs text-slate-500">
-                      This service supports full payment or pay later only.
-                    </p>
-                  ) : null}
-                  {errors.paymentMode ? (
-                    <p className="text-xs text-rose-600">{errors.paymentMode}</p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-cost">Service Cost</Label>
-                  <Input
-                    id="service-transaction-cost"
-                    readOnly
-                    value={centsToUsdInput(totalWithTaxCents)}
-                    className="bg-slate-50 text-slate-600"
-                  />
-                </div>
-              </div>
-
-              {assignedProfessionalId ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Assigned professional:{" "}
-                  <span className="font-medium text-slate-900">
-                    {getProfessionalLabel(
-                      service.professionals.find((item) => item.id === assignedProfessionalId)!,
-                    )}
-                  </span>
-                </div>
-              ) : null}
-
-              {followUpAssignedToUserId ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-9 w-9 shrink-0 border border-slate-200 bg-white shadow-sm">
-                      {selectedFollowUpAssignee?.image ? (
-                        <AvatarImage
-                          src={selectedFollowUpAssignee.image}
-                          alt={selectedFollowUpAssignee.label}
-                          className="object-cover"
-                        />
-                      ) : null}
-                      <AvatarFallback className="bg-blue-100 text-xs font-semibold text-blue-900">
-                        {getInitials(selectedFollowUpAssignee?.label ?? "Assigned user")}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium uppercase tracking-[0.14em] text-slate-500">
-                        Follow-up owner
-                      </p>
-                      <p className="truncate font-medium text-slate-900">
-                        {selectedFollowUpAssignee?.label ?? "Assigned user"}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 lg:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-payment-now">
-                    {paymentMode === "PARTIAL" ? "Partial Payment Amount" : "Payment Now"}
-                  </Label>
-                  <Input
-                    id="service-transaction-payment-now"
-                    value={
-                      paymentMode === "PARTIAL"
-                        ? initialPaymentUsd
-                        : paymentMode === "LATER"
-                          ? "0.00"
-                          : centsToUsdInput(totalWithTaxCents)
-                    }
-                    onChange={(event) => {
-                      clearFieldError("initialPaymentUsd")
-                      setInitialPaymentUsd(event.target.value)
-                    }}
-                    readOnly={paymentMode !== "PARTIAL"}
-                    inputMode="decimal"
-                    placeholder="0.00"
-                    className={paymentMode === "PARTIAL" ? undefined : "bg-slate-50 text-slate-600"}
-                  />
-                  {paymentMode === "PARTIAL" && service.minimumPartialPaymentCents ? (
-                    <p className="text-xs text-slate-500">
-                      Minimum partial payment:{" "}
-                      {formatCurrency(service.minimumPartialPaymentCents, service.currency)}
-                    </p>
-                  ) : null}
-                  {errors.initialPaymentUsd ? (
-                    <p className="text-xs text-rose-600">{errors.initialPaymentUsd}</p>
-                  ) : null}
-                </div>
-
-                <div className="grid gap-2">
-                  <Label htmlFor="service-transaction-notes">Notes</Label>
-                  <Textarea
-                    id="service-transaction-notes"
-                    rows={4}
-                    value={notes}
-                    onChange={(event) => {
-                      clearFieldError("notes")
-                      setNotes(event.target.value)
-                    }}
-                    placeholder="Add any notes about this service transaction"
-                  />
-                  {errors.notes ? (
-                    <p className="text-xs text-rose-600">{errors.notes}</p>
-                  ) : null}
-                </div>
-              </div>
-            </section>
-          ) : null}
+          <section hidden={step !== 4} className="grid gap-4">
+            {open ? <ServicePaymentFields key={service.id} tenantId={tenantId} serviceId={service.id} disabled={isSaving} onChange={setEnrollmentBilling} /> : null}
+            <div className="grid gap-2">
+              <Label htmlFor="service-transaction-notes">Service notes (optional)</Label>
+              <Textarea
+                id="service-transaction-notes"
+                rows={4}
+                value={notes}
+                onChange={(event) => {
+                  clearFieldError("notes")
+                  setNotes(event.target.value)
+                }}
+                placeholder="Add any notes about this service transaction"
+              />
+              {errors.notes ? <p className="text-xs text-rose-600">{errors.notes}</p> : null}
+            </div>
+          </section>
         </div>
 
         <DialogFooter className="shrink-0 gap-2 border-t border-slate-200 pt-4 sm:justify-between">
@@ -1674,10 +1380,6 @@ export function ServiceOverviewPanel({
   const internalProfessionalsCount = service.professionals.filter(
     (item) => item.kind === "INTERNAL_USER",
   ).length
-  const totalTemplateNodes = service.followUpTemplates.reduce(
-    (total, template) => total + template.flowNodeCount,
-    0,
-  )
   const customDateRange = useMemo<DateRange | undefined>(
     () => ({
       from: parseDateOnlyToLocalDate(customFrom),
@@ -1693,11 +1395,7 @@ export function ServiceOverviewPanel({
     serviceId: service.id,
   })
 
-  const paymentSummary = service.allowPartialPayments
-    ? service.installmentCount && service.installmentFrequency
-      ? `Minimum deposit ${service.minimumPartialPaymentCents !== null ? formatCurrency(service.minimumPartialPaymentCents, service.currency) : "required"} · ${service.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[service.installmentFrequency].toLowerCase()} installments`
-      : "Partial payments allowed"
-    : "Full payment only"
+  const paymentSummary = paymentOptionsLabel(service)
 
   useEffect(() => {
     if (rangePreset === "CUSTOM") {
@@ -1832,7 +1530,7 @@ export function ServiceOverviewPanel({
                   Service overview
                 </p>
                 <h1 className="max-w-3xl text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
-                  {service.name}
+                  {serviceOfferingLabel(service)}
                 </h1>
                 <p className="max-w-3xl text-sm leading-6 text-slate-600">
                   {service.description?.trim() || "Review pricing, delivery requirements, and recent service performance."}
@@ -2100,7 +1798,7 @@ export function ServiceOverviewPanel({
                 <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
                   <p className="text-sm font-medium text-slate-900">What to expect</p>
                   <p className="mt-2 text-sm leading-6 text-slate-600">
-                    This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.followUpTemplates.length} published follow-up template{service.followUpTemplates.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
+                    This service has {service.checklistItems.length} checklist item{service.checklistItems.length === 1 ? "" : "s"}, {service.steps.length} service step{service.steps.length === 1 ? "" : "s"}, and {service.professionals.length} available professional{service.professionals.length === 1 ? "" : "s"}.
                   </p>
                 </div>
               </div>
@@ -2128,13 +1826,13 @@ export function ServiceOverviewPanel({
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs font-medium text-slate-500">Payment mode</p>
+                      <p className="text-xs font-medium text-slate-500">Payment options</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
-                        {service.allowPartialPayments ? "Partial payments allowed" : "Full payment only"}
+                        {paymentOptionsLabel(service)}
                       </p>
                     </div>
                     <div>
-                      <p className="text-xs font-medium text-slate-500">Minimum deposit</p>
+                      <p className="text-xs font-medium text-slate-500">Suggested deposit</p>
                       <p className="mt-1 text-sm font-medium text-slate-900">
                         {service.minimumPartialPaymentCents !== null
                           ? formatCurrency(service.minimumPartialPaymentCents, service.currency)
@@ -2261,105 +1959,9 @@ export function ServiceOverviewPanel({
             </div>
             </section>
 
-            <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-4 py-4 sm:px-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="space-y-1">
-                  <h2 className="inline-flex items-center gap-2 text-xl font-semibold text-slate-950">
-                    <Route className="h-5 w-5 text-blue-700" />
-                    Follow-up templates
-                  </h2>
-                  <p className="text-sm text-slate-500">
-                    Published templates available for this service.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge className="border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-50">
-                    {service.followUpTemplates.length} templates
-                  </Badge>
-                  <Badge variant="secondary" className="border-slate-200 bg-slate-100 text-slate-700">
-                    {totalTemplateNodes} nodes
-                  </Badge>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 sm:p-5">
-              {service.followUpTemplates.length ? (
-                <>
-                  <div className="space-y-3 md:hidden">
-                    {service.followUpTemplates.map((template, index) => (
-                      <article key={template.id} className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4">
-                        <div className="flex items-start gap-3">
-                          <span className="inline-flex h-7 min-w-7 shrink-0 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                            {index + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-medium text-slate-950">{template.name}</p>
-                            <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
-                              <div>
-                                <p className="text-xs font-medium text-slate-500">Steps</p>
-                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowNodeCount}</p>
-                              </div>
-                              <div>
-                                <p className="text-xs font-medium text-slate-500">Connections</p>
-                                <p className="mt-1 text-sm font-semibold text-slate-900">{template.flowEdgeCount}</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                  <div className="hidden overflow-auto rounded-2xl border border-slate-200 md:block">
-                    <Table className="[&_td]:py-3 [&_th]:h-10">
-                    <TableHeader className="bg-slate-50/80">
-                      <TableRow>
-                        <TableHead className="min-w-14 text-xs">#</TableHead>
-                        <TableHead className="min-w-56 text-xs">Template</TableHead>
-                        <TableHead className="min-w-28 text-xs">Nodes</TableHead>
-                        <TableHead className="min-w-28 text-xs">Connections</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {service.followUpTemplates.map((template, index) => (
-                        <TableRow key={template.id} className="hover:bg-blue-50/40">
-                          <TableCell>
-                            <span className="inline-flex h-7 min-w-7 items-center justify-center rounded-full border border-blue-200 bg-blue-50 px-2 text-xs font-semibold text-blue-700">
-                              {index + 1}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <div className="space-y-0.5">
-                              <p className="font-medium text-slate-900">{template.name}</p>
-                              <p className="text-sm text-slate-500">Published follow-up path</p>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                              {template.flowNodeCount}
-                            </span>
-                          </TableCell>
-                          <TableCell>
-                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
-                              {template.flowEdgeCount}
-                            </span>
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                    </Table>
-                  </div>
-                </>
-              ) : (
-                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50/60 px-6 py-10 text-center">
-                  <p className="text-base font-medium text-slate-900">No follow-up templates available</p>
-                  <p className="mt-2 text-sm text-slate-500">
-                    This service does not currently expose any published follow-up templates.
-                  </p>
-                </div>
-              )}
-            </div>
+            <section className="flex flex-col gap-4 rounded-xl border bg-card p-5">
+              <h2 className="text-xl font-semibold">Steps and automations</h2>
+              <ServiceWorkflowSummary steps={service.steps} tenantSlug={tenantSlug} serviceId={service.id} />
             </section>
 
             <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">

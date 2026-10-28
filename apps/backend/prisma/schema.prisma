@@ -70,6 +70,7 @@ enum OtpPurpose {
 
 enum FilePurpose {
   AVATAR
+  AI_AVATAR
   GENERIC
 }
 
@@ -151,21 +152,7 @@ enum ContactServiceFollowUpStepStatus {
   POSTPONED
 }
 
-enum FollowUpRunStatus {
-  RUNNING
-  WAITING
-  AWAITING_STEP
-  COMPLETED
-  FAILED
-  NEEDS_REVIEW
-  CANCELED
-}
 
-enum FollowUpNodeExecutionStatus {
-  RUNNING
-  SUCCEEDED
-  FAILED
-}
 
 enum FollowUpStepResolutionSource {
   USER_COMPLETED
@@ -295,6 +282,12 @@ enum OpportunityResult {
 }
 
 enum AutomationTriggerType {
+  SERVICE_ENROLLED
+  SERVICE_STATUS_CHANGED
+  SERVICE_CHECKLIST_STATUS_CHANGED
+  SERVICE_PAYMENT_CHANGED
+  SERVICE_STEP_ENTERED
+  SERVICE_STEP_COMPLETED
   CONTACT_CREATED
   CONTACT_CHANGED
   CONTACT_TAG
@@ -347,6 +340,15 @@ enum AutomationChangeOperator {
 }
 
 enum AutomationActionType {
+  MOVE_SERVICE_STEP
+  COMPLETE_SERVICE_STEP
+  SKIP_SERVICE_STEP
+  SCHEDULE_SERVICE_STEP
+  SET_SERVICE_STEP_OWNER
+  SET_SERVICE_COORDINATOR
+  SET_SERVICE_PROFESSIONAL
+  SET_SERVICE_CHECKLIST_STATUS
+  SET_SERVICE_STATUS
   UPDATE_CONTACT_CUSTOM_FIELDS
   SET_CONTACT_CUSTOM_FIELD
   CLEAR_CONTACT_CUSTOM_FIELD
@@ -441,6 +443,12 @@ enum AutomationRunStatus {
 }
 
 enum AutomationNodeEventSource {
+  SERVICE_ENROLLED
+  SERVICE_STATUS_CHANGED
+  SERVICE_CHECKLIST_STATUS_CHANGED
+  SERVICE_PAYMENT_CHANGED
+  SERVICE_STEP_ENTERED
+  SERVICE_STEP_COMPLETED
   MANUAL_ENROLLMENT
   CONTACT_CREATED
   CONTACT_CHANGED
@@ -480,6 +488,7 @@ enum AutomationProcessContactStatus {
 }
 
 model User {
+  serviceStepAssignments ContactServiceStep[] @relation("ServiceStepOwner")
   id           String       @id @default(uuid())
   email        String       @unique
   name         String
@@ -508,8 +517,6 @@ model User {
   resolvedServiceFollowUps          ContactServiceFollowUpStep[]      @relation("ContactServiceFollowUpResolvedBy")
   coordinatedContactServices        ContactService[]                  @relation("ContactServiceFollowUpCoordinator")
   serviceFollowUpExecutionLogs      ServiceFollowUpExecutionLog[]     @relation("ServiceFollowUpExecutionLogActor")
-  publishedFollowUpVersions         ServiceFollowUpTemplateVersion[]  @relation("ServiceFollowUpVersionPublisher")
-  startedFollowUpRuns               ContactServiceFollowUpRun[]       @relation("FollowUpRunStarter")
   bookedAppointments                Appointment[]                     @relation("AppointmentBookedBy")
   assignedAppointments              Appointment[]                     @relation("AppointmentAssignedTo")
   appointmentAuditLogs              AppointmentAuditLog[]             @relation("AppointmentAuditActor")
@@ -544,6 +551,7 @@ model File {
   createdBy              User                           @relation(fields: [createdById], references: [id], onDelete: Cascade)
   noteAttachments        ContactNoteAttachment[]
   serviceNoteAttachments ContactServiceNoteAttachment[]
+  aiHelperAvatars        TenantAiSettings[] @relation("AiHelperAvatar")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -551,6 +559,7 @@ model File {
   @@index([tenantId])
   @@index([createdById])
   @@index([purpose])
+  @@unique([tenantId, id])
 }
 
 model TaskActivity {
@@ -633,9 +642,15 @@ model PasswordResetToken {
 }
 
 model Tenant {
+  aiSettings TenantAiSettings?
+  serviceActionResults ServiceAutomationActionResult[]
+  automationExecutionLeases AutomationExecutionLease[]
+  automationExecutionTenant AutomationExecutionTenant?
   id                                   String                         @id @default(uuid())
   name                                 String
   slug                                 String                         @unique
+  description                          String?
+  accountRevision                      Int                            @default(0)
   email                                String?
   phone                                String?
   addressLine1                         String?
@@ -679,9 +694,9 @@ model Tenant {
   taskActivities                    TaskActivity[]
   linkedEntities                    TenantLinkedEntity[]
   services                          Service[]
+  serviceAiFaqs                     ServiceAiFaq[]
+  serviceAiSources                  ServiceAiSource[]
   serviceChecklistItems             ServiceChecklistItem[]
-  serviceFollowUpTemplates          ServiceFollowUpTemplate[]
-  serviceFollowUpTemplateSteps      ServiceFollowUpTemplateStep[]
   serviceProfessionals              ServiceProfessional[]
   contactServices                   ContactService[]
   contactServiceChecklistItems      ContactServiceChecklistItem[]
@@ -690,9 +705,6 @@ model Tenant {
   contactServiceFollowUpSteps       ContactServiceFollowUpStep[]
   contactServiceNotes               ContactServiceNote[]
   serviceFollowUpExecutionLogs      ServiceFollowUpExecutionLog[]
-  serviceFollowUpTemplateVersions   ServiceFollowUpTemplateVersion[]
-  contactServiceFollowUpRuns        ContactServiceFollowUpRun[]
-  followUpNodeExecutions            ServiceFollowUpNodeExecution[]
   opportunityPipelines              OpportunityPipeline[]
   opportunityPipelineStages         OpportunityPipelineStage[]
   contactOpportunities              ContactOpportunity[]
@@ -723,9 +735,55 @@ model Tenant {
   automationBirthdayClaims          AutomationBirthdayClaim[]
   automationSideEffects             AutomationSideEffect[]
   contactImports                    ContactImport[]
+  aiInteractions                    AiInteraction[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+enum AiActivityChannel {
+  TEST
+  CONTACT_ASSISTANT
+}
+
+enum AiQuestionOutcome {
+  ANSWERED
+  NEEDS_REVIEW
+}
+
+// Metadata only: never store questions, answers, histories, or contact IDs here.
+model AiInteraction {
+  id               String            @id @default(uuid())
+  tenantId         String
+  actorId          String
+  channel          AiActivityChannel
+  conversationId   String            @db.Uuid
+  requestId        String            @db.Uuid
+  questionOutcome  AiQuestionOutcome?
+  qualificationRun Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, actorId, channel, requestId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, channel, createdAt])
+}
+
+model TenantAiSettings {
+  tenantId       String @id
+  name           String @default("AI Helper")
+  language       String @default("English")
+  tone           String @default("Professional")
+  instructions   String @default("")
+  revision       Int    @default(0)
+  avatarPresetId String @default("bot")
+  avatarFileId   String?
+  avatarRevision Int    @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  avatarFile File?  @relation("AiHelperAvatar", fields: [tenantId, avatarFileId], references: [tenantId, id], onDelete: NoAction, onUpdate: Cascade)
 }
 
 model TenantLinkedEntity {
@@ -746,9 +804,51 @@ model TenantLinkedEntity {
   @@index([tenantId, type, sortOrder])
 }
 
+enum ServiceKind {
+  GROUP
+  OFFERING
+}
+
+enum ServicePaymentType {
+  SINGLE_PAYMENT
+  INSTALLMENTS
+  FLEXIBLE
+}
+
+enum ServiceSectionMode {
+  INHERIT
+  CUSTOM
+}
+
+enum ServiceStepTimeUnit {
+  MINUTES
+  HOURS
+  DAYS
+}
+
+enum ServiceWorkflowKind {
+  LEGACY_TEMPLATE
+  SERVICE_STEPS
+  NONE
+}
+
+enum ServiceStepOccurrenceStatus {
+  ACTIVE
+  COMPLETED
+  SKIPPED
+  CANCELED
+}
+
 model Service {
+  groupAutomations Automation[] @relation("ServiceGroupAutomations")
   id                         String                @id @default(uuid())
   tenantId                   String
+  kind                       ServiceKind           @default(GROUP)
+  parentServiceId            String?
+  billingMode                ServiceSectionMode    @default(CUSTOM)
+  checklistMode              ServiceSectionMode    @default(CUSTOM)
+  professionalsMode          ServiceSectionMode    @default(CUSTOM)
+  stepsMode                  ServiceSectionMode    @default(CUSTOM)
   name                       String
   description                String?
   fitProfile                 Json?
@@ -759,14 +859,19 @@ model Service {
   minimumPartialPaymentCents Int?
   installmentCount           Int?
   installmentFrequency       InstallmentFrequency?
+  paymentSettings            Json?
   isActive                   Boolean               @default(true)
   sortOrder                  Int                   @default(0)
 
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parentService         Service?                      @relation("ServiceHierarchy", fields: [tenantId, parentServiceId], references: [tenantId, id], onDelete: Restrict, onUpdate: Cascade)
+  subServices           Service[]                     @relation("ServiceHierarchy")
+  aiFaqs                ServiceAiFaq[]
+  aiSources             ServiceAiSource[]
   checklistItems        ServiceChecklistItem[]
-  followUpTemplates     ServiceFollowUpTemplate[]
-  followUpTemplateSteps ServiceFollowUpTemplateStep[]
   professionals         ServiceProfessional[]
+  steps                 ServiceStep[]
+  stepAutomations       Automation[] @relation("ServiceOfferingAutomations")
   contactServices       ContactService[]
   appointments          Appointment[]
 
@@ -777,6 +882,131 @@ model Service {
   @@unique([tenantId, name])
   @@index([tenantId, sortOrder])
   @@index([tenantId, isActive, sortOrder])
+  @@index([tenantId, kind, parentServiceId, sortOrder])
+  @@index([tenantId, parentServiceId, sortOrder])
+}
+
+enum AiSourceKind {
+  FILE
+  LINK
+}
+
+enum AiSourceStatus {
+  UPLOADING
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+  OCR_REQUIRED
+  DELETING
+}
+
+model ServiceAiSource {
+  id             String         @id @default(uuid())
+  tenantId       String
+  serviceId      String
+  requestId      String
+  kind           AiSourceKind
+  label          String
+  url            String?
+  finalUrl       String?
+  filename       String?
+  contentType    String?
+  size           Int?
+  checksum       String?
+  storageKey     String?        @unique
+  uploadedAt     DateTime?
+  status         AiSourceStatus @default(QUEUED)
+  progress       Int            @default(0)
+  revision       Int            @default(1)
+  attemptCount   Int            @default(0)
+  availableAt    DateTime       @default(now())
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  characterCount Int            @default(0)
+  chunkCount     Int            @default(0)
+  deletedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service         @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+  chunks  AiSourceChunk[]
+
+  @@unique([tenantId, id])
+  @@unique([tenantId, requestId])
+  @@index([tenantId, serviceId, deletedAt, createdAt])
+  @@index([status, availableAt])
+}
+
+model AiSourceChunk {
+  id           String   @id @default(uuid())
+  tenantId     String
+  sourceId     String
+  ordinal      Int
+  page         Int?
+  content      String
+  searchText   String
+  searchVector Unsupported("tsvector")? @default(dbgenerated("''::tsvector"))
+
+  source ServiceAiSource @relation(fields: [tenantId, sourceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceId, ordinal])
+  @@index([searchVector], type: Gin)
+}
+
+// Deliberately survives tenant/service cascades so private objects are still removed.
+model AiSourceStorageCleanup {
+  id             String   @id @default(uuid())
+  tenantId       String
+  serviceId      String
+  sourceId       String
+  storageKey     String   @unique
+  availableAt    DateTime @default(now())
+  attemptCount   Int      @default(0)
+  leaseToken     String?
+  leaseExpiresAt DateTime?
+  createdAt      DateTime @default(now())
+
+  @@index([availableAt])
+}
+
+model ServiceAiFaq {
+  id          String   @id @default(uuid())
+  tenantId    String
+  serviceId   String
+  question    String
+  answer      String
+  exactAnswer Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, sortOrder, id])
+}
+
+model ServiceStep {
+  id                 String              @id @default(uuid())
+  tenantId           String
+  serviceId          String
+  title              String
+  instructions       String?
+  completionDuration Int                 @default(3)
+  completionUnit     ServiceStepTimeUnit @default(DAYS)
+  sortOrder          Int                 @default(0)
+  archivedAt         DateTime?
+  service            Service             @relation(fields: [tenantId, serviceId], references: [tenantId, id], onDelete: Cascade)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+
+  @@unique([tenantId, id])
+  @@index([tenantId, serviceId, archivedAt, sortOrder], map: "ServiceStep_configuration_idx")
+  automations Automation[]
 }
 
 model ServiceChecklistItem {
@@ -787,6 +1017,7 @@ model ServiceChecklistItem {
   description String?
   isRequired  Boolean @default(true)
   sortOrder   Int     @default(0)
+  archivedAt  DateTime?
 
   tenant                Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service               Service                       @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -797,88 +1028,11 @@ model ServiceChecklistItem {
 
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, serviceId, archivedAt, sortOrder])
 }
 
-model ServiceFollowUpTemplate {
-  id              String    @id @default(uuid())
-  tenantId        String
-  serviceId       String
-  name            String
-  sortOrder       Int       @default(0)
-  isPublished     Boolean   @default(false)
-  publishedAt     DateTime?
-  flowNodes       Json?
-  flowEdges       Json?
-  draftDefinition Json?
-  needsRepair     Boolean   @default(false)
-  activeVersionId String?   @unique
 
-  tenant          Tenant                           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service         Service                          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  steps           ServiceFollowUpTemplateStep[]
-  contactServices ContactService[]
-  executionLogs   ServiceFollowUpExecutionLog[]
-  tasks           Task[]
-  contactNotes    ContactNote[]
-  versions        ServiceFollowUpTemplateVersion[] @relation("FollowUpTemplateVersions")
-  activeVersion   ServiceFollowUpTemplateVersion?  @relation("ActiveFollowUpTemplateVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([tenantId, id])
-  @@index([tenantId, serviceId, sortOrder])
-}
-
-model ServiceFollowUpTemplateVersion {
-  id            String   @id @default(uuid())
-  tenantId      String
-  templateId    String
-  versionNumber Int
-  schemaVersion Int      @default(3)
-  checksum      String
-  definition    Json
-  publishedById String?
-  publishedAt   DateTime @default(now())
-
-  tenant          Tenant                        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        ServiceFollowUpTemplate       @relation("FollowUpTemplateVersions", fields: [templateId], references: [id], onDelete: Cascade)
-  activeFor       ServiceFollowUpTemplate?      @relation("ActiveFollowUpTemplateVersion")
-  publishedBy     User?                         @relation("ServiceFollowUpVersionPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
-  contactServices ContactService[]
-  runs            ContactServiceFollowUpRun[]
-  executionLogs   ServiceFollowUpExecutionLog[]
-  tasks           Task[]
-  contactNotes    ContactNote[]
-
-  @@unique([templateId, versionNumber])
-  @@unique([templateId, checksum])
-  @@index([tenantId, templateId, publishedAt])
-}
-
-model ServiceFollowUpTemplateStep {
-  id               String  @id @default(uuid())
-  tenantId         String
-  serviceId        String
-  templateId       String?
-  templateNodeId   String?
-  title            String
-  notesTemplate    String?
-  dueDaysFromStart Int     @default(0)
-  sortOrder        Int     @default(0)
-
-  tenant   Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  service  Service                  @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  template ServiceFollowUpTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([tenantId, id])
-  @@index([tenantId, serviceId, sortOrder])
-  @@index([tenantId, templateId, sortOrder])
-  @@index([tenantId, templateId, templateNodeId])
-}
 
 model ServiceProfessional {
   id                       String                  @id @default(uuid())
@@ -890,6 +1044,7 @@ model ServiceProfessional {
   externalContact          String?
   notes                    String?
   sortOrder                Int                     @default(0)
+  archivedAt               DateTime?
 
   tenant                  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   service                 Service          @relation(fields: [serviceId], references: [id], onDelete: Cascade)
@@ -901,10 +1056,14 @@ model ServiceProfessional {
 
   @@unique([tenantId, id])
   @@index([tenantId, serviceId, sortOrder])
+  @@index([tenantId, serviceId, archivedAt, sortOrder])
   @@index([tenantId, userId])
 }
 
 model ContactService {
+  // Frozen attribution and legacy runtime history; never executed.
+  // Frozen history only; never executed or returned as raw API configuration.
+  retiredWorkflowSnapshot Json?
   id                        String               @id @default(uuid())
   tenantId                  String
   contactId                 String
@@ -919,20 +1078,32 @@ model ContactService {
   completedAt               DateTime?
   canceledAt                DateTime?
   totalPriceCents           Int
+  // Transactionally maintained projection for payment-register filters.
+  paidCents                 Int                  @default(0)
+  billingSnapshot           Json?
+  configurationSnapshot     Json?
+  assignedProfessionalSnapshot Json?
+  configurationChanges ContactServiceConfigurationChange[]
+  automationEventRevision Int @default(0)
+  workflowKind              ServiceWorkflowKind @default(LEGACY_TEMPLATE)
   currency                  String               @default("USD")
   allowPartialPayments      Boolean              @default(false)
+  paymentType               ServicePaymentType?
+  paymentPlan               Json?
+  financialRevision         Int                  @default(0)
+  paymentDues               ContactServicePaymentDue[]
+  financialChanges          ContactServiceFinancialChange[]
   notes                     String?
 
   tenant                  Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact                 Contact                           @relation(fields: [contactId], references: [id], onDelete: Cascade)
   service                 Service                           @relation(fields: [serviceId], references: [id], onDelete: Cascade)
-  followUpTemplate        ServiceFollowUpTemplate?          @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
-  followUpTemplateVersion ServiceFollowUpTemplateVersion?   @relation(fields: [followUpTemplateVersionId], references: [id], onDelete: SetNull)
-  followUpRun             ContactServiceFollowUpRun?
   followUpCoordinator     User?                             @relation("ContactServiceFollowUpCoordinator", fields: [followUpCoordinatorUserId], references: [id], onDelete: SetNull)
   assignedProfessional    ServiceProfessional?              @relation("ContactServiceAssignedProfessional", fields: [assignedProfessionalId], references: [id], onDelete: SetNull)
   payments                ContactServicePayment[]
   followUpSteps           ContactServiceFollowUpStep[]
+  serviceSteps            ContactServiceStep[]
+  stepMovements ServiceStepMovement[]
   checklistItems          ContactServiceChecklistItem[]
   checklistActivities     ContactServiceChecklistActivity[]
   serviceNotes            ContactServiceNote[]
@@ -954,6 +1125,135 @@ model ContactService {
   @@index([tenantId, purchasedAt])
 }
 
+// Review receipts are scoped to one enrollment. Applied receipts also serve as immutable audit records.
+model ContactServiceConfigurationChange {
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  baselineDigest String
+  targetDigest String
+  preview Json
+  expiresAt DateTime
+  appliedAt DateTime?
+  appliedByUserId String?
+  appliedByName String?
+  createdAt DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade, map: "ContactServiceConfigurationChange_enrollment_fkey")
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, createdAt], map: "ContactServiceConfigurationChange_enrollment_idx")
+}
+
+model ContactServiceStep {
+  assignedToUserId String?
+  assignedTo User? @relation("ServiceStepOwner", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  id                 String              @id @default(uuid())
+  tenantId           String
+  contactServiceId   String
+  sourceStepId       String
+  title              String
+  instructions       String?
+  completionDuration Int
+  completionUnit     ServiceStepTimeUnit
+  sortOrder          Int
+  contactService     ContactService      @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+  occurrences        ServiceStepOccurrence[]
+  createdAt          DateTime            @default(now())
+
+  @@unique([tenantId, contactServiceId, id])
+  @@unique([tenantId, contactServiceId, sourceStepId])
+  @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, assignedToUserId], map: "ContactServiceStep_owner_idx")
+}
+
+enum ServiceStepProgressionStatus {
+  NONE
+  WAITING_AUTOMATION
+  PAUSED
+  SUPERSEDED
+  ADVANCED
+  FINISHED
+}
+
+model ServiceStepOccurrence {
+  id                 String                      @id @default(uuid())
+  tenantId           String
+  contactServiceId   String
+  stepId             String
+  entryKey           String
+  occurrenceNumber   Int
+  status             ServiceStepOccurrenceStatus @default(ACTIVE)
+  enteredAt          DateTime
+  dueAt              DateTime
+  defaultDueAt       DateTime
+  deadlineOverride   Json?
+  deadlineRevision   Int @default(0)
+  deadlineChanges    ServiceStepDeadlineChange[]
+  resolvedAt         DateTime?
+  resolutionReason   String?
+  supersededAt       DateTime?
+  enteredByUserId    String?
+  completedByUserId  String?
+  completionEventId  String? @unique
+  progressionStatus  ServiceStepProgressionStatus @default(NONE)
+  progressionMessage String?
+  advancedAt         DateTime?
+  step               ContactServiceStep @relation(fields: [tenantId, contactServiceId, stepId], references: [tenantId, contactServiceId, id], onDelete: Cascade)
+  createdAt          DateTime @default(now())
+
+  @@unique([tenantId, contactServiceId, id])
+  @@unique([tenantId, contactServiceId, entryKey])
+  @@unique([tenantId, stepId, occurrenceNumber])
+  @@index([tenantId, contactServiceId, status])
+  @@index([tenantId, status, dueAt])
+}
+
+model ServiceStepDeadlineChange {
+  automationSource Json?
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  occurrenceId String
+  requestId String
+  previousDueAt DateTime
+  dueAt DateTime
+  previousSchedule Json
+  schedule Json
+  previousRevision Int
+  revision Int
+  actorUserId String?
+  actorName String
+  createdAt DateTime @default(now())
+  occurrence ServiceStepOccurrence @relation(fields: [tenantId, contactServiceId, occurrenceId], references: [tenantId, contactServiceId, id], onDelete: Cascade, map: "ServiceStepDeadlineChange_occurrence_fkey")
+
+  @@unique([tenantId, occurrenceId, requestId])
+  @@index([tenantId, occurrenceId, revision])
+}
+
+model ServiceStepMovement {
+  automationSource Json?
+  id String @id @default(uuid())
+  tenantId String
+  contactServiceId String
+  requestId String
+  kind String
+  fromOccurrenceId String
+  fromStepId String
+  fromStepTitle String
+  toOccurrenceId String?
+  toStepId String?
+  toStepTitle String?
+  skippedStepIds String[] @default([])
+  reason String
+  actorUserId String?
+  actorName String
+  createdAt DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, contactServiceId, requestId])
+  @@index([tenantId, contactServiceId, createdAt])
+}
+
 model ContactServiceChecklistItem {
   id               String                        @id @default(uuid())
   tenantId         String
@@ -961,6 +1261,10 @@ model ContactServiceChecklistItem {
   checklistItemId  String
   status           ContactServiceChecklistStatus @default(NOT_RECEIVED)
   completedAt      DateTime?
+  labelSnapshot       String?
+  descriptionSnapshot String?
+  isRequiredSnapshot  Boolean?
+  sortOrderSnapshot   Int?
 
   tenant              Tenant                            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService      ContactService                    @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -1009,6 +1313,10 @@ model ContactServicePayment {
   paymentMethod    String?
   note             String?
   recordedById     String?
+  voidedAt         DateTime?
+  voidedById       String?
+  voidReason       String?
+  replacesPaymentId String?
 
   tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
@@ -1019,6 +1327,46 @@ model ContactServicePayment {
 
   @@unique([tenantId, id])
   @@index([tenantId, contactServiceId, paidAt])
+  @@index([tenantId, contactServiceId, voidedAt])
+}
+
+// Current obligations. Previous schedules are preserved in immutable financial changes.
+model ContactServicePaymentDue {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  label            String
+  amountCents      Int
+  paidCents        Int      @default(0)
+  remainingCents   Int
+  dueDate          DateTime? @db.Date
+  sortOrder        Int
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, contactServiceId, sortOrder])
+  @@index([tenantId, dueDate, remainingCents])
+}
+
+model ContactServiceFinancialChange {
+  id               String   @id @default(uuid())
+  tenantId         String
+  contactServiceId String
+  requestKey       String
+  requestHash      String
+  kind             String
+  revision         Int
+  actorUserId      String
+  reason           String?
+  previous         Json?
+  next             Json?
+  result           Json
+  createdAt        DateTime @default(now())
+  contactService ContactService @relation(fields: [tenantId, contactServiceId], references: [tenantId, id], onDelete: Cascade)
+
+  @@unique([tenantId, requestKey])
+  @@unique([tenantId, contactServiceId, revision], map: "CSFinancialChange_account_revision_key")
+  @@index([tenantId, contactServiceId, createdAt], map: "CSFinancialChange_account_created_idx")
 }
 
 model ContactServiceFollowUpStep {
@@ -1045,7 +1393,6 @@ model ContactServiceFollowUpStep {
 
   tenant         Tenant                     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contactService ContactService             @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
-  run            ContactServiceFollowUpRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
   assignedTo     User?                      @relation("ContactServiceFollowUpAssignedUser", fields: [assignedToUserId], references: [id], onDelete: SetNull)
   resolvedBy     User?                      @relation("ContactServiceFollowUpResolvedBy", fields: [resolvedByUserId], references: [id], onDelete: SetNull)
   contactNotes   ContactNote[]
@@ -1064,64 +1411,7 @@ model ContactServiceFollowUpStep {
   @@index([tenantId, status, dueAt, overdueNotifiedDueAt])
 }
 
-model ContactServiceFollowUpRun {
-  id                String            @id @default(uuid())
-  tenantId          String
-  contactServiceId  String            @unique
-  templateVersionId String?
-  startedByUserId   String?
-  status            FollowUpRunStatus @default(RUNNING)
-  cursorNodeId      String?
-  activeStepId      String?
-  resumeAt          DateTime?
-  waitingNodeId     String?
-  variables         Json?
-  branchDecisions   Json?
-  leaseToken        String?
-  leaseExpiresAt    DateTime?
-  failureNodeId     String?
-  failureCode       String?
-  failureMessage    String?
-  failedAt          DateTime?
-  completedAt       DateTime?
 
-  tenant          Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  contactService  ContactService                  @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
-  templateVersion ServiceFollowUpTemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: Restrict)
-  startedBy       User?                           @relation("FollowUpRunStarter", fields: [startedByUserId], references: [id], onDelete: SetNull)
-  steps           ContactServiceFollowUpStep[]
-  nodeExecutions  ServiceFollowUpNodeExecution[]
-  executionLogs   ServiceFollowUpExecutionLog[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([tenantId, id])
-  @@index([tenantId, status, resumeAt])
-  @@index([tenantId, startedByUserId])
-  @@index([status, resumeAt, leaseExpiresAt])
-}
-
-model ServiceFollowUpNodeExecution {
-  id           String                      @id @default(uuid())
-  tenantId     String
-  runId        String
-  nodeId       String
-  status       FollowUpNodeExecutionStatus @default(RUNNING)
-  attemptCount Int                         @default(1)
-  input        Json?
-  output       Json?
-  errorCode    String?
-  errorMessage String?
-  startedAt    DateTime                    @default(now())
-  completedAt  DateTime?
-
-  tenant Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  run    ContactServiceFollowUpRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-
-  @@unique([runId, nodeId])
-  @@index([tenantId, status, startedAt])
-}
 
 model ContactServiceNote {
   id               String @id @default(uuid())
@@ -1178,9 +1468,6 @@ model ServiceFollowUpExecutionLog {
   payload           Json?
 
   tenant          Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  template        ServiceFollowUpTemplate?        @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  templateVersion ServiceFollowUpTemplateVersion? @relation(fields: [templateVersionId], references: [id], onDelete: SetNull)
-  run             ContactServiceFollowUpRun?      @relation(fields: [runId], references: [id], onDelete: SetNull)
   contactService  ContactService                  @relation(fields: [contactServiceId], references: [id], onDelete: Cascade)
   contact         Contact                         @relation(fields: [contactId], references: [id], onDelete: Cascade)
   actor           User?                           @relation("ServiceFollowUpExecutionLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -1512,6 +1799,13 @@ model Automation {
   tenantId      String
   name          String
   isEnabled     Boolean               @default(false)
+  serviceStepId String?
+  serviceGroupId String?
+  serviceGroup Service? @relation("ServiceGroupAutomations", fields: [tenantId, serviceGroupId], references: [tenantId, id], onDelete: Restrict)
+  serviceTriggerConfig Json?
+  serviceOfferingId String?
+  serviceOffering Service? @relation("ServiceOfferingAutomations", fields: [tenantId, serviceOfferingId], references: [tenantId, id], onDelete: Restrict)
+  serviceStep ServiceStep? @relation(fields: [tenantId, serviceStepId], references: [tenantId, id], onDelete: Cascade)
   triggerType   AutomationTriggerType
   birthdayLocalTime String?
   appointmentTargetStatus AppointmentStatus?
@@ -1547,6 +1841,8 @@ model Automation {
   @@index([tenantId, targetStageId])
   @@index([tenantId, targetResult])
   @@index([tenantId, folderId, librarySortOrder])
+  @@index([tenantId, serviceGroupId, triggerType, serviceOfferingId], map: "Automation_service_group_trigger_idx")
+  @@index([tenantId, serviceStepId, triggerType, serviceOfferingId], map: "Automation_tenantId_serviceStepId_triggerType_serviceOffering_i")
 }
 
 model AutomationContactChangeRule {
@@ -1600,6 +1896,7 @@ model AutomationCondition {
 }
 
 model AutomationAction {
+  serviceConfig Json?
   id                         String               @id @default(uuid())
   tenantId                   String
   automationId               String
@@ -1654,6 +1951,7 @@ model AutomationExecution {
   triggerType    AutomationTriggerType
   status         AutomationExecutionStatus
   opportunityId  String?
+  serviceContext Json?
   contactId      String?
   sourceStageId  String?
   targetStageId  String?
@@ -1689,6 +1987,7 @@ model AutomationNodeExecution {
   actorUserId    String?
   processId      String?
   opportunityId  String?
+  serviceContext Json?
   attemptId      String
   eventSource    AutomationNodeEventSource
   nodeKind       AutomationNodeKind
@@ -1718,6 +2017,8 @@ model AutomationNodeExecution {
 }
 
 model AutomationRun {
+  availableAt DateTime @default(now())
+  retryCount Int @default(0)
   id                     String                    @id @default(uuid())
   tenantId               String
   automationId           String?
@@ -1726,6 +2027,7 @@ model AutomationRun {
   contactName            String
   actorUserId            String?
   opportunityId          String?
+  serviceContext Json?
   attemptId              String
   dispatchId             String?                   @unique
   causationKey           String?                   @unique
@@ -1772,6 +2074,7 @@ model AutomationRun {
   @@index([tenantId, automationId, status, waitingNodeKey, resumeAt], map: "AutomationRun_wait_monitoring_idx")
   @@index([tenantId, contactId, createdAt])
   @@index([status, resumeAt, leaseExpiresAt])
+  @@index([status, availableAt, updatedAt], map: "AutomationRun_available_claim_idx")
   @@index([status, createdAt, leaseExpiresAt], map: "AutomationRun_queue_claim_idx")
 }
 
@@ -1781,6 +2084,8 @@ model AutomationEvent {
   contactId             String?
   contactName           String
   opportunityId         String?
+  serviceContext Json?
+  serviceEventSnapshot Json?
   opportunitySnapshotId String?
   taskId                String?
   taskSnapshot          Json?
@@ -2017,6 +2322,9 @@ model AutomationProcessContact {
 }
 
 model Task {
+  // Frozen attribution and legacy runtime history; never executed.
+  // Frozen history only; never executed or returned as raw API configuration.
+  retiredWorkflowSnapshot Json?
   id                           String                @id @default(uuid())
   tenantId                     String
   contactId                    String?
@@ -2039,8 +2347,6 @@ model Task {
   tenant                     Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact                    Contact?                        @relation(fields: [contactId], references: [id], onDelete: SetNull)
   contactService             ContactService?                 @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
-  followUpTemplate           ServiceFollowUpTemplate?        @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
-  followUpTemplateVersion    ServiceFollowUpTemplateVersion? @relation(fields: [followUpTemplateVersionId], references: [id], onDelete: SetNull)
   contactServiceFollowUpStep ContactServiceFollowUpStep?     @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
   statusConfig               TaskStatusConfig?               @relation(fields: [tenantId, statusConfigId], references: [tenantId, id])
   assignedToMembership       Membership?                     @relation("TaskAssignedToMembership", fields: [tenantId, assignedToUserId], references: [tenantId, userId])
@@ -2467,6 +2773,9 @@ model ContactRelationship {
 }
 
 model ContactNote {
+  // Frozen attribution and legacy runtime history; never executed.
+  // Frozen history only; never executed or returned as raw API configuration.
+  retiredWorkflowSnapshot Json?
   id                           String  @id @default(uuid())
   tenantId                     String
   contactId                    String
@@ -2483,8 +2792,6 @@ model ContactNote {
   tenant                     Tenant                          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   contact                    Contact                         @relation(fields: [contactId], references: [id], onDelete: Cascade)
   contactService             ContactService?                 @relation(fields: [contactServiceId], references: [id], onDelete: SetNull)
-  followUpTemplate           ServiceFollowUpTemplate?        @relation(fields: [followUpTemplateId], references: [id], onDelete: SetNull)
-  followUpTemplateVersion    ServiceFollowUpTemplateVersion? @relation(fields: [followUpTemplateVersionId], references: [id], onDelete: SetNull)
   contactServiceFollowUpStep ContactServiceFollowUpStep?     @relation(fields: [contactServiceFollowUpStepId], references: [id], onDelete: SetNull)
   createdBy                  User?                           @relation(fields: [createdById], references: [id], onDelete: SetNull)
   automation                 Automation?                     @relation(fields: [automationId], references: [id], onDelete: SetNull)
@@ -2518,4 +2825,39 @@ model ContactNoteAttachment {
   @@unique([tenantId, noteId, fileId])
   @@index([tenantId, noteId])
   @@index([tenantId, fileId])
+}
+
+
+model ServiceAutomationActionResult {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id String @id @default(uuid())
+  tenantId String
+  runId String
+  nodeKey String
+  contactServiceId String
+  occurrenceId String?
+  result Json
+  createdAt DateTime @default(now())
+  @@unique([tenantId, runId, nodeKey])
+  @@index([tenantId, contactServiceId, createdAt], map: "ServiceActionResult_enrollment_created_idx")
+}
+
+model AutomationExecutionLease {
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  kind String
+  jobId String
+  tenantId String
+  scopeKey String
+  leaseToken String
+  expiresAt DateTime
+  @@id([kind, jobId])
+  @@unique([scopeKey])
+  @@index([expiresAt])
+  @@index([tenantId, expiresAt])
+}
+
+model AutomationExecutionTenant {
+  tenantId String @id
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  lastAdmittedAt DateTime
 }

@@ -1,5 +1,12 @@
 "use client"
 
+import { RetiredServiceWorkflowNotice, type RetiredServiceWorkflow } from "@/components/retired-service-workflow-notice"
+
+import Link from "next/link"
+import { enrolledServiceStepLabel, serviceOfferingLabel } from "@/lib/service-hierarchy"
+import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
+import type { EnrolledServiceStep } from "../../../services/enrollments/[contactServiceId]/_components/service-step-snapshot"
+
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { isAxiosError } from "axios"
 import { ChevronDown, ListTodo, Loader2, NotebookPen, Plus } from "lucide-react"
@@ -57,26 +64,26 @@ type FollowUpStep = {
   availableAt: string | null
   dueAt: string | null
   effectiveDueAt?: string | null
-  effectiveDueSource?: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
+  effectiveDueSource?: "STEP_DUE" | "STEP_AVAILABLE" | null
   completedAt: string | null
   resolutionSource?: "USER_COMPLETED" | "USER_SKIPPED" | "CONDITION_SKIPPED" | "FLOW_SKIPPED" | null
   resolutionReason?: string | null
   note?: string | null
   sortOrder: number
   canCompleteNow?: boolean
-  completionRequirement?: {
-    type: "NEXT_FOLLOW_UP_AT"
-    actionId: string
-    prompt: string
-    timezone?: string
-  } | null
 }
 
 type ContactServiceItem = {
+  retiredWorkflow?: RetiredServiceWorkflow | null
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  stepMovements?: Array<{ skippedStepIds: string[]; createdAt: string }>
+  serviceSteps?: EnrolledServiceStep[]
+  stepProgress?: { total: number; completed: number; percentage: number } | null
   id: string
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   followUpTemplate: {
     id: string
@@ -85,13 +92,8 @@ type ContactServiceItem = {
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
-  } | null
-  followUpRun?: {
-    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
-    resumeAt: string | null
-    canContinueNow: boolean
   } | null
   followUpSteps: FollowUpStep[]
 }
@@ -120,6 +122,7 @@ type ServiceFollowUpView = {
 }
 
 type ContactFollowUpsPanelProps = {
+  tenantSlug: string
   tenantId: string
   contactId: string
   tenantTimezone?: string | null
@@ -186,13 +189,7 @@ const getStepTimeMeta = (
     }
   }
 
-  if (step.effectiveDueSource === "USER_SCHEDULED_WAIT") {
-    return {
-      label: "Scheduled",
-      helper: `Scheduled for ${formatDateTimeForDisplay(effectiveDueAt, tenantTimezone)}`,
-      badgeClassName: "bg-blue-100 text-blue-800 hover:bg-blue-100",
-    }
-  }
+
 
   const dueDate = new Date(effectiveDueAt)
   const diffMs = dueDate.getTime() - Date.now()
@@ -222,6 +219,7 @@ const getStepTimeMeta = (
 }
 
 export function ContactFollowUpsPanel({
+  tenantSlug,
   tenantId,
   contactId,
   tenantTimezone,
@@ -246,7 +244,6 @@ export function ContactFollowUpsPanel({
   const [stepStatusValue, setStepStatusValue] = useState<FollowUpStep["status"]>("PENDING")
   const [stepStatusNote, setStepStatusNote] = useState("")
   const [stepPostponeInput, setStepPostponeInput] = useState<DateTimeDraft>({ date: "", time: "" })
-  const [stepNextFollowUpInput, setStepNextFollowUpInput] = useState<DateTimeDraft>({ date: "", time: "" })
   const [isSavingStepStatus, setIsSavingStepStatus] = useState(false)
   const [stepNoteTitle, setStepNoteTitle] = useState("")
   const [stepNoteBody, setStepNoteBody] = useState("")
@@ -280,7 +277,7 @@ export function ContactFollowUpsPanel({
   }, [loadData])
 
   const servicesView = useMemo<ServiceFollowUpView[]>(() => {
-    return services.map((service) => {
+    return services.filter(service => service.workflowKind !== "SERVICE_STEPS").map((service) => {
       const steps = (service.followUpSteps ?? [])
         .map((step) => ({
           ...step,
@@ -348,7 +345,6 @@ export function ContactFollowUpsPanel({
     nextStatus: FollowUpStep["status"],
     note?: string,
     postponeTo?: string,
-    nextFollowUpAt?: string,
   ) => {
     if (!nextStatus) return
     setMutatingStepId(step.id)
@@ -359,7 +355,6 @@ export function ContactFollowUpsPanel({
           status: nextStatus,
           ...(note?.trim() ? { note: note.trim() } : {}),
           ...(postponeTo ? { postponeTo, cascadeFutureSteps: true } : {}),
-          ...(nextFollowUpAt ? { nextFollowUpAt } : {}),
         },
       )
       toast.success(nextStatus === "COMPLETED" ? "Step marked as completed." : "Step status updated.")
@@ -382,7 +377,7 @@ export function ContactFollowUpsPanel({
     setStepStatusValue("COMPLETED")
     setStepStatusNote("")
     setStepPostponeInput(formatUtcIsoToDateTimeDraft(step.dueAt, tenantTimezone))
-    setStepNextFollowUpInput({ date: "", time: "" })
+
     setIsStepStatusDialogOpen(true)
   }
 
@@ -393,29 +388,8 @@ export function ContactFollowUpsPanel({
     }
     if (step.status !== "PENDING" || !step.canCompleteNow) return
 
-    const service = services.find((candidate) => candidate.id === step.contactServiceId)
     setMutatingStepId(step.id)
-    try {
-      if (service?.followUpRun) {
-        const { data } = await api.post(
-          `/api/services/${tenantId}/contact-services/${step.contactServiceId}/follow-up-run/continue-now`,
-        )
-        const activeStepId = data?.result?.activeStepId
-        await loadData()
-        router.refresh()
-        if (data?.result?.status === "FAILED") {
-          toast.error("The follow-up could not continue because an automation action failed.")
-          return
-        }
-        if (data?.result?.status === "WAITING") {
-          toast.success("The follow-up continued to its next scheduled wait.")
-          return
-        }
-        if (activeStepId !== step.id) {
-          toast.success("The follow-up continued and selected the next applicable step.")
-          return
-        }
-      } else {
+    try {{
         await api.patch(
           `/api/services/${tenantId}/contact-services/${step.contactServiceId}/follow-up-steps/${step.id}`,
           { status: "ACTIVE" },
@@ -469,37 +443,19 @@ export function ContactFollowUpsPanel({
     const postponeToIso = stepStatusValue !== "POSTPONED" || isDateTimeDraftEmpty(stepPostponeInput)
       ? undefined
       : dateTimeDraftToUtcIso(stepPostponeInput, tenantTimezone) ?? undefined
-    const needsNextFollowUp =
-      stepStatusValue === "COMPLETED" &&
-      activeStepContext.completionRequirement?.type === "NEXT_FOLLOW_UP_AT"
-    if (
-      needsNextFollowUp &&
-      (!isDateTimeDraftComplete(stepNextFollowUpInput) || isDateTimeDraftEmpty(stepNextFollowUpInput))
-    ) {
-      toast.error("Next follow-up date and time are required.")
-      return
-    }
-    const nextFollowUpAt = needsNextFollowUp
-      ? dateTimeDraftToUtcIso(stepNextFollowUpInput, tenantTimezone)
-      : undefined
-    if (needsNextFollowUp && (!nextFollowUpAt || new Date(nextFollowUpAt).getTime() <= Date.now())) {
-      toast.error("Select a future next follow-up date and time.")
-      return
-    }
     setIsSavingStepStatus(true)
     await updateStepStatus(
       activeStepContext,
       stepStatusValue,
       stepStatusNote,
       postponeToIso,
-      nextFollowUpAt ?? undefined,
     )
     setIsSavingStepStatus(false)
     setIsStepStatusDialogOpen(false)
     setActiveStepContext(null)
     setStepStatusNote("")
     setStepPostponeInput({ date: "", time: "" })
-    setStepNextFollowUpInput({ date: "", time: "" })
+
   }
 
   const openStepNoteDialog = (step: FlattenedStep) => {
@@ -591,6 +547,7 @@ export function ContactFollowUpsPanel({
           </div>
           <Button
             type="button"
+            disabled={!services.some(service => service.workflowKind !== "SERVICE_STEPS")}
             onClick={() => setIsCreateOpen(true)}
             className="cursor-pointer bg-blue-950 text-white hover:bg-blue-950/90 md:self-center"
           >
@@ -599,6 +556,11 @@ export function ContactFollowUpsPanel({
           </Button>
         </div>
       </div>
+
+      {services.filter(service => service.workflowKind === "SERVICE_STEPS").map(service => <section key={service.id} className="flex flex-col gap-4 rounded-xl border bg-card p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">{serviceOfferingLabel(service.service)}</h2><p className="text-sm text-muted-foreground">{service.stepProgress?.completed ?? 0} of {service.stepProgress?.total ?? service.serviceSteps?.length ?? 0} steps finished</p></div><Button asChild variant="outline"><Link href={getServiceEnrollmentFollowUpHref({ tenantSlug, contactServiceId: service.id })}>Open steps</Link></Button></div>
+        <ol className="flex flex-col gap-2">{service.serviceSteps?.map((step, index) => { return <li key={step.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3"><span>{index + 1}. {step.title}</span><Badge variant="secondary">{enrolledServiceStepLabel(step, service.stepMovements ?? [])}</Badge></li> })}</ol>
+      </section>)}
 
       {isLoading ? (
         <div className="rounded-[20px] border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
@@ -609,11 +571,12 @@ export function ContactFollowUpsPanel({
           <div className="space-y-4">
           {servicesView.map((service) => (
             <section key={service.contactServiceId} className="rounded-[20px] border border-slate-200 bg-white p-4">
+              <RetiredServiceWorkflowNotice workflow={services.find(item => item.id === service.contactServiceId)?.retiredWorkflow} timezone={tenantTimezone} />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="space-y-1">
                   <h3 className="text-base font-semibold text-slate-900">{service.serviceName}</h3>
                   <p className="text-xs font-medium text-slate-600">
-                    Template: {service.templateName ?? "No template selected"}
+                    Saved workflow: {service.templateName ?? "Manual follow-up"}
                   </p>
                   <p className="text-xs text-slate-500">
                     {service.completedCount} of {service.totalCount} steps completed
@@ -832,7 +795,7 @@ export function ContactFollowUpsPanel({
           ))}
           </div>
         </TooltipProvider>
-      ) : (
+      ) : services.some(service => service.workflowKind === "SERVICE_STEPS") ? null : (
         <div className="rounded-[20px] border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
           No follow-up services enrolled yet.
         </div>
@@ -852,7 +815,7 @@ export function ContactFollowUpsPanel({
                   <SelectValue placeholder="Select enrolled service" />
                 </SelectTrigger>
                 <SelectContent>
-                  {services.map((service) => (
+                  {services.filter(service => service.workflowKind !== "SERVICE_STEPS").map((service) => (
                     <SelectItem key={service.id} value={service.id} className="cursor-pointer">
                       {service.service.name}
                     </SelectItem>
@@ -869,7 +832,7 @@ export function ContactFollowUpsPanel({
               <Input type="datetime-local" value={createDueAt} onChange={(event) => setCreateDueAt(event.target.value)} />
             </div>
             <div className="grid gap-2">
-              <Label>Notes template</Label>
+              <Label>Step instructions</Label>
               <Textarea value={createNotes} onChange={(event) => setCreateNotes(event.target.value)} rows={3} />
             </div>
           </div>
@@ -892,7 +855,7 @@ export function ContactFollowUpsPanel({
             {activeStepContext ? (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                 <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
-                <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
+                <p><span className="font-medium text-slate-900">Saved workflow:</span> {activeStepContext.templateName ?? "Manual follow-up"}</p>
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
               </div>
             ) : null}
@@ -914,7 +877,7 @@ export function ContactFollowUpsPanel({
                     setStepPostponeInput({ date: "", time: "" })
                   }
                   if (nextValue !== "COMPLETED") {
-                    setStepNextFollowUpInput({ date: "", time: "" })
+
                   }
                 }}
               >
@@ -950,20 +913,7 @@ export function ContactFollowUpsPanel({
                 </p>
               </div>
             ) : null}
-            {stepStatusValue === "COMPLETED" &&
-            activeStepContext?.completionRequirement?.type === "NEXT_FOLLOW_UP_AT" ? (
-              <div className="grid gap-2 rounded-xl border border-blue-200 bg-blue-50/60 p-3">
-                <Label>{activeStepContext.completionRequirement.prompt}</Label>
-                <DateTimeInput
-                  value={stepNextFollowUpInput}
-                  onValueChange={setStepNextFollowUpInput}
-                  disabledDate={isBeforeToday}
-                />
-                <p className="text-xs text-slate-600">
-                  The workflow will pause and activate the next selected step at this time.
-                </p>
-              </div>
-            ) : null}
+
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setIsStepStatusDialogOpen(false)} disabled={isSavingStepStatus} className="cursor-pointer border-slate-200 text-slate-700 hover:bg-slate-50">
@@ -988,7 +938,7 @@ export function ContactFollowUpsPanel({
             <div className="space-y-4 py-1">
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
                 <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
-                <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
+                <p><span className="font-medium text-slate-900">Saved workflow:</span> {activeStepContext.templateName ?? "Manual follow-up"}</p>
                 <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
@@ -1040,7 +990,7 @@ export function ContactFollowUpsPanel({
               {activeStepContext ? (
                 <>
                   <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
-                  <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
+                  <p><span className="font-medium text-slate-900">Saved workflow:</span> {activeStepContext.templateName ?? "Manual follow-up"}</p>
                   <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
                 </>
               ) : null}
@@ -1078,7 +1028,7 @@ export function ContactFollowUpsPanel({
               {activeStepContext ? (
                 <>
                   <p><span className="font-medium text-slate-900">Service:</span> {activeStepContext.serviceName}</p>
-                  <p><span className="font-medium text-slate-900">Template:</span> {activeStepContext.templateName ?? "No template selected"}</p>
+                  <p><span className="font-medium text-slate-900">Saved workflow:</span> {activeStepContext.templateName ?? "Manual follow-up"}</p>
                   <p><span className="font-medium text-slate-900">Step:</span> {activeStepContext.title}</p>
                 </>
               ) : null}

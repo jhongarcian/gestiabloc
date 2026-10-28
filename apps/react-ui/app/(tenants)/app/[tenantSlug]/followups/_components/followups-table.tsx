@@ -1,4 +1,7 @@
 "use client"
+import { ServiceScopeFields } from "@/components/service-scope-fields"
+import { type ServiceOfferingOption } from "@/lib/service-hierarchy"
+
 
 import { isAxiosError } from "axios"
 import {
@@ -16,7 +19,7 @@ import {
   Search,
 } from "lucide-react"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { startTransition, useCallback, useEffect, useMemo, useState } from "react"
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
@@ -80,6 +83,7 @@ import { formatDateTimeForDisplay } from "@/lib/date-time"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
+import { FOLLOW_UP_QUEUE_OPTIONS, sanitizeFollowUpQueue, followUpTimeRemaining, type FollowUpQueueState, type FollowUpTiming } from "@/lib/follow-up-queue"
 
 type FollowUpsTableProps = {
   tenantSlug: string
@@ -88,9 +92,15 @@ type FollowUpsTableProps = {
 }
 
 type CurrentStepStatus = "PENDING" | "ACTIVE" | "COMPLETED" | "SKIPPED" | "POSTPONED"
-type FollowUpSort = "UPDATED_DESC" | "STARTED_DESC" | "CONTACT_ASC" | "SERVICE_ASC"
+type FollowUpSort = "URGENCY" | "UPDATED_DESC" | "STARTED_DESC" | "CONTACT_ASC" | "SERVICE_ASC"
 
 type EnrollmentRow = {
+  workflowKind: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  queueState: FollowUpQueueState
+  queueMessage: string | null
+  scheduledAt: string | null
+  timing: FollowUpTiming
+  parentService: { id: string; name: string } | null
   id: string
   status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   contactId: string
@@ -101,11 +111,6 @@ type EnrollmentRow = {
   followUpTemplateId: string | null
   followUpTemplateName: string | null
   followUpTemplateVersion?: { id: string; versionNumber: number } | null
-  followUpRun?: {
-    id: string
-    status: "RUNNING" | "WAITING" | "AWAITING_STEP" | "COMPLETED" | "FAILED" | "NEEDS_REVIEW" | "CANCELED"
-    failureMessage: string | null
-  } | null
   currentStep: {
     id: string
     title: string
@@ -113,7 +118,7 @@ type EnrollmentRow = {
     availableAt: string | null
     dueAt: string | null
     effectiveDueAt: string | null
-    effectiveDueSource: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE" | null
+    effectiveDueSource: "STEP_DUE" | "STEP_AVAILABLE" | null
     effectiveDueProjected: boolean
     completedAt: string | null
     assignedToUserId: string | null
@@ -143,6 +148,7 @@ type FollowUpsResponse = {
     totalPages: number
   }
   summary: {
+    dueSoon: number
     servicesInProgress: number
     overdueEnrollments: number
     dueToday: number
@@ -150,10 +156,7 @@ type FollowUpsResponse = {
   }
 }
 
-type FollowUpTemplateOption = {
-  id: string
-  name: string
-}
+type FollowUpTemplateOption = ServiceOfferingOption
 
 type AssigneeOption = {
   value: string
@@ -166,9 +169,9 @@ const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_STATUS = "ALL"
 const DEFAULT_STATUS = ALL_STATUS
 const ALL_DUE_DATE_PRESETS = "ALL"
-const ALL_TEMPLATE_FILTER = "ALL"
+const ALL_GROUP_FILTER = "ALL"
 const ALL_ASSIGNEE_FILTER = "ALL"
-const DEFAULT_SORT: FollowUpSort = "UPDATED_DESC"
+const DEFAULT_SORT: FollowUpSort = "URGENCY"
 const MAX_FOLLOW_UP_PAGE = 1_000_000
 const FOLLOW_UP_SEARCH_MAX_LENGTH = 200
 
@@ -188,6 +191,7 @@ const STATUS_VALUES = [
 ] as const
 
 const SORT_OPTIONS: Array<{ value: FollowUpSort; label: string }> = [
+  { value: "URGENCY", label: "Most urgent" },
   { value: "UPDATED_DESC", label: "Recently updated" },
   { value: "STARTED_DESC", label: "Recently started" },
   { value: "CONTACT_ASC", label: "Contact A–Z" },
@@ -197,12 +201,14 @@ const FOLLOW_UP_TAB_VALUES = [
   ALL_DUE_DATE_PRESETS,
   "TODAY",
   "OVERDUE",
+  "DUE_SOON",
   "NEXT_7_DAYS",
 ] as const
 const FOLLOW_UP_TABS = [
   { value: ALL_DUE_DATE_PRESETS, label: "All Due Dates" },
   { value: "TODAY", label: "Due Today" },
   { value: "OVERDUE", label: "Overdue" },
+  { value: "DUE_SOON", label: "Due soon" },
   { value: "NEXT_7_DAYS", label: "Next 7 Days" },
 ] as const
 
@@ -392,34 +398,6 @@ function AssigneeFilterPicker({
   )
 }
 
-function CurrentStepBadge({
-  status,
-}: {
-  status: CurrentStepStatus
-}) {
-  const config =
-    status === "ACTIVE"
-      ? { label: "Active", className: "bg-sky-100 text-sky-800" }
-      : status === "POSTPONED"
-        ? { label: "Postponed", className: "bg-violet-100 text-violet-800" }
-        : status === "COMPLETED"
-          ? { label: "Completed", className: "bg-emerald-100 text-emerald-800" }
-          : status === "SKIPPED"
-            ? { label: "Skipped", className: "bg-slate-200 text-slate-700" }
-            : { label: "Pending", className: "bg-amber-100 text-amber-800" }
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold tracking-wide",
-        config.className,
-      )}
-    >
-      {config.label}
-    </span>
-  )
-}
-
 function StepNumberChip({
   stepNumber,
 }: {
@@ -434,23 +412,39 @@ function StepNumberChip({
   )
 }
 
-function DueDateCell({
-  dueAt,
-  isOverdue,
-  tenantTimezone,
-}: {
-  dueAt: string | null
-  isOverdue: boolean
-  tenantTimezone?: string | null
-}) {
-  if (!dueAt) {
-    return <span className="text-sm text-slate-400">No due date</span>
-  }
-
+function QueueStateBadge({ state }: { state: FollowUpQueueState }) {
   return (
-    <span className={cn("text-sm", isOverdue ? "font-medium text-rose-700" : "text-slate-700")}>
-      {formatDateTimeForDisplay(dueAt, tenantTimezone)}
-    </span>
+    <Badge variant={state === "NEEDS_ATTENTION" ? "destructive" : "outline"}>
+      {FOLLOW_UP_QUEUE_OPTIONS.find((option) => option.value === state)?.label}
+    </Badge>
+  )
+}
+
+function DueDateCell({ item, tenantTimezone }: { item: EnrollmentRow; tenantTimezone?: string | null }) {
+  const scheduled = item.queueState === "SCHEDULED"
+  const dueAt = scheduled ? item.scheduledAt : item.currentStep?.effectiveDueAt
+  const remaining = followUpTimeRemaining(item.timing)
+  return (
+    <div className="flex flex-col items-start gap-1 py-2" title={item.queueMessage ?? undefined}>
+      <span className="text-sm">
+        {dueAt
+          ? `${scheduled ? "Resumes " : ""}${formatDateTimeForDisplay(dueAt, tenantTimezone)}`
+          : scheduled
+            ? "Automation in progress"
+            : item.queueState === "FINISHED"
+              ? "Step work finished"
+              : item.queueState === "NEEDS_ATTENTION" ? "Review required" : "No deadline"}
+      </span>
+      {remaining ? (
+        <span className={cn("text-xs", item.overdue ? "text-destructive" : "text-muted-foreground")}>
+          {remaining}
+        </span>
+      ) : null}
+      {item.timing.status === "DUE_SOON" ? (
+        <Badge variant="outline"><AlertTriangle aria-hidden="true" />Due soon · final 25%</Badge>
+      ) : null}
+      {item.overdue ? <Badge variant="destructive">Overdue</Badge> : null}
+    </div>
   )
 }
 
@@ -486,15 +480,11 @@ function FollowUpMobileCard({
   const phoneNumber = item.phoneNumber
     ? formatPhoneNumber(item.phoneNumber)
     : "No phone number"
-  const templateName = `${item.followUpTemplateName || "Manual follow-up flow"}${
+  const templateName = `${item.workflowKind === "SERVICE_STEPS" ? "Service steps" : item.followUpTemplateName || "Manual follow-up flow"}${
     item.followUpTemplateVersion
       ? ` v${item.followUpTemplateVersion.versionNumber}`
       : ""
   }`
-  const dueAt = item.currentStep?.effectiveDueAt ?? item.currentStep?.dueAt ?? null
-  const dueLabel = dueAt
-    ? formatDateTimeForDisplay(dueAt, tenantTimezone)
-    : "No due date"
   const openCard = () => onOpen(item.id)
 
   return (
@@ -519,9 +509,7 @@ function FollowUpMobileCard({
           {phoneNumber}
         </CardDescription>
         <CardAction className="flex items-center gap-1.5">
-          {item.currentStep ? (
-            <CurrentStepBadge status={item.currentStep.status} />
-          ) : null}
+          <QueueStateBadge state={item.queueState} />
           <ArrowRight
             aria-hidden="true"
             className="size-4 shrink-0 text-slate-400 transition-transform group-hover:translate-x-0.5"
@@ -532,8 +520,8 @@ function FollowUpMobileCard({
       <CardContent className="flex flex-col gap-4 px-4 pb-4">
         <div className="flex min-w-0 flex-col gap-1">
           <p className="text-xs font-medium text-slate-500">Service</p>
-          <p className="truncate text-sm font-medium text-slate-800" title={item.serviceName}>
-            {item.serviceName}
+          <p className="truncate text-sm font-medium text-slate-800" title={[item.parentService?.name, item.serviceName].filter(Boolean).join(" / ")}>
+            {item.parentService?.name ? `${item.parentService?.name} / ` : ""}{item.serviceName}
           </p>
         </div>
 
@@ -556,17 +544,12 @@ function FollowUpMobileCard({
             </p>
           </div>
           <div className="col-span-2 min-w-0">
-            <p className="text-[11px] font-medium text-slate-500">Template</p>
+            <p className="text-[11px] font-medium text-slate-500">Workflow</p>
             <div className="mt-1 flex min-w-0 items-center gap-2">
               <p className="truncate text-sm text-slate-700" title={templateName}>
                 {templateName}
               </p>
-              {item.followUpRun?.status === "FAILED" ||
-              item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                <Badge className="shrink-0 border-0 bg-rose-100 text-rose-700">
-                  {item.followUpRun.status === "FAILED" ? "Paused" : "Review"}
-                </Badge>
-              ) : null}
+
             </div>
           </div>
         </div>
@@ -577,26 +560,12 @@ function FollowUpMobileCard({
       <Separator />
       <CardFooter className="flex items-center justify-between gap-3 bg-slate-50/60 px-4 py-3">
         <div className="min-w-0">
-          <p className="text-[11px] font-medium text-slate-500">Due date</p>
-          <p
-            className={cn(
-              "mt-1 truncate text-xs",
-              item.overdue ? "font-medium text-rose-700" : "text-slate-700",
-            )}
-            title={dueLabel}
-          >
-            {dueLabel}
-          </p>
+          <p className="text-[11px] font-medium text-slate-500">Deadline / scheduled work</p>
+          <DueDateCell item={item} tenantTimezone={tenantTimezone} />
         </div>
-        {item.overdue ? (
-          <Badge variant="outline" className="shrink-0 border-rose-200 bg-rose-50 text-rose-700">
-            Overdue
-          </Badge>
-        ) : (
-          <span className="shrink-0 text-xs font-medium text-slate-500">
-            {item.progress.remainingCount} remaining
-          </span>
-        )}
+        <span className="shrink-0 text-xs font-medium text-muted-foreground">
+          {item.progress.remainingCount} steps remaining
+        </span>
       </CardFooter>
     </Card>
   )
@@ -657,12 +626,16 @@ export function FollowUpsTable({
   const [dueDatePreset, setDueDatePreset] = useState(
     () => sanitizeDueDateTab(searchParams.get("dueDatePreset")),
   )
-  const [templateFilter, setTemplateFilter] = useState(
-    () => searchParams.get("followUpTemplateId") ?? ALL_TEMPLATE_FILTER,
+  const [groupFilter, setGroupFilter] = useState(
+    () => searchParams.get("serviceGroupId") ?? ALL_GROUP_FILTER,
   )
+  const [offeringFilter, setOfferingFilter] = useState(() => searchParams.get("serviceId") ?? "")
+  const [draftOfferingFilter, setDraftOfferingFilter] = useState(offeringFilter)
   const [assigneeFilter, setAssigneeFilter] = useState(
     () => searchParams.get("assignedToUserId") ?? ALL_ASSIGNEE_FILTER,
   )
+  const [queueFilter, setQueueFilter] = useState(() => sanitizeFollowUpQueue(searchParams.get("queueState")))
+  const requestRef = useRef<{ id: number; controller: AbortController | null }>({ id: 0, controller: null })
   const [isFilterSheetOpen, setIsFilterSheetOpen] = useState(false)
   const [isSortSheetOpen, setIsSortSheetOpen] = useState(false)
   const [sort, setSort] = useState<FollowUpSort>(() =>
@@ -671,8 +644,8 @@ export function FollowUpsTable({
   const [draftStatusFilter, setDraftStatusFilter] = useState(
     () => sanitizeStatus(searchParams.get("status")),
   )
-  const [draftTemplateFilter, setDraftTemplateFilter] = useState(
-    () => searchParams.get("followUpTemplateId") ?? ALL_TEMPLATE_FILTER,
+  const [draftGroupFilter, setDraftGroupFilter] = useState(
+    () => searchParams.get("serviceGroupId") ?? ALL_GROUP_FILTER,
   )
   const [draftAssigneeFilter, setDraftAssigneeFilter] = useState(
     () => searchParams.get("assignedToUserId") ?? ALL_ASSIGNEE_FILTER,
@@ -685,7 +658,7 @@ export function FollowUpsTable({
   const [isLoading, setIsLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [data, setData] = useState<FollowUpsResponse | null>(null)
-  const [templateOptions, setTemplateOptions] = useState<FollowUpTemplateOption[]>([])
+  const [serviceOptions, setServiceOptions] = useState<FollowUpTemplateOption[]>([])
   const [assigneeOptions, setAssigneeOptions] = useState<AssigneeOption[]>([])
 
   useEffect(() => {
@@ -701,12 +674,14 @@ export function FollowUpsTable({
 
   useEffect(() => {
     const nextParams = new URLSearchParams()
+    if (offeringFilter) nextParams.set("serviceId", offeringFilter)
+    if (queueFilter !== "ALL") nextParams.set("queueState", queueFilter)
 
     if (debouncedQuery) nextParams.set("search", debouncedQuery)
     if (statusFilter !== DEFAULT_STATUS) nextParams.set("status", statusFilter)
     if (dueDatePreset !== ALL_DUE_DATE_PRESETS) nextParams.set("dueDatePreset", dueDatePreset)
-    if (templateFilter !== ALL_TEMPLATE_FILTER) {
-      nextParams.set("followUpTemplateId", templateFilter)
+    if (groupFilter !== ALL_GROUP_FILTER) {
+      nextParams.set("serviceGroupId", groupFilter)
     }
     if (assigneeFilter !== ALL_ASSIGNEE_FILTER) {
       nextParams.set("assignedToUserId", assigneeFilter)
@@ -733,18 +708,26 @@ export function FollowUpsTable({
     pathname,
     router,
     searchParams,
+    queueFilter,
     sort,
     statusFilter,
-    templateFilter,
+    groupFilter,
+    offeringFilter,
   ])
 
-  const loadFollowUps = useCallback(async () => {
-    setIsLoading(true)
+  const loadFollowUps = useCallback(async (background = false) => {
+    requestRef.current.controller?.abort()
+    const controller = new AbortController()
+    const requestId = ++requestRef.current.id
+    requestRef.current.controller = controller
+    if (!background) setIsLoading(true)
     setErrorMessage(null)
 
     try {
       const { data: response } = await api.get<FollowUpsResponse>(`/api/services/${encodeURIComponent(tenantId)}/follow-ups`, {
+        signal: controller.signal,
         params: {
+          queueState: queueFilter === "ALL" ? undefined : queueFilter,
           page,
           pageSize,
           search: debouncedQuery || undefined,
@@ -754,16 +737,19 @@ export function FollowUpsTable({
               : statusFilter || undefined,
           dueDatePreset:
             dueDatePreset === ALL_DUE_DATE_PRESETS ? undefined : dueDatePreset,
-          followUpTemplateId:
-            templateFilter === ALL_TEMPLATE_FILTER ? undefined : templateFilter,
+          serviceGroupId:
+            groupFilter === ALL_GROUP_FILTER ? undefined : groupFilter,
+          serviceId: offeringFilter || undefined,
           assignedToUserId:
             assigneeFilter === ALL_ASSIGNEE_FILTER ? undefined : assigneeFilter,
           sort,
         },
       })
 
+      if (requestId !== requestRef.current.id) return
       setData(response)
     } catch (error) {
+      if (controller.signal.aborted || requestId !== requestRef.current.id) return
       if (isAxiosError(error)) {
         const backendError = error.response?.data?.error
         setErrorMessage(
@@ -775,7 +761,7 @@ export function FollowUpsTable({
         setErrorMessage("Could not load follow-ups.")
       }
     } finally {
-      setIsLoading(false)
+      if (requestId === requestRef.current.id) setIsLoading(false)
     }
   }, [
     assigneeFilter,
@@ -785,12 +771,28 @@ export function FollowUpsTable({
     pageSize,
     sort,
     statusFilter,
-    templateFilter,
+    groupFilter,
+    offeringFilter,
     tenantId,
+    queueFilter,
   ])
 
   useEffect(() => {
+    const requestState = requestRef.current
     void loadFollowUps()
+    const refresh = () => {
+      if (document.visibilityState === "visible") void loadFollowUps(true)
+    }
+    const interval = window.setInterval(refresh, 30_000)
+    window.addEventListener("focus", refresh)
+    document.addEventListener("visibilitychange", refresh)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener("focus", refresh)
+      document.removeEventListener("visibilitychange", refresh)
+      requestState.id += 1
+      requestState.controller?.abort()
+    }
   }, [loadFollowUps])
 
   useEffect(() => {
@@ -808,13 +810,13 @@ export function FollowUpsTable({
         const { data: response } = await api.get<{
           ok: boolean
           items: FollowUpTemplateOption[]
-        }>(`/api/services/${encodeURIComponent(tenantId)}/follow-up-template-options`)
+        }>(`/api/services/${encodeURIComponent(tenantId)}/options`, { params: { includeInactive: true } })
 
         if (cancelled) return
-        setTemplateOptions(response.items ?? [])
+        setServiceOptions(response.items ?? [])
       } catch {
         if (cancelled) return
-        setTemplateOptions([])
+        setServiceOptions([])
       }
     }
 
@@ -852,6 +854,7 @@ export function FollowUpsTable({
 
   const enrollments = data?.items ?? []
   const summary = data?.summary ?? {
+    dueSoon: 0,
     servicesInProgress: 0,
     overdueEnrollments: 0,
     dueToday: 0,
@@ -864,16 +867,18 @@ export function FollowUpsTable({
   const canGoNext = page < totalPages
   const activeFilterCount =
     (statusFilter !== DEFAULT_STATUS ? 1 : 0) +
-    (templateFilter !== ALL_TEMPLATE_FILTER ? 1 : 0) +
+    (groupFilter !== ALL_GROUP_FILTER ? 1 : 0) + (offeringFilter ? 1 : 0) +
     (assigneeFilter !== ALL_ASSIGNEE_FILTER ? 1 : 0)
   const hasAppliedFilters = activeFilterCount > 0
   const hasActiveRefinements =
+    queueFilter !== "ALL" ||
     Boolean(debouncedQuery) ||
     activeFilterCount > 0 ||
     dueDatePreset !== ALL_DUE_DATE_PRESETS
   const hasDraftFilters =
     draftStatusFilter !== DEFAULT_STATUS ||
-    draftTemplateFilter !== ALL_TEMPLATE_FILTER ||
+    draftGroupFilter !== ALL_GROUP_FILTER ||
+    Boolean(draftOfferingFilter) ||
     draftAssigneeFilter !== ALL_ASSIGNEE_FILTER
   const placeholderRowCount =
     enrollments.length === 0
@@ -904,25 +909,30 @@ export function FollowUpsTable({
   }, [enrollments.length, startIndex, total])
 
   const clearFilters = () => {
+    setQueueFilter("ALL")
     setStatusFilter(DEFAULT_STATUS)
-    setTemplateFilter(ALL_TEMPLATE_FILTER)
+    setOfferingFilter("")
+    setDraftOfferingFilter("")
+    setGroupFilter(ALL_GROUP_FILTER)
     setAssigneeFilter(ALL_ASSIGNEE_FILTER)
     setDraftStatusFilter(DEFAULT_STATUS)
-    setDraftTemplateFilter(ALL_TEMPLATE_FILTER)
+    setDraftGroupFilter(ALL_GROUP_FILTER)
     setDraftAssigneeFilter(ALL_ASSIGNEE_FILTER)
     setPage(1)
   }
 
   const openFilterSheet = () => {
     setDraftStatusFilter(statusFilter)
-    setDraftTemplateFilter(templateFilter)
+    setDraftOfferingFilter(offeringFilter)
+    setDraftGroupFilter(groupFilter)
     setDraftAssigneeFilter(assigneeFilter)
     setIsFilterSheetOpen(true)
   }
 
   const applyFilters = () => {
     setStatusFilter(sanitizeStatus(draftStatusFilter))
-    setTemplateFilter(draftTemplateFilter)
+    setOfferingFilter(draftOfferingFilter)
+    setGroupFilter(draftGroupFilter)
     setAssigneeFilter(draftAssigneeFilter)
     setPage(1)
     setIsFilterSheetOpen(false)
@@ -963,7 +973,7 @@ export function FollowUpsTable({
             {isLoading && !data ? <Skeleton className="mt-3 h-8 w-20 rounded-lg" /> : (
               <p className="mt-3 text-2xl font-semibold tabular-nums tracking-tight text-rose-700">{summary.overdueEnrollments}</p>
             )}
-            <p className="mt-1 text-xs text-slate-500">Past-due current steps.</p>
+            <p className="mt-1 text-xs text-slate-500">Past-due current steps · {summary.dueSoon} due soon.</p>
           </article>
 
           <article className="min-w-0 rounded-[22px] border border-white/80 bg-white/75 p-3 shadow-sm backdrop-blur sm:p-4">
@@ -1086,6 +1096,26 @@ export function FollowUpsTable({
             </Button>
           </div>
         </div>
+        <div className="mt-4 flex flex-col gap-2">
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            value={queueFilter}
+            aria-label="Follow-up work queue"
+            className="max-w-full flex-wrap justify-start"
+            onValueChange={(value) => {
+              if (value) {
+                setQueueFilter(sanitizeFollowUpQueue(value))
+                setPage(1)
+              }
+            }}
+          >
+            {FOLLOW_UP_QUEUE_OPTIONS.map((option) => (
+              <ToggleGroupItem key={option.value} value={option.value}>{option.label}</ToggleGroupItem>
+            ))}
+          </ToggleGroup>
+          <p className="text-xs text-muted-foreground">Active deadlines show time remaining and a warning in the final 25%. Scheduled automation work has its own resume time.</p>
+        </div>
       </header>
 
       <Sheet open={isSortSheetOpen} onOpenChange={setIsSortSheetOpen}>
@@ -1155,7 +1185,7 @@ export function FollowUpsTable({
                   Refine follow-ups
                 </SheetTitle>
                 <SheetDescription className="max-w-xl text-sm leading-6 text-slate-600">
-                  Filter service paths by step status, template, and owner.
+                  Filter service work by service, sub-service, step status and owner.
                 </SheetDescription>
               </div>
             </div>
@@ -1191,30 +1221,7 @@ export function FollowUpsTable({
                 </FieldDescription>
               </Field>
 
-              <Field className="gap-2">
-                <FieldLabel htmlFor="follow-up-template-filter" className="text-slate-800">
-                  Template
-                </FieldLabel>
-                <Select value={draftTemplateFilter} onValueChange={setDraftTemplateFilter}>
-                  <SelectTrigger
-                    id="follow-up-template-filter"
-                    className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                  >
-                    <SelectValue placeholder="Template" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ALL_TEMPLATE_FILTER}>All templates</SelectItem>
-                    {templateOptions.map((template) => (
-                      <SelectItem key={template.id} value={template.id}>
-                        {template.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <FieldDescription className="text-xs">
-                  Focus on a specific follow-up template across the selected due-date tab.
-                </FieldDescription>
-              </Field>
+              <ServiceScopeFields options={serviceOptions} groupId={draftGroupFilter === ALL_GROUP_FILTER ? "" : draftGroupFilter} offeringId={draftOfferingFilter} onChange={(group, offering) => { setDraftGroupFilter(group || ALL_GROUP_FILTER); setDraftOfferingFilter(offering) }} />
 
               <Field className="gap-2">
                 <FieldLabel htmlFor="follow-up-assignee-filter" className="text-slate-800">
@@ -1350,22 +1357,22 @@ export function FollowUpsTable({
                 <TableHead className="w-[11%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Service
                 </TableHead>
-                <TableHead className="w-[13%] border-y bg-slate-50 px-4 text-xs text-slate-600">
-                  Template
-                </TableHead>
                 <TableHead className="w-[15%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Current Step
                 </TableHead>
-                <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-xs text-slate-600">
-                  Assigned
+                <TableHead className="w-[16%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Deadline / scheduled
                 </TableHead>
                 <TableHead className="w-[8%] border-y bg-slate-50 px-4 text-xs text-slate-600">
                   Status
                 </TableHead>
-                <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-xs text-slate-600">
-                  Due Date
+                <TableHead className="w-[12%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Workflow
                 </TableHead>
-                <TableHead className="w-[15%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-[9%] border-y bg-slate-50 px-4 text-xs text-slate-600">
+                  Assigned
+                </TableHead>
+                <TableHead className="w-[11%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
                   Progress
                 </TableHead>
               </TableRow>
@@ -1393,22 +1400,22 @@ export function FollowUpsTable({
                       <Skeleton className="h-4 w-4/5" />
                     </TableCell>
                     <TableCell className="px-4 py-0">
-                      <Skeleton className="h-4 w-4/5" />
-                    </TableCell>
-                    <TableCell className="px-4 py-0">
                       <div className="flex items-center gap-2">
                         <Skeleton className="h-6 w-8 rounded-full" />
                         <Skeleton className="h-4 w-32" />
                       </div>
                     </TableCell>
                     <TableCell className="px-4 py-0">
-                      <Skeleton className="h-4 w-24" />
+                      <Skeleton className="h-4 w-32" />
                     </TableCell>
                     <TableCell className="px-4 py-0">
                       <Skeleton className="h-5 w-16 rounded-full" />
                     </TableCell>
                     <TableCell className="px-4 py-0">
-                      <Skeleton className="h-4 w-32" />
+                      <Skeleton className="h-4 w-4/5" />
+                    </TableCell>
+                    <TableCell className="px-4 py-0">
+                      <Skeleton className="h-4 w-24" />
                     </TableCell>
                     <TableCell className="px-4 py-0">
                       <Skeleton className="h-5 w-full rounded-full" />
@@ -1463,26 +1470,8 @@ export function FollowUpsTable({
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <p className="truncate font-medium text-slate-900">
-                          {item.serviceName}
+                          {item.parentService?.name ? `${item.parentService?.name} / ` : ""}{item.serviceName}
                         </p>
-                      </TableCell>
-                      <TableCell className="px-4 py-0">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="min-w-0 truncate text-sm text-slate-700">
-                            {item.followUpTemplateName || "Manual follow-up flow"}
-                            {item.followUpTemplateVersion
-                              ? ` v${item.followUpTemplateVersion.versionNumber}`
-                              : ""}
-                          </span>
-                          {item.followUpRun?.status === "FAILED" ||
-                          item.followUpRun?.status === "NEEDS_REVIEW" ? (
-                            <span className="shrink-0 rounded-full bg-rose-100 px-2 py-0.5 text-[11px] font-semibold text-rose-700">
-                              {item.followUpRun.status === "FAILED"
-                                ? "Paused"
-                                : "Review"}
-                            </span>
-                          ) : null}
-                        </div>
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <div className="flex min-w-0 items-center gap-2">
@@ -1495,23 +1484,29 @@ export function FollowUpsTable({
                         </div>
                       </TableCell>
                       <TableCell className="px-4 py-0">
+                        <DueDateCell
+                          item={item}
+                          tenantTimezone={tenantTimezone}
+                        />
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <QueueStateBadge state={item.queueState} />
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 truncate text-sm text-slate-700">
+                            {item.workflowKind === "SERVICE_STEPS" ? "Service steps" : item.followUpTemplateName || "Manual follow-up flow"}
+                            {item.followUpTemplateVersion
+                              ? ` v${item.followUpTemplateVersion.versionNumber}`
+                              : ""}
+                          </span>
+
+                        </div>
+                      </TableCell>
+                      <TableCell className="px-4 py-0">
                         <span className="block truncate text-sm text-slate-700">
                           {item.currentStep?.assignedToName || "Unassigned"}
                         </span>
-                      </TableCell>
-                      <TableCell className="px-4 py-0">
-                        {item.currentStep ? (
-                          <CurrentStepBadge status={item.currentStep.status} />
-                        ) : (
-                          "—"
-                        )}
-                      </TableCell>
-                      <TableCell className="px-4 py-0">
-                        <DueDateCell
-                          dueAt={item.currentStep?.effectiveDueAt ?? item.currentStep?.dueAt ?? null}
-                          isOverdue={item.overdue}
-                          tenantTimezone={tenantTimezone}
-                        />
                       </TableCell>
                       <TableCell className="px-4 py-0">
                         <ProgressCell {...item.progress} />

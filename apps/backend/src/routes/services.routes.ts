@@ -1,3 +1,37 @@
+import { createServiceBillingRouter } from "./service-billing.routes.js"
+import { FinancialWriteSchema, FinancialReasonSchema, ServicePaymentTermsSchema, resolvePaymentSettings, summarizeServiceBilling, tenantDateOnly } from "../lib/service-billing.js"
+import { billingAccountSelect, getBillingSummaryTx, replacePaymentPlanTx, replayFinancialWriteTx, saveFinancialChangeTx } from "../lib/service-billing-account.js"
+import { previewServiceBilling } from "../lib/service-billing-preview.js"
+import { lockSavedFollowUpEnrollment, patchSavedFollowUpTx, syncContactServiceActiveStep } from "../lib/service-saved-followups.js"
+import { retiredTemplate, retiredTemplateVersion, retiredWorkflowSummary } from "../lib/service-retired-workflows.js"
+import { serviceScopeWhere, offeringSteps, enrolledStepProgress, unfinishedServiceWorkWhere } from "../lib/service-presentation.js"
+import { mutateServicePaymentTx } from "../lib/service-payment-mutations.js"
+import { captureServiceAutomationsTx } from "../lib/service-automation-snapshots.js"
+import { previewServiceConfigurationTx, applyServiceConfigurationTx } from "../lib/service-configuration-review.js"
+import { emitServiceAutomationEventTx } from "../lib/service-automation-events.js"
+import { mutateEnrolledServiceTx, lockServiceActionEnrollment } from "../lib/service-automation-actions.js"
+import { getServiceFollowUpQueue } from "../lib/service-followup-queue.js"
+import { changeServiceStepDeadlineTx, ChangeServiceStepDeadlineSchema } from "../lib/service-step-deadlines.js"
+import { enforceSameOrigin } from "../lib/security.js"
+import { moveServiceStepTx, MoveServiceStepSchema } from "../lib/service-step-movement.js"
+import { kickAutomationRunWorker } from "../lib/opportunity-automations.js"
+import { queueOpportunityAutomationEvent } from "../lib/automation-event-queue.js"
+import { getServiceStepCompletionWaits, changeServiceStepCompletionWaitTx, ContinueServiceStepWaitSchema, RescheduleServiceStepWaitSchema } from "../lib/service-step-waits.js"
+import { completeServiceStepOccurrenceTx, reconcileServiceStepEnrollmentTx } from "../lib/service-step-progression.js"
+import { createServiceStepOccurrenceTx, enrolledServiceStepsSelect } from "../lib/service-steps.js"
+import { captureEnrollmentConfiguration, readEnrollmentConfiguration, readProfessionalSnapshot,
+  professionalSnapshot, enrollmentProfessionalOptions, enrolledChecklistSnapshotSelect,
+  serializeEnrolledChecklistItem } from "../lib/service-enrollment-snapshots.js"
+import {
+  serviceConfigurationSelect,
+  resolveServiceConfiguration,
+  loadEffectiveServiceConfiguration,
+  lockServiceHierarchyTx,
+  pickBilling,
+  readBillingSnapshot,
+} from "../lib/service-configuration-inheritance.js"
+import { assertServiceEnrollableTx, enrollableServiceWhere } from "../lib/service-hierarchy.js"
+import { ServiceCollectionError } from "../lib/service-configuration-collections.js"
 import { randomUUID } from "node:crypto"
 
 import { type Response, Router } from "express"
@@ -25,13 +59,16 @@ import {
   resolveContactServiceChecklistTransition,
 } from "../lib/contact-service-checklist-status.js"
 import {
+  sanitizeNoteTitle,
+  sanitizeNoteBody,
   NoteBodyInputSchema,
   NoteTitleInputSchema,
 } from "../lib/note-inputs.js"
 import { prisma } from "../lib/prisma.js"
 import { deletePrivateObject } from "../lib/private-storage.js"
 import { generateServiceFitExplanation } from "../lib/service-fit-explanations.js"
-import { routeServiceQuestion } from "../lib/service-fit-question-router.js"
+import { createContactAssistantRouter } from "./contact-assistant.routes.js"
+import { buildContactAssistantContext } from "../lib/contact-assistant-context.js"
 import {
   buildServiceFitFieldCatalog,
   evaluateServiceFitProfile,
@@ -40,19 +77,10 @@ import {
   validateServiceFitProfile,
 } from "../lib/service-fit.js"
 import {
-  executeFollowUpFromStart,
-  executeFollowUpFromStep,
-  syncContactServiceActiveStep,
-} from "../lib/service-followup-execution.js"
-import {
-  FOLLOW_UP_LIST_SERVICE_STATUSES,
   canCompleteFollowUpStepNow,
   resolveEffectiveNextFollowUp,
-  selectFollowUpListStep,
   serializeEffectiveNextFollowUp,
 } from "../lib/service-followup-next-follow-up.js"
-import { canChangeServiceFollowUpStepAssignee } from "../lib/service-followup-step-permissions.js"
-import { getFollowUpListDateRanges } from "../lib/service-followup-list-date-range.js"
 import {
   SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH,
   ServiceFollowUpSortSchema,
@@ -69,7 +97,6 @@ import {
   ServiceTransactionSortSchema,
   getServiceTransactionContactName,
   getServiceTransactionFinancials,
-  getServiceTransactionPaymentValidationError,
   sanitizeServiceTransactionSearch,
 } from "../lib/service-transactions.js"
 import {
@@ -79,41 +106,14 @@ import {
 } from "../lib/service-enrollments.js"
 import {
   buildFollowUpStepResolutionUpdate,
-  isServiceFollowUpWorkflowCompleted,
 } from "../lib/service-followup-ownership.js"
-import {
-  continueFollowUpRunFromStepTx,
-  createFollowUpRunTx,
-  executeFollowUpRun,
-  postponeFollowUpRunStepTx,
-  resetUserScheduledWaitForStepTx,
-  retryFailedFollowUpRun,
-  stageUserScheduledWaitInputTx,
-} from "../lib/service-followup-v2-execution.js"
-import {
-  getWorkflowWaitByActionId,
-  getUserScheduledWaitByActionId,
-  getUserScheduledWaitForStep,
-} from "../lib/service-followup-v3-definition.js"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
 
 const router = Router()
+router.use(createServiceBillingRouter(requireActiveMembership))
+router.use(createContactAssistantRouter({ requireMembership: requireActiveMembership, evaluate: evaluateServiceFitScan }))
 const prismaWithServices = prisma as any
 
-const stripHtmlTags = (value: string) => value.replace(/<[^>]*>/g, " ")
-const removeUnsafeControls = (value: string) => value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
-const sanitizeSingleLineText = (value: string) =>
-  removeUnsafeControls(stripHtmlTags(value)).replace(/\s+/g, " ").trim()
-const sanitizeMultilineText = (value: string) =>
-  removeUnsafeControls(stripHtmlTags(value))
-    .replace(/\r\n/g, "\n")
-    .split("\n")
-    .map((line) => line.replace(/\s+/g, " ").trim())
-    .join("\n")
-    .trim()
-const getServiceUserLabel = (
-  user: { name?: string | null; email?: string | null } | null | undefined,
-) => user?.name?.trim() || user?.email?.trim() || "Unassigned"
 const normalizeSearchValue = (value: string | null | undefined) =>
   value?.trim().toLowerCase().replace(/\s+/g, " ") ?? ""
 const normalizePhoneSearchValue = (value: string | null | undefined) => (value ?? "").replace(/\D/g, "")
@@ -242,7 +242,7 @@ const serializePaginatedServiceNote = (
       email: string | null
       image?: string | null
     } | null
-    followUpTemplate?: { name: string } | null
+    retiredWorkflowSnapshot?: unknown
     contactServiceFollowUpStep?: { title: string } | null
     attachments?: Array<{
       id: string
@@ -265,16 +265,16 @@ const serializePaginatedServiceNote = (
   updatedAt: note.updatedAt,
   author: note.createdBy
     ? {
-        id: note.createdBy.id,
-        name:
-          note.createdBy.name?.trim() ||
-          note.createdBy.email?.trim() ||
-          "Unknown user",
-        email: note.createdBy.email,
-        image: note.createdBy.image ?? null,
-      }
+      id: note.createdBy.id,
+      name:
+        note.createdBy.name?.trim() ||
+        note.createdBy.email?.trim() ||
+        "Unknown user",
+      email: note.createdBy.email,
+      image: note.createdBy.image ?? null,
+    }
     : null,
-  followUpTemplateName: note.followUpTemplate?.name ?? null,
+  followUpTemplateName: retiredTemplate(note.retiredWorkflowSnapshot)?.name ?? null,
   followUpStepTitle: note.contactServiceFollowUpStep?.title ?? null,
   permissions: {
     canEdit: canManageContactServiceNote(
@@ -344,18 +344,12 @@ const ContactServicesListQuerySchema = z.object({
     .default(10),
   contactId: z.string().trim().min(1).optional(),
   status: ContactServiceStatusSchema.optional(),
+  readOnly: z.enum(["true", "false"]).default("false"),
 })
 
 const FitScanQuerySchema = z.object({
   contactId: z.string().trim().min(1),
   serviceId: z.string().trim().min(1).optional(),
-})
-
-const FitScanAssistantBodySchema = z.object({
-  contactId: z.string().trim().min(1),
-  serviceId: z.string().trim().min(1).optional(),
-  scope: z.enum(["all", "service"]).default("service"),
-  question: z.string().trim().min(1).max(500).optional().nullable(),
 })
 
 const ServiceFitRuleSourceSchema = z.enum(["core", "status", "tags", "custom", "derived"])
@@ -481,6 +475,8 @@ const OptionalDateOnlySchema = z.preprocess(
 
 const ServicesCatalogSummaryQuerySchema = z
   .object({
+    serviceGroupId: ServiceTransactionIdSchema.optional(),
+    serviceId: ServiceTransactionIdSchema.optional(),
     preset: ServicesCatalogSummaryPresetSchema.default("THIS_MONTH"),
     from: OptionalDateOnlySchema,
     to: OptionalDateOnlySchema,
@@ -520,7 +516,9 @@ const ServiceTransactionsListQuerySchema = z
         typeof value === "string" ? sanitizeServiceTransactionSearch(value) : value,
       z.string().max(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH).optional(),
     ),
+    paymentFilter: z.enum(["ALL", "BALANCE_DUE", "DUE_TODAY", "OVERDUE", "PAID", "NEEDS_REVIEW"]).default("ALL"),
     sort: ServiceTransactionSortSchema.default("PURCHASED_DESC"),
+    serviceGroupId: ServiceTransactionIdSchema.optional(),
     serviceId: ServiceTransactionIdSchema.optional(),
     status: ContactServiceStatusSchema.optional(),
     rangePreset: ServiceTransactionsRangePresetSchema.default("ALL_TIME"),
@@ -561,14 +559,16 @@ const FollowUpsListQuerySchema = z.object({
       typeof value === "string" ? sanitizeServiceFollowUpSearch(value) : value,
     z.string().max(SERVICE_FOLLOW_UP_SEARCH_MAX_LENGTH).optional(),
   ),
-  sort: ServiceFollowUpSortSchema.default("UPDATED_DESC"),
+  sort: ServiceFollowUpSortSchema.or(z.literal("URGENCY")).default("URGENCY"),
+  queueState: z.enum(["ACTIONABLE", "SCHEDULED", "NEEDS_ATTENTION", "FINISHED"]).optional(),
   status: z
     .enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"])
     .optional(),
   dueDatePreset: z
-    .enum(["OVERDUE", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
+    .enum(["OVERDUE", "DUE_SOON", "TODAY", "NEXT_7_DAYS", "NO_DUE_DATE"])
     .optional(),
-  followUpTemplateId: ServiceTransactionIdSchema.optional(),
+  serviceGroupId: ServiceTransactionIdSchema.optional(),
+  serviceId: ServiceTransactionIdSchema.optional(),
   assignedToUserId: ServiceTransactionIdSchema.optional(),
 })
 
@@ -576,13 +576,18 @@ const CreateContactServiceSchema = z
   .object({
     contactId: ServiceTransactionIdSchema,
     serviceId: ServiceTransactionIdSchema,
-    followUpTemplateId: ServiceTransactionIdSchema.optional(),
+    workflowKind: z.literal("SERVICE_STEPS").default("SERVICE_STEPS"),
     followUpAssignedToUserId: ServiceTransactionIdSchema.optional(),
     assignedProfessionalId: ServiceTransactionIdSchema.optional(),
     purchasedAt: z.string().datetime().nullable().optional(),
     startedAt: z.string().datetime().nullable().optional(),
     notes: ServiceTransactionNotesSchema,
     initialPaymentCents: ServiceTransactionAmountCentsSchema.optional(),
+    paymentTerms: ServicePaymentTermsSchema.optional(),
+    initialPaymentMethod: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "ACH"]).nullable().optional(),
+    initialPaymentNote: ServiceTransactionPaymentNoteSchema,
+    configurationVersion: z.string().length(64),
+    requestKey: z.uuid(),
   })
   .strict()
 
@@ -596,6 +601,7 @@ const ServiceTransactionPaymentMethodSchema = z.enum([
 
 const CreateContactServicePaymentSchema = z
   .object({
+    ...FinancialWriteSchema.shape,
     amountCents: ServiceTransactionPositiveAmountCentsSchema,
     paidAt: z.string().datetime().optional(),
     paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
@@ -605,6 +611,8 @@ const CreateContactServicePaymentSchema = z
 
 const UpdateContactServicePaymentSchema = z
   .object({
+    ...FinancialWriteSchema.shape,
+    reason: FinancialReasonSchema,
     amountCents: ServiceTransactionPositiveAmountCentsSchema.optional(),
     paidAt: z.string().datetime().optional(),
     paymentMethod: ServiceTransactionPaymentMethodSchema.nullable().optional(),
@@ -711,35 +719,31 @@ async function deleteServiceNoteFilesIfUnreferenced(fileIds: string[]) {
 }
 
 const UpdateFollowUpStepSchema = z.object({
-  title: z.string().trim().min(1).max(200).optional(),
-  notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  title: z.string().trim().min(1).max(200).transform(sanitizeNoteTitle).pipe(z.string().min(1).max(200)).optional(),
+  notesTemplate: z.string().trim().max(1000).transform(value => sanitizeNoteBody(value) || null).nullable().optional(),
   status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
   action: z.enum(["REOPEN"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   postponeTo: z.string().datetime().optional(),
-  nextFollowUpAt: z.string().datetime({ offset: true }).optional(),
   cascadeFutureSteps: z.boolean().optional(),
   completedAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
-  note: z.string().trim().max(2000).nullable().optional(),
+  note: z.string().trim().max(2000).transform(value => sanitizeNoteBody(value) || null).nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-})
+}).strict()
 
-const RescheduleNextFollowUpSchema = z.object({
-  nextFollowUpAt: z.string().datetime({ offset: true }),
-})
 
 const CreateFollowUpStepSchema = z.object({
-  title: z.string().trim().min(1).max(200),
-  notesTemplate: z.string().trim().max(1000).nullable().optional(),
+  title: z.string().trim().min(1).max(200).transform(sanitizeNoteTitle).pipe(z.string().min(1).max(200)),
+  notesTemplate: z.string().trim().max(1000).transform(value => sanitizeNoteBody(value) || null).nullable().optional(),
   status: z.enum(["PENDING", "ACTIVE", "COMPLETED", "SKIPPED", "POSTPONED"]).optional(),
   availableAt: z.string().datetime().nullable().optional(),
   dueAt: z.string().datetime().nullable().optional(),
   assignedToUserId: z.string().trim().min(1).nullable().optional(),
-  note: z.string().trim().max(2000).nullable().optional(),
+  note: z.string().trim().max(2000).transform(value => sanitizeNoteBody(value) || null).nullable().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-})
+}).strict()
 
 const UpdateContactServiceChecklistItemSchema = z
   .object({
@@ -789,111 +793,36 @@ function getSafeTimezone(timezone?: string | null) {
   return timezone?.trim() || DEFAULT_TIMEZONE
 }
 
-function resolveVersionedFollowUpState(item: any) {
-  const definition = item.followUpTemplateVersion?.definition
-  const waitingAction = item.followUpRun?.waitingNodeId
-    ? getWorkflowWaitByActionId(definition, item.followUpRun.waitingNodeId)
-    : null
-  const userScheduledWaitingAction = item.followUpRun?.waitingNodeId
-    ? getUserScheduledWaitByActionId(definition, item.followUpRun.waitingNodeId)
-    : null
-  const effectiveNextFollowUp = resolveEffectiveNextFollowUp({
-    steps: item.followUpSteps ?? [],
-    run: item.followUpRun,
-    isUserScheduledWait: Boolean(userScheduledWaitingAction),
-    isWorkflowWait: Boolean(waitingAction),
-  })
-
-  return {
-    definition,
-    waitingAction,
-    userScheduledWaitingAction,
-    effectiveNextFollowUp,
-  }
+function resolveSavedFollowUpState(item: any) {
+  return { effectiveNextFollowUp: resolveEffectiveNextFollowUp({ steps: item.followUpSteps ?? [] }) }
 }
 
-function serializeVersionedFollowUpMetadata(item: any, timezone: string) {
-  const {
-    definition,
-    waitingAction,
-    userScheduledWaitingAction,
-    effectiveNextFollowUp,
-  } = resolveVersionedFollowUpState(item)
-  const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
-  const firstUnresolvedStep = (item.followUpSteps ?? []).find(
-    (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
-  )
-  const canContinueWaitingRun = Boolean(
-    item.followUpRun?.status === "WAITING" &&
-      waitingAction &&
-      !item.followUpRun.leaseToken,
-  )
-  const followUpSteps = (item.followUpSteps ?? []).map((step: any) => {
-    const canCompleteNow = canCompleteFollowUpStepNow({
-      step,
-      firstUnresolvedStepId: firstUnresolvedStep?.id ?? null,
-      run: item.followUpRun,
-      effectiveNextFollowUp,
-      canContinueWaitingRun,
-    })
-    const requirement =
-      canCompleteNow && step.templateNodeId
-        ? getUserScheduledWaitForStep(definition, step.templateNodeId)
-        : null
-    const projectedForStep =
-      effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
-    return {
-      ...step,
-      effectiveDueAt: projectedForStep
-        ? projectedForStep.at
-        : step.dueAt ?? null,
-      effectiveDueSource: projectedForStep
-        ? projectedForStep.source
-        : step.dueAt
-          ? "STEP_DUE"
-          : null,
-      canCompleteNow,
-      completionRequirement: requirement
-        ? {
-            type: "NEXT_FOLLOW_UP_AT" as const,
-            actionId: requirement.actionId,
-            prompt: requirement.prompt,
-            timezone,
-          }
-        : null,
-    }
-  })
+function serializeSavedFollowUpMetadata(item: any, _timezone: string) {
+  const effective = resolveSavedFollowUpState(item).effectiveNextFollowUp
+  const first = (item.followUpSteps ?? []).find((step: any) => !["COMPLETED", "SKIPPED"].includes(step.status))
   return {
-    timezone,
-    nextFollowUp,
-    followUpSteps,
-    followUpTemplateVersion: item.followUpTemplateVersion
-      ? {
-          id: item.followUpTemplateVersion.id,
-          versionNumber: item.followUpTemplateVersion.versionNumber,
-        }
-      : null,
-    followUpRun: item.followUpRun
-      ? {
-          ...item.followUpRun,
-          canContinueNow: canContinueWaitingRun,
-          manualWait:
-            userScheduledWaitingAction && item.followUpRun.status === "WAITING"
-              ? {
-                  actionId: userScheduledWaitingAction.actionId,
-                  prompt: userScheduledWaitingAction.prompt,
-                  scheduledFor: item.followUpRun.resumeAt,
-                  canReschedule: !item.followUpRun.leaseToken,
-                  canContinueNow: !item.followUpRun.leaseToken,
-                }
-              : null,
-        }
-      : null,
+    nextFollowUp: serializeEffectiveNextFollowUp(effective),
+    followUpTemplate: retiredTemplate(item.retiredWorkflowSnapshot),
+    followUpTemplateVersion: retiredTemplateVersion(item.retiredWorkflowSnapshot),
+    retiredWorkflow: retiredWorkflowSummary(item.retiredWorkflowSnapshot),
+    followUpSteps: (item.followUpSteps ?? []).map((step: any) => ({
+      ...step,
+      effectiveDueAt: effective && effective.stepId === step.id ? effective.at : step.dueAt ?? null,
+      effectiveDueSource: effective && effective.stepId === step.id ? effective.source : step.dueAt ? "STEP_DUE" : null,
+      canCompleteNow: canCompleteFollowUpStepNow({ step, firstUnresolvedStepId: first?.id ?? null }),
+    })),
   }
 }
 
 const contactServiceWorkspaceBaseSelect = {
+  ...billingAccountSelect,
   id: true,
+  tenantId: true,
+  workflowKind: true,
+  configurationSnapshot: true,
+  assignedProfessionalSnapshot: true,
+  serviceSteps: enrolledServiceStepsSelect,
+  stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
   contactId: true,
   status: true,
   startedAt: true,
@@ -901,6 +830,7 @@ const contactServiceWorkspaceBaseSelect = {
   completedAt: true,
   canceledAt: true,
   totalPriceCents: true,
+  billingSnapshot: true,
   currency: true,
   allowPartialPayments: true,
   notes: true,
@@ -938,6 +868,7 @@ const contactServiceWorkspaceBaseSelect = {
   },
   service: {
     select: {
+      ...serviceConfigurationSelect,
       id: true,
       name: true,
       description: true,
@@ -947,6 +878,7 @@ const contactServiceWorkspaceBaseSelect = {
       installmentCount: true,
       installmentFrequency: true,
       professionals: {
+        where: { archivedAt: null },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
@@ -974,23 +906,54 @@ const contactServiceWorkspaceBaseSelect = {
       },
     },
   },
-  followUpTemplate: {
-    select: {
-      id: true,
-      name: true,
-    },
-  },
+  retiredWorkflowSnapshot: true
 } as const
 
-function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
+async function resolveEnrollmentConfiguration(item: any) {
+  const effective = resolveServiceConfiguration(item.service)
+  const billing = readBillingSnapshot(item.billingSnapshot)
+  const configuration = readEnrollmentConfiguration(item.configurationSnapshot)
+  const attribution = readProfessionalSnapshot(item.assignedProfessionalSnapshot)
+  const professionals = await enrollmentProfessionalOptions(prisma, item.tenantId, item.configurationSnapshot, effective.professionals)
+  return {
+    ...item,
+    assignedProfessional: attribution?.id === item.assignedProfessional?.id ? attribution : item.assignedProfessional,
+    service: {
+      ...effective,
+      ...(configuration ? { name: configuration.service.name, description: configuration.service.description } : {}),
+      professionals,
+      ...(billing ? pickBilling(billing) : {}),
+      tenant: {
+        ...item.service.tenant,
+        ...(billing
+          ? {
+            taxEnabled: billing.taxEnabled,
+            taxLabel: billing.taxLabel,
+            defaultTaxRateBps: billing.defaultTaxRateBps,
+          }
+          : {}),
+      },
+    },
+  }
+}
+
+async function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
+  item = await resolveEnrollmentConfiguration(item)
   return {
     id: item.id,
+    workflowKind: item.workflowKind,
+    retiredWorkflow: retiredWorkflowSummary(item.retiredWorkflowSnapshot),
+    followUpTemplate: retiredTemplate(item.retiredWorkflowSnapshot),
+    serviceSteps: item.serviceSteps ?? [],
+    stepMovements: item.stepMovements ?? [],
+    configurationSnapshot: item.configurationSnapshot,
     contactId: item.contactId,
     status: item.status,
     startedAt: item.startedAt,
     purchasedAt: item.purchasedAt,
     completedAt: item.completedAt,
     canceledAt: item.canceledAt,
+    billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant.timezone)) }),
     totalPriceCents: item.totalPriceCents,
     paidCents,
     remainingCents: Math.max(0, item.totalPriceCents - paidCents),
@@ -1007,12 +970,14 @@ function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
     service: {
       id: item.service.id,
       name: item.service.name,
+      parentService: item.service.parentService,
       description: item.service.description,
       basePriceCents: item.service.basePriceCents,
       isTaxExempt: item.service.isTaxExempt,
       minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
       installmentCount: item.service.installmentCount,
       installmentFrequency: item.service.installmentFrequency,
+      paymentSettings: resolvePaymentSettings(item.service),
       professionals: item.service.professionals,
     },
     tenantBilling: {
@@ -1020,74 +985,19 @@ function serializeContactServiceWorkspaceBase(item: any, paidCents: number) {
       taxLabel: item.service.tenant.taxLabel,
       defaultTaxRatePercent:
         item.service.tenant.defaultTaxRateBps !== null &&
-        item.service.tenant.defaultTaxRateBps !== undefined
+          item.service.tenant.defaultTaxRateBps !== undefined
           ? item.service.tenant.defaultTaxRateBps / 100
           : null,
-    },
-    followUpTemplate: item.followUpTemplate,
+    }
   }
 }
 
 function serializeContactServiceListFollowUpMetadata(item: any) {
-  const {
-    definition,
-    waitingAction,
-    effectiveNextFollowUp,
-  } = resolveVersionedFollowUpState(item)
-  const nextFollowUp = serializeEffectiveNextFollowUp(effectiveNextFollowUp)
-  const firstUnresolvedStep = (item.followUpSteps ?? []).find(
-    (step: any) => !["COMPLETED", "SKIPPED"].includes(step.status),
-  )
-  const canContinueWaitingRun = Boolean(
-    item.followUpRun?.status === "WAITING" &&
-      waitingAction &&
-      !item.followUpRun.leaseToken,
-  )
-
-  return {
-    nextFollowUp,
-    followUpRun: item.followUpRun
-      ? {
-          status: item.followUpRun.status,
-          resumeAt: item.followUpRun.resumeAt,
-          canContinueNow: canContinueWaitingRun,
-        }
-      : null,
-    followUpSteps: (item.followUpSteps ?? []).map((step: any) => {
-      const effectiveForStep =
-        effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
-      const canCompleteNow = canCompleteFollowUpStepNow({
-        step,
-        firstUnresolvedStepId: firstUnresolvedStep?.id ?? null,
-        run: item.followUpRun,
-        effectiveNextFollowUp,
-        canContinueWaitingRun,
-      })
-      const requirement =
-        canCompleteNow && step.templateNodeId
-          ? getUserScheduledWaitForStep(definition, step.templateNodeId)
-          : null
-      return {
-        ...step,
-        effectiveDueAt: effectiveForStep
-          ? effectiveForStep.at
-          : step.dueAt ?? null,
-        effectiveDueSource: effectiveForStep
-          ? effectiveForStep.source
-          : step.dueAt
-            ? "STEP_DUE"
-            : null,
-        canCompleteNow,
-        completionRequirement: requirement
-          ? {
-              type: "NEXT_FOLLOW_UP_AT" as const,
-              actionId: requirement.actionId,
-              prompt: requirement.prompt,
-            }
-          : null,
-      }
-    }),
+  if (item.workflowKind === "SERVICE_STEPS") {
+    const current = (item.serviceSteps ?? []).flatMap((step: any) => step.occurrences.filter((entry: any) => !entry.supersededAt && entry.status === "ACTIVE").map((entry: any) => ({ step, entry })))[0]
+    return { nextFollowUp: current ? { at: current.entry.dueAt, stepId: current.step.id, source: "STEP_DUE", projected: false } : null, followUpSteps: [] }
   }
+  return serializeSavedFollowUpMetadata(item, "UTC")
 }
 
 function decodeCustomFieldValue(storedValue: {
@@ -1321,49 +1231,6 @@ function getServiceTransactionsRange(
   )
 }
 
-async function summarizeContactServicePayments(
-  prismaTx: any,
-  tenantId: string,
-  contactServiceId: string,
-) {
-  const [contactService, payments] = await Promise.all([
-    prismaTx.contactService.findFirst({
-      where: {
-        id: contactServiceId,
-        tenantId,
-      },
-      select: {
-        id: true,
-        totalPriceCents: true,
-      },
-    }),
-    prismaTx.contactServicePayment.findMany({
-      where: {
-        tenantId,
-        contactServiceId,
-      },
-      select: {
-        amountCents: true,
-      },
-    }),
-  ])
-
-  if (!contactService) {
-    return null
-  }
-
-  const paidCents = payments.reduce(
-    (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-    0,
-  )
-
-  return {
-    totalPriceCents: contactService.totalPriceCents,
-    paidCents,
-    remainingCents: Math.max(0, contactService.totalPriceCents - paidCents),
-  }
-}
-
 function getServiceTotalWithTaxCents({
   basePriceCents,
   isTaxExempt,
@@ -1478,6 +1345,7 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
       select: {
         id: true,
         key: true,
+        isEncrypted: true,
       },
     }),
     prisma.contactCustomFieldValue.findMany({
@@ -1505,13 +1373,20 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
   )
 
   const customFieldValuesByKey: Record<string, unknown> = {}
+  const assistantValuesByKey: Record<string, unknown> = {}
+  const restrictedCustomKeys = new Set<string>(customFields.filter((field: any) => field.isEncrypted).map((field: any) => field.key))
   for (const item of customFieldValues as Array<any>) {
     const key = fieldKeyById.get(item.fieldId)
     if (!key) continue
     customFieldValuesByKey[key] = decodeCustomFieldValue(item)
+    if (restrictedCustomKeys.has(key) || item.valueCiphertext || item.valueIv || item.valueAuthTag) {
+      restrictedCustomKeys.add(key)
+      delete assistantValuesByKey[key]
+    }
+    else assistantValuesByKey[key] = item.value
   }
 
-  return {
+  const snapshot = {
     id: contact.id,
     firstName: contact.firstName ?? null,
     middleName: contact.middleName ?? null,
@@ -1530,13 +1405,16 @@ async function loadServiceFitContactSnapshot(tenantId: string, contactId: string
     tagIds: tags.map((item: any) => item.tagId),
     customFieldValues: customFieldValuesByKey,
   }
+  return { ...snapshot, assistantSnapshot: { ...snapshot, customFieldValues: assistantValuesByKey }, restrictedCustomKeys: [...restrictedCustomKeys] }
 }
 
-async function evaluateServiceFitScan(params: {
+export async function evaluateServiceFitScan(params: {
   tenantId: string
   contactId: string
   serviceId?: string
   fitProfileOverrideByServiceId?: Record<string, unknown>
+  explainWithAi?: boolean
+  includeContactContext?: boolean
 }) {
   const { tenantId, contactId, serviceId, fitProfileOverrideByServiceId } = params
 
@@ -1549,6 +1427,7 @@ async function evaluateServiceFitScan(params: {
     loadServiceFitContactSnapshot(tenantId, contactId),
     prismaWithServices.service.findMany({
       where: {
+        ...enrollableServiceWhere,
         tenantId,
         isActive: true,
         ...(serviceId ? { id: serviceId } : {}),
@@ -1557,6 +1436,7 @@ async function evaluateServiceFitScan(params: {
       select: {
         id: true,
         name: true,
+        parentService: { select: { id: true, name: true } },
         description: true,
         fitProfile: true,
       },
@@ -1570,20 +1450,20 @@ async function evaluateServiceFitScan(params: {
   const serviceIds = services.map((service: any) => service.id)
   const existingContactServices = serviceIds.length
     ? await prismaWithServices.contactService.findMany({
-        where: {
-          tenantId,
-          contactId,
-          serviceId: { in: serviceIds },
-        },
-        orderBy: [{ purchasedAt: "desc" }, { createdAt: "desc" }],
-        select: {
-          id: true,
-          serviceId: true,
-          status: true,
-          purchasedAt: true,
-          createdAt: true,
-        },
-      })
+      where: {
+        tenantId,
+        contactId,
+        serviceId: { in: serviceIds },
+      },
+      orderBy: [{ purchasedAt: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        serviceId: true,
+        status: true,
+        purchasedAt: true,
+        createdAt: true,
+      },
+    })
     : []
 
   const contactServicesByServiceId = new Map<string, Array<any>>()
@@ -1675,9 +1555,12 @@ async function evaluateServiceFitScan(params: {
       return {
         serviceId: service.id,
         serviceName: service.name,
+        serviceGroupId: service.parentService?.id ?? null,
+        serviceGroupName: service.parentService?.name ?? null,
         description: service.description ?? null,
         fitProfile: profile,
         ...enrollmentSummary,
+        purchaseCount: (contactServicesByServiceId.get(service.id) ?? []).length,
         ...evaluation,
       }
     })
@@ -1699,7 +1582,7 @@ async function evaluateServiceFitScan(params: {
         matchedRules: item.matchedRules,
         blockingRules: item.blockingRules,
         missingRules: item.missingRules,
-      })
+      }, params.explainWithAi === false ? null : undefined)
 
       return {
         ...item,
@@ -1713,6 +1596,11 @@ async function evaluateServiceFitScan(params: {
 
   return {
     items: itemsWithExplanations,
+    ...(params.includeContactContext ? { contactContext: buildContactAssistantContext({
+      contact: contact.assistantSnapshot, restrictedCustomKeys: contact.restrictedCustomKeys,
+      catalog, items: itemsWithExplanations, timezone,
+      skills: services.map((service: any) => ({ serviceId: service.id, serviceName: service.name })),
+    }) } : {}),
   }
 }
 
@@ -1729,6 +1617,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
     select: {
       id: true,
+      workflowKind: true,
       status: true,
       completedAt: true,
       totalPriceCents: true,
@@ -1741,6 +1630,8 @@ async function reconcileContactServiceCompletionFromFollowUps(
       },
     },
   })
+
+  if (contactService?.workflowKind === "SERVICE_STEPS") return reconcileServiceStepEnrollmentTx(prismaTx, tenantId, contactServiceId)
 
   if (!contactService || contactService.status === "CANCELED") {
     return contactService
@@ -1757,7 +1648,7 @@ async function reconcileContactServiceCompletionFromFollowUps(
     },
   })
 
-  const paymentSummary = await summarizeContactServicePayments(
+  const paymentSummary = await getBillingSummaryTx(
     prismaTx,
     tenantId,
     contactServiceId,
@@ -1823,6 +1714,74 @@ async function reconcileContactServiceCompletionFromFollowUps(
   return contactService
 }
 
+router.get("/:tenantId/configuration-updates/:serviceId/enrollments", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, serviceId } = z.object({ tenantId: z.uuid(), serviceId: z.uuid() }).parse(req.params)
+    const { cursor } = z.object({ cursor: z.uuid().optional() }).parse(req.query)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const service = await prisma.service.findFirst({ where: { tenantId, id: serviceId }, select: { kind: true } })
+    if (!service) return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
+    const items = await prisma.contactService.findMany({
+      where: { tenantId, workflowKind: "SERVICE_STEPS", status: { in: ["IN_PROGRESS", "PENDING_PAYMENT"] }, ...(cursor ? { id: { gt: cursor } } : {}),
+        ...(service.kind === "GROUP" ? { service: { parentServiceId: serviceId } } : { serviceId }) },
+      orderBy: { id: "asc" }, take: 21,
+      select: { id: true, serviceId: true, service: { select: { name: true } }, contact: { select: { firstName: true, lastName: true } },
+        configurationChanges: { where: { appliedAt: { not: null } }, orderBy: { appliedAt: "desc" }, take: 1, select: { appliedAt: true, appliedByName: true } } },
+    })
+    return res.json({ ok: true, items: items.slice(0, 20).map(item => ({ id: item.id, serviceId: item.serviceId, serviceName: item.service.name,
+        contactName: [item.contact.firstName, item.contact.lastName].filter(Boolean).join(" ") || "Contact", lastApplied: item.configurationChanges[0] ?? null })), nextCursor: items.length > 20 ? items[19]!.id : null })
+  } catch (error) { return next(error) }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/configuration-preview", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const preview = await prisma.$transaction(tx => previewServiceConfigurationTx(tx, path), { timeout: 15000 })
+    return res.json({ ok: true, preview })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/configuration-apply", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const payload = z.object({ previewId: z.uuid() }).strict().parse(req.body)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const result = await prisma.$transaction(tx => applyServiceConfigurationTx(tx, { ...path, ...payload, actorUserId: authed.user.id, actorName: authed.user.name ?? authed.user.email }), { timeout: 15000 })
+    return res.json({ ok: true, ...result })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/contact-services/:contactServiceId/configuration-history", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (membership.role !== "TENANT_ADMIN") return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
+    const items = await prisma.contactServiceConfigurationChange.findMany({ where: { ...path, appliedAt: { not: null } }, orderBy: { appliedAt: "desc" }, take: 20,
+      select: { id: true, appliedAt: true, appliedByName: true, preview: true } })
+    return res.json({ ok: true, items })
+  } catch (error) { return next(error) }
+})
+
 router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
@@ -1831,15 +1790,20 @@ router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
+    const { includeInactive } = z.object({ includeInactive: z.enum(["true", "false"]).optional() }).parse(req.query)
     const items = await prismaWithServices.service.findMany({
       where: {
         tenantId,
-        isActive: true,
+        ...(includeInactive === "true" ? { kind: "OFFERING" as const } : enrollableServiceWhere),
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
         id: true,
         name: true,
+        kind: true,
+        isActive: true,
+        parentServiceId: true,
+        parentService: { select: { id: true, name: true, isActive: true } },
       },
     })
 
@@ -1847,6 +1811,23 @@ router.get("/:tenantId/options", requireAuth, async (req, res, next) => {
   } catch (error) {
     return next(error)
   }
+})
+
+router.get("/:tenantId/catalog", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId } = TenantPathSchema.parse(req.params)
+    const query = z.object({ page: z.coerce.number().int().min(1).max(1000000).default(1), pageSize: z.coerce.number().refine(value => value === 10 || value === 25).default(10), search: z.string().trim().max(200).optional(), serviceGroupId: z.uuid().optional(), serviceId: z.uuid().optional() }).parse(req.query)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    const where: Prisma.ServiceWhereInput = { tenantId, ...enrollableServiceWhere, ...(query.serviceId ? { id: query.serviceId } : {}), ...(query.serviceGroupId ? { parentServiceId: query.serviceGroupId } : {}),
+      ...(query.search ? { OR: [{ name: { contains: query.search, mode: "insensitive" } }, { description: { contains: query.search, mode: "insensitive" } }, { parentService: { name: { contains: query.search, mode: "insensitive" } } }] } : {}) }
+    const [total, rows] = await prisma.$transaction([prisma.service.count({ where }), prisma.service.findMany({ where, orderBy: [{ sortOrder: "asc" }, { name: "asc" }, { id: "asc" }], skip: (query.page - 1) * query.pageSize, take: query.pageSize, select: { ...serviceConfigurationSelect, isActive: true, sortOrder: true } })])
+    return res.json({ ok: true, items: rows.map(row => { const service = resolveServiceConfiguration(row); return {
+          ...service,
+          steps: offeringSteps(service.steps, service.id)
+        } }), pagination: { page: query.page, pageSize: query.pageSize, total, totalPages: Math.max(1, Math.ceil(total / query.pageSize)) } })
+  } catch (error) { return next(error) }
 })
 
 router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) => {
@@ -1857,13 +1838,15 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
 
-    const service = await prismaWithServices.service.findFirst({
+    let service = await prismaWithServices.service.findFirst({
       where: {
+        ...enrollableServiceWhere,
         id: serviceId,
         tenantId,
         isActive: true,
       },
       select: {
+        ...serviceConfigurationSelect,
         id: true,
         name: true,
         description: true,
@@ -1883,6 +1866,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
           },
         },
         checklistItems: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -1892,19 +1876,8 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
             sortOrder: true,
           },
         },
-        followUpTemplates: {
-          where: { isPublished: true },
-          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-          select: {
-            id: true,
-            name: true,
-            isPublished: true,
-            sortOrder: true,
-            flowNodes: true,
-            flowEdges: true,
-          },
-        },
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -1921,7 +1894,7 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
               },
             },
           },
-        },
+        }
       },
     })
 
@@ -1929,11 +1902,14 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
     }
 
+    service = resolveServiceConfiguration(service)
     return res.json({
       ok: true,
       service: {
         id: service.id,
         name: service.name,
+        parentServiceId: service.parentServiceId,
+        parentService: service.parentService,
         description: service.description,
         basePriceCents: service.basePriceCents,
         currency: service.currency,
@@ -1942,16 +1918,10 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
         minimumPartialPaymentCents: service.minimumPartialPaymentCents,
         installmentCount: service.installmentCount,
         installmentFrequency: service.installmentFrequency,
+        paymentSettings: resolvePaymentSettings(service),
         isActive: service.isActive,
         checklistItems: service.checklistItems,
-        followUpTemplates: service.followUpTemplates.map((template: any) => ({
-          id: template.id,
-          name: template.name,
-          isPublished: template.isPublished,
-          sortOrder: template.sortOrder,
-          flowNodeCount: Array.isArray(template.flowNodes) ? template.flowNodes.length : 0,
-          flowEdgeCount: Array.isArray(template.flowEdges) ? template.flowEdges.length : 0,
-        })),
+        steps: offeringSteps(service.steps, service.id),
         professionals: service.professionals.map((professional: any) => ({
           id: professional.id,
           kind: professional.kind,
@@ -1966,10 +1936,10 @@ router.get("/:tenantId/catalog/:serviceId", requireAuth, async (req, res, next) 
           taxLabel: service.tenant.taxLabel,
           defaultTaxRatePercent:
             service.tenant.defaultTaxRateBps !== null &&
-            service.tenant.defaultTaxRateBps !== undefined
+              service.tenant.defaultTaxRateBps !== undefined
               ? service.tenant.defaultTaxRateBps / 100
               : null,
-        },
+        }
       },
     })
   } catch (error) {
@@ -1992,6 +1962,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
     })
     const timezone = getSafeTimezone(tenant?.timezone)
     const range = getServicesCatalogSummaryRange(query, timezone)
+    const scope = serviceScopeWhere(query)
     const salesDateWhere = {
       OR: [
         {
@@ -2014,7 +1985,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
       await Promise.all([
         prismaWithServices.contactService.aggregate({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2026,7 +1997,7 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
         }),
         prismaWithServices.contactService.count({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2035,22 +2006,16 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
         }),
         prismaWithServices.contactService.count({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
-            followUpSteps: {
-              some: {
-                status: {
-                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
-                },
-              },
-            },
+            ...unfinishedServiceWorkWhere,
           },
         }),
         prismaWithServices.contactService.aggregate({
           where: {
-            tenantId,
+            tenantId, ...scope,
             status: {
               not: "CANCELED",
             },
@@ -2060,10 +2025,10 @@ router.get("/:tenantId/catalog-summary", requireAuth, async (req, res, next) => 
           },
         }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: {
+          where: { voidedAt: null,
             tenantId,
             contactService: {
-              tenantId,
+              tenantId, ...scope,
               status: {
                 not: "CANCELED",
               },
@@ -2115,6 +2080,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
 
     const service = await prismaWithServices.service.findFirst({
       where: {
+        ...enrollableServiceWhere,
         id: serviceId,
         tenantId,
         isActive: true,
@@ -2176,13 +2142,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
             status: {
               not: "CANCELED",
             },
-            followUpSteps: {
-              some: {
-                status: {
-                  in: ["PENDING", "ACTIVE", "POSTPONED"] as const,
-                },
-              },
-            },
+            ...unfinishedServiceWorkWhere,
           },
         }),
         prismaWithServices.contactService.aggregate({
@@ -2198,7 +2158,7 @@ router.get("/:tenantId/catalog/:serviceId/summary", requireAuth, async (req, res
           },
         }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: {
+          where: { voidedAt: null,
             tenantId,
             contactService: {
               tenantId,
@@ -2279,9 +2239,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
       andClauses.push({
         OR: [
           {
-            service: {
-              name: { contains: searchableValue, mode: "insensitive" as const },
-            },
+            service: { OR: [{ name: { contains: searchableValue, mode: "insensitive" as const } }, { parentService: { name: { contains: searchableValue, mode: "insensitive" as const } } }] },
           },
           {
             contact: buildRelatedContactSearchWhere(searchableValue),
@@ -2292,36 +2250,46 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
 
     const where = {
       tenantId,
-      ...(query.serviceId ? { serviceId: query.serviceId } : {}),
+      ...serviceScopeWhere(query),
       ...(query.status ? { status: query.status } : {}),
       ...(andClauses.length ? { AND: andClauses } : {}),
     }
+    const today = tenantDateOnly(timezone)
+    const dueDate = new Date(`${today}T00:00:00Z`)
+    const paymentFilter: Prisma.ContactServiceWhereInput = query.paymentFilter === "PAID"
+      ? { totalPriceCents: { lte: prisma.contactService.fields.paidCents } }
+      : query.paymentFilter === "BALANCE_DUE" || query.paymentFilter === "NEEDS_REVIEW"
+        ? { totalPriceCents: { gt: prisma.contactService.fields.paidCents }, status: { not: "CANCELED" }, ...(query.paymentFilter === "NEEDS_REVIEW" ? { paymentType: null } : {}) }
+        : query.paymentFilter === "DUE_TODAY" || query.paymentFilter === "OVERDUE"
+          ? { status: { not: "CANCELED" }, paymentDues: { some: { remainingCents: { gt: 0 }, dueDate: query.paymentFilter === "DUE_TODAY" ? dueDate : { lt: dueDate } } } }
+          : {}
+    if (query.paymentFilter !== "ALL") Object.assign(where, { AND: [...(Array.isArray(where.AND) ? where.AND : where.AND ? [where.AND] : []), paymentFilter] })
     const financialWhere = {
       AND: [where, { status: { not: "CANCELED" as const } }],
     }
     const transactionOrderBy: Prisma.ContactServiceOrderByWithRelationInput[] =
       query.sort === "PURCHASED_ASC"
         ? [
-            { purchasedAt: { sort: "asc", nulls: "last" } },
-            { createdAt: "asc" },
-            { id: "asc" },
-          ]
+          { purchasedAt: { sort: "asc", nulls: "last" } },
+          { createdAt: "asc" },
+          { id: "asc" },
+        ]
         : query.sort === "CONTACT_ASC"
           ? [
-              { contact: { firstName: "asc" } },
-              { contact: { middleName: "asc" } },
-              { contact: { lastName: "asc" } },
-              { id: "asc" },
-            ]
+            { contact: { firstName: "asc" } },
+            { contact: { middleName: "asc" } },
+            { contact: { lastName: "asc" } },
+            { id: "asc" },
+          ]
           : query.sort === "SERVICE_ASC"
             ? [{ service: { name: "asc" } }, { id: "asc" }]
             : query.sort === "TOTAL_DESC"
               ? [{ totalPriceCents: "desc" }, { id: "desc" }]
               : [
-                  { purchasedAt: { sort: "desc", nulls: "last" } },
-                  { createdAt: "desc" },
-                  { id: "desc" },
-                ]
+                { purchasedAt: { sort: "desc", nulls: "last" } },
+                { createdAt: "desc" },
+                { id: "desc" },
+              ]
 
     const [total, transactions, currencies] = await prisma.$transaction([
       prismaWithServices.contactService.count({ where }),
@@ -2335,6 +2303,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
           status: true,
           purchasedAt: true,
           createdAt: true,
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           contact: {
@@ -2351,9 +2320,11 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
             },
@@ -2379,7 +2350,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
             _sum: { totalPriceCents: true },
           }),
           prismaWithServices.contactServicePayment.aggregate({
-            where: {
+            where: { voidedAt: null,
               tenantId,
               contactService: {
                 is: currencyWhere,
@@ -2404,6 +2375,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
 
     return res.json({
       ok: true,
+      permissions: { canRecord: canManageContactServices(membership) },
       items: transactions.map((transaction: any) => {
         const financials = getServiceTransactionFinancials(
           transaction.totalPriceCents,
@@ -2424,6 +2396,7 @@ router.get("/:tenantId/transactions", requireAuth, async (req, res, next) => {
           currency: transaction.currency,
           totalPriceCents: transaction.totalPriceCents,
           ...financials,
+          billing: summarizeServiceBilling({ ...transaction, dues: transaction.paymentDues, paidCents: financials.paidCents, today, timezone }),
         }
       }),
       summary: {
@@ -2470,15 +2443,9 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
         Prisma.sql`cs."status"::text IN (${Prisma.join(query.statuses)})`,
       )
     }
+    if (query.serviceGroupId) conditions.push(Prisma.sql`s."parentServiceId" = ${query.serviceGroupId}`)
     if (query.serviceId) {
       conditions.push(Prisma.sql`cs."serviceId" = ${query.serviceId}`)
-    }
-    if (query.followUpTemplateId) {
-      conditions.push(
-        Prisma.sql`cs."followUpTemplateId" = ${query.followUpTemplateId}`,
-      )
-    } else if (query.withoutTemplate) {
-      conditions.push(Prisma.sql`cs."followUpTemplateId" IS NULL`)
     }
     if (query.assignedToUserId) {
       conditions.push(
@@ -2494,7 +2461,8 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
         OR COALESCE(c."phone", '') ILIKE ${searchPattern}
         OR COALESCE(c."email", '') ILIKE ${searchPattern}
         OR s."name" ILIKE ${searchPattern}
-        OR COALESCE(template."name", '') ILIKE ${searchPattern}
+        OR EXISTS (SELECT 1 FROM "Service" service_group WHERE service_group."tenantId"=cs."tenantId" AND service_group.id=s."parentServiceId" AND service_group.name ILIKE ${searchPattern})
+        OR COALESCE(cs."retiredWorkflowSnapshot"->'template'->>'name', '') ILIKE ${searchPattern}
         OR COALESCE(coordinator."name", '') ILIKE ${searchPattern}
         OR COALESCE(coordinator."email", '') ILIKE ${searchPattern}
       )`)
@@ -2507,8 +2475,6 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
         ON c."id" = cs."contactId" AND c."tenantId" = cs."tenantId"
       INNER JOIN "Service" s
         ON s."id" = cs."serviceId" AND s."tenantId" = cs."tenantId"
-      LEFT JOIN "ServiceFollowUpTemplate" template
-        ON template."id" = cs."followUpTemplateId" AND template."tenantId" = cs."tenantId"
       LEFT JOIN "User" coordinator
         ON coordinator."id" = cs."followUpCoordinatorUserId"
     `
@@ -2577,11 +2543,22 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
                 AND follow_up_step."contactServiceId" = cs."id"
             ), cs."updatedAt"),
             COALESCE((
-              SELECT MAX(follow_up_run."updatedAt")
-              FROM "ContactServiceFollowUpRun" follow_up_run
-              WHERE follow_up_run."tenantId" = ${tenantId}
-                AND follow_up_run."contactServiceId" = cs."id"
+              SELECT MAX(saved_step."createdAt") FROM "ContactServiceStep" saved_step
+              WHERE saved_step."tenantId" = ${tenantId} AND saved_step."contactServiceId" = cs."id"
             ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(GREATEST(step_entry."createdAt", step_entry."enteredAt", step_entry."resolvedAt", step_entry."supersededAt", step_entry."advancedAt")) FROM "ServiceStepOccurrence" step_entry
+              WHERE step_entry."tenantId" = ${tenantId} AND step_entry."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(deadline_change."createdAt") FROM "ServiceStepDeadlineChange" deadline_change
+              WHERE deadline_change."tenantId" = ${tenantId} AND deadline_change."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((
+              SELECT MAX(step_move."createdAt") FROM "ServiceStepMovement" step_move
+              WHERE step_move."tenantId" = ${tenantId} AND step_move."contactServiceId" = cs."id"
+            ), cs."updatedAt"),
+            COALESCE((cs."retiredWorkflowSnapshot"->'run'->>'updatedAt')::timestamp, cs."updatedAt"),
             COALESCE((
               SELECT MAX(execution_log."createdAt")
               FROM "ServiceFollowUpExecutionLog" execution_log
@@ -2606,47 +2583,44 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
     const selectedIds = pageRows.map((row) => row.id)
     const enrollments = selectedIds.length
       ? await prisma.contactService.findMany({
-          where: {
-            tenantId,
-            id: { in: selectedIds },
-          },
-          select: {
-            id: true,
-            status: true,
-            startedAt: true,
-            updatedAt: true,
-            contact: {
-              select: {
-                id: true,
-                firstName: true,
-                middleName: true,
-                lastName: true,
-                phone: true,
-                email: true,
-              },
-            },
-            service: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            followUpCoordinator: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
+        where: {
+          tenantId,
+          id: { in: selectedIds },
+        },
+        select: {
+          id: true,
+          workflowKind: true,
+          status: true,
+          startedAt: true,
+          updatedAt: true,
+          contact: {
+            select: {
+              id: true,
+              firstName: true,
+              middleName: true,
+              lastName: true,
+              phone: true,
+              email: true,
             },
           },
-        })
+          service: {
+            select: {
+              id: true,
+              name: true,
+              parentService: { select: { id: true, name: true } },
+            },
+          },
+          followUpCoordinator: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              image: true,
+            },
+          },
+          retiredWorkflowSnapshot: true
+        },
+      })
       : []
 
     const enrollmentById = new Map(
@@ -2676,15 +2650,16 @@ router.get("/:tenantId/enrollments", requireAuth, async (req, res, next) => {
             email: enrollment.contact.email,
           },
           service: enrollment.service,
-          template: enrollment.followUpTemplate,
+          workflowKind: enrollment.workflowKind,
+          template: retiredTemplate(enrollment.retiredWorkflowSnapshot),
           status: enrollment.status,
           coordinator: coordinator
             ? {
-                id: coordinator.id,
-                name: coordinator.name?.trim() || coordinator.email,
-                email: coordinator.email,
-                image: coordinator.image,
-              }
+              id: coordinator.id,
+              name: coordinator.name?.trim() || coordinator.email,
+              email: coordinator.email,
+              image: coordinator.image,
+            }
             : null,
           startedAt: enrollment.startedAt,
           lastActivityAt,
@@ -2706,453 +2681,12 @@ router.get("/:tenantId/follow-ups", requireAuth, async (req, res, next) => {
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const {
-      page,
-      pageSize,
-      search,
-      sort,
-      status,
-      dueDatePreset,
-      followUpTemplateId,
-      assignedToUserId,
-    } = FollowUpsListQuerySchema.parse(
-      req.query,
-    )
-
+    const query = FollowUpsListQuerySchema.parse(req.query)
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: { timezone: true },
-    })
-
-    const tenantTimezone = getSafeTimezone(tenant?.timezone)
-    const now = new Date()
-    const { today: todayRange, nextSevenDaysEnd } = getFollowUpListDateRanges(
-      tenantTimezone,
-      now,
-    )
-    const skip = (page - 1) * pageSize
-
-    const listedStepStatuses = ["ACTIVE", "POSTPONED", "PENDING", "COMPLETED", "SKIPPED"] as const
-    const unresolvedStepStatuses = ["ACTIVE", "POSTPONED", "PENDING"] as const
-    const searchableValue = search?.trim()
-    const currentStepStatusClause = status
-      ? { status }
-      : { status: { in: listedStepStatuses } }
-    const assignedToClause = assignedToUserId ? { assignedToUserId } : {}
-    const baseStepWhere = {
-      ...currentStepStatusClause,
-      ...assignedToClause,
-    }
-    const dateRange =
-      dueDatePreset === "OVERDUE"
-        ? { lt: now }
-        : dueDatePreset === "TODAY"
-          ? { gte: todayRange.start, lt: todayRange.end }
-          : dueDatePreset === "NEXT_7_DAYS"
-            ? { gte: todayRange.start, lt: nextSevenDaysEnd }
-            : null
-    const overdueStepStatusClause = status
-      ? unresolvedStepStatuses.includes(status as (typeof unresolvedStepStatuses)[number])
-        ? { status }
-        : { id: "__no_overdue_follow_up_step__" }
-      : { status: { in: unresolvedStepStatuses } }
-    const datedStepWhere = {
-      ...(dueDatePreset === "OVERDUE" ? overdueStepStatusClause : currentStepStatusClause),
-      ...assignedToClause,
-      ...(dateRange ? { dueAt: dateRange } : {}),
-    }
-    const canMatchWaitingProjection =
-      (!status || status === "PENDING") && dueDatePreset !== "NO_DUE_DATE"
-    const waitingProjectionWhere = canMatchWaitingProjection
-      ? {
-          followUpRun: {
-            is: {
-              status: "WAITING",
-              waitingNodeId: { not: null },
-              ...(dateRange ? { resumeAt: dateRange } : { resumeAt: { not: null } }),
-            },
-          },
-          followUpSteps: {
-            some: {
-              status: "PENDING",
-              ...assignedToClause,
-            },
-          },
-        }
-      : null
-    const followUpMatchWhere = dateRange
-      ? {
-          OR: [
-            { followUpSteps: { some: datedStepWhere } },
-            ...(waitingProjectionWhere ? [waitingProjectionWhere] : []),
-          ],
-        }
-      : dueDatePreset === "NO_DUE_DATE"
-        ? { followUpSteps: { some: { ...baseStepWhere, dueAt: null } } }
-        : { followUpSteps: { some: baseStepWhere } }
-    const matchesSelectedDatePreset = (value: Date | string | null | undefined) => {
-      if (!dateRange) return true
-      if (!value) return false
-      const timestamp = new Date(value).getTime()
-      if (Number.isNaN(timestamp)) return false
-      if (dueDatePreset === "OVERDUE") return timestamp < now.getTime()
-      if (dueDatePreset === "TODAY") {
-        return timestamp >= todayRange.start.getTime() && timestamp < todayRange.end.getTime()
-      }
-      return timestamp >= todayRange.start.getTime() && timestamp < nextSevenDaysEnd.getTime()
-    }
-
-    const searchOrClauses = searchableValue
-      ? [
-          { service: { name: { contains: searchableValue, mode: "insensitive" as const } } },
-          {
-            contact: buildRelatedContactSearchWhere(searchableValue),
-          },
-          {
-            followUpSteps: {
-              some: {
-                ...baseStepWhere,
-                OR: [
-                  { title: { contains: searchableValue, mode: "insensitive" as const } },
-                  { note: { contains: searchableValue, mode: "insensitive" as const } },
-                ],
-              },
-            },
-          },
-        ]
-      : undefined
-
-    const where = {
-      tenantId,
-      status: {
-        in: FOLLOW_UP_LIST_SERVICE_STATUSES,
-      },
-      AND: [
-        followUpMatchWhere,
-        ...(searchOrClauses ? [{ OR: searchOrClauses }] : []),
-      ],
-      ...(followUpTemplateId
-        ? {
-            followUpTemplateId,
-          }
-        : {}),
-    }
-
-    const [total, services] = await prisma.$transaction([
-      prismaWithServices.contactService.count({ where }),
-      prismaWithServices.contactService.findMany({
-        where,
-        orderBy:
-          sort === "STARTED_DESC"
-            ? [{ startedAt: { sort: "desc", nulls: "last" } }, { id: "desc" }]
-            : sort === "CONTACT_ASC"
-              ? [
-                  { contact: { firstName: "asc" } },
-                  { contact: { middleName: "asc" } },
-                  { contact: { lastName: "asc" } },
-                  { id: "asc" },
-                ]
-              : sort === "SERVICE_ASC"
-                ? [{ service: { name: "asc" } }, { id: "asc" }]
-                : [{ updatedAt: "desc" }, { id: "desc" }],
-        skip,
-        take: pageSize,
-        select: {
-          id: true,
-          status: true,
-          service: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          contact: {
-            select: {
-              id: true,
-              firstName: true,
-              middleName: true,
-              lastName: true,
-              phone: true,
-            },
-          },
-          followUpTemplate: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          followUpTemplateVersion: {
-            select: { id: true, versionNumber: true, definition: true },
-          },
-          followUpRun: {
-            select: {
-              id: true,
-              status: true,
-              resumeAt: true,
-              waitingNodeId: true,
-              failureNodeId: true,
-              failureCode: true,
-              failureMessage: true,
-              failedAt: true,
-            },
-          },
-          followUpSteps: {
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: {
-              id: true,
-              title: true,
-              status: true,
-              availableAt: true,
-              dueAt: true,
-              completedAt: true,
-              resolutionSource: true,
-              resolutionReason: true,
-              assignedToUserId: true,
-              note: true,
-              sortOrder: true,
-              assignedTo: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-            },
-          },
-        },
-      }),
-    ])
-
-    const summaryServices = await prismaWithServices.contactService.findMany({
-      where: {
-        tenantId,
-        status: {
-          in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
-        },
-        followUpSteps: {
-          some: {
-            status: { in: unresolvedStepStatuses },
-          },
-        },
-      },
-      select: {
-        id: true,
-        followUpTemplateVersion: {
-          select: { definition: true },
-        },
-        followUpRun: {
-          select: {
-            status: true,
-            resumeAt: true,
-            waitingNodeId: true,
-          },
-        },
-        followUpSteps: {
-          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-          select: {
-            id: true,
-            status: true,
-            availableAt: true,
-            dueAt: true,
-            completedAt: true,
-          },
-        },
-      },
-    })
-
-    const summaryEntries = summaryServices.map((service: any) => ({
-      service,
-      effectiveNextFollowUp: resolveVersionedFollowUpState(service).effectiveNextFollowUp,
-    }))
-    const servicesInProgress = summaryServices.length
-    const overdueEnrollments = summaryEntries.filter(
-      ({ effectiveNextFollowUp }: any) =>
-        effectiveNextFollowUp && effectiveNextFollowUp.at.getTime() < now.getTime(),
-    ).length
-    const dueToday = summaryEntries.filter(
-      ({ effectiveNextFollowUp }: any) =>
-        effectiveNextFollowUp &&
-        effectiveNextFollowUp.at.getTime() >= todayRange.start.getTime() &&
-        effectiveNextFollowUp.at.getTime() < todayRange.end.getTime(),
-    ).length
-
-    const totalPages = Math.max(1, Math.ceil(total / pageSize))
-    const averageProgress = summaryServices.length
-      ? Math.round(
-          summaryServices.reduce((sum: number, service: any) => {
-            const totalSteps = service.followUpSteps.length
-            if (!totalSteps) return sum
-
-            const completedSteps = service.followUpSteps.filter(
-              (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
-            ).length
-
-            return sum + Math.round((completedSteps / totalSteps) * 100)
-          }, 0) / summaryServices.length,
-        )
-      : 0
-
-    return res.json({
-      ok: true,
-      items: services.map((service: any) => {
-        const { effectiveNextFollowUp } = resolveVersionedFollowUpState(service)
-        const selectableSteps = assignedToUserId
-          ? service.followUpSteps.filter(
-              (step: any) => step.assignedToUserId === assignedToUserId,
-            )
-          : service.followUpSteps
-        const dateFilteredSteps = selectableSteps.filter((step: any) => {
-          const effectiveForStep =
-            effectiveNextFollowUp?.stepId === step.id ? effectiveNextFollowUp : null
-
-          if (dueDatePreset === "NO_DUE_DATE") {
-            return !step.dueAt && !effectiveForStep
-          }
-          if (!dateRange) return true
-          if (
-            dueDatePreset === "OVERDUE" &&
-            !unresolvedStepStatuses.includes(step.status)
-          ) {
-            return false
-          }
-          return matchesSelectedDatePreset(effectiveForStep?.at ?? step.dueAt)
-        })
-        const currentStep = selectFollowUpListStep({
-          steps: dateFilteredSteps,
-          effectiveNextFollowUp,
-          status,
-        }) as any
-        const currentStepIndex = currentStep
-          ? service.followUpSteps.findIndex((step: any) => step.id === currentStep.id)
-          : -1
-        const effectiveForCurrentStep =
-          currentStep && effectiveNextFollowUp?.stepId === currentStep.id
-            ? effectiveNextFollowUp
-            : null
-        const effectiveDueAt = currentStep
-          ? effectiveForCurrentStep?.at ?? currentStep.dueAt ?? currentStep.availableAt ?? null
-          : null
-        const effectiveDueSource = currentStep
-          ? effectiveForCurrentStep?.source ??
-            (currentStep.dueAt
-              ? "STEP_DUE"
-              : currentStep.availableAt
-                ? "STEP_AVAILABLE"
-                : null)
-          : null
-        const totalSteps = service.followUpSteps.length
-        const completedSteps = service.followUpSteps.filter(
-          (step: any) => step.status === "COMPLETED" || step.status === "SKIPPED",
-        ).length
-        const remainingSteps = Math.max(0, totalSteps - completedSteps)
-
-        return {
-          id: service.id,
-          status: service.status,
-          contactId: service.contact.id,
-          contactName: [service.contact.firstName, service.contact.middleName, service.contact.lastName]
-            .filter(Boolean)
-            .join(" "),
-          phoneNumber: service.contact.phone ?? null,
-          serviceId: service.service.id,
-          serviceName: service.service.name,
-          followUpTemplateId: service.followUpTemplate?.id ?? null,
-          followUpTemplateName: service.followUpTemplate?.name ?? null,
-          followUpTemplateVersion: service.followUpTemplateVersion
-            ? {
-                id: service.followUpTemplateVersion.id,
-                versionNumber: service.followUpTemplateVersion.versionNumber,
-              }
-            : null,
-          followUpRun: service.followUpRun ?? null,
-          currentStep: currentStep
-            ? {
-                id: currentStep.id,
-                title: currentStep.title,
-                status: currentStep.status,
-                availableAt: currentStep.availableAt,
-                dueAt: currentStep.dueAt,
-                effectiveDueAt,
-                effectiveDueSource,
-                effectiveDueProjected: Boolean(effectiveForCurrentStep?.projected),
-                completedAt: currentStep.completedAt,
-                resolutionSource: currentStep.resolutionSource ?? null,
-                resolutionReason: currentStep.resolutionReason ?? null,
-                assignedToUserId: currentStep.assignedToUserId,
-                assignedToName:
-                  currentStep.assignedTo?.name?.trim() || currentStep.assignedTo?.email || null,
-                note: currentStep.note,
-                sortOrder: currentStep.sortOrder,
-                stepNumber: currentStepIndex >= 0 ? currentStepIndex + 1 : null,
-              }
-            : null,
-          progress: {
-            completedCount: completedSteps,
-            totalCount: totalSteps,
-            remainingCount: remainingSteps,
-            completionPercentage: totalSteps
-              ? Math.round((completedSteps / totalSteps) * 100)
-              : 0,
-          },
-          overdue:
-            Boolean(effectiveDueAt) &&
-            unresolvedStepStatuses.includes(currentStep?.status) &&
-            new Date(effectiveDueAt).getTime() < now.getTime(),
-        }
-      }),
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages,
-      },
-      summary: {
-        servicesInProgress,
-        overdueEnrollments,
-        dueToday,
-        averageProgress,
-      },
-    })
-  } catch (error) {
-    return next(error)
-  }
-})
-
-router.get("/:tenantId/follow-up-template-options", requireAuth, async (req, res, next) => {
-  try {
-    const authed = req as AuthedRequest
-    const { tenantId } = TenantPathSchema.parse(req.params)
-
-    const membership = await requireActiveMembership(authed, res, tenantId)
-    if (!membership) return
-
-    const templates = await prisma.serviceFollowUpTemplate.findMany({
-      where: {
-        tenantId,
-        isPublished: true,
-        contactServices: {
-          some: {
-            tenantId,
-            status: {
-              in: ["IN_PROGRESS", "PENDING_PAYMENT"] as const,
-            },
-          },
-        },
-      },
-      orderBy: [{ name: "asc" }],
-      select: {
-        id: true,
-        name: true,
-      },
-    })
-
-    return res.json({
-      ok: true,
-      items: templates,
-    })
+    const tenant = await prisma.tenant.findUnique({ where: { id: tenantId }, select: { timezone: true } })
+    const result = await prisma.$transaction(tx => getServiceFollowUpQueue(tx, tenantId, getSafeTimezone(tenant?.timezone), query), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
+    return res.json(result)
   } catch (error) {
     return next(error)
   }
@@ -3180,56 +2714,6 @@ router.get("/:tenantId/fit-scan", requireAuth, async (req, res, next) => {
     return res.json({
       ok: true,
       items: result.items,
-    })
-  } catch (error) {
-    return next(error)
-  }
-})
-
-router.post("/:tenantId/fit-scan/assistant", requireAuth, async (req, res, next) => {
-  try {
-    const authed = req as AuthedRequest
-    const { tenantId } = TenantPathSchema.parse(req.params)
-    const payload = FitScanAssistantBodySchema.parse(req.body)
-
-    const membership = await requireActiveMembership(authed, res, tenantId)
-    if (!membership) return
-
-    const scope = payload.scope === "service" && payload.serviceId ? "service" : "all"
-    const result = await evaluateServiceFitScan({
-      tenantId,
-      contactId: payload.contactId,
-      serviceId: scope === "service" ? payload.serviceId : undefined,
-    })
-
-    if ("error" in result) {
-      return res.status(404).json({ error: result.error })
-    }
-
-    if (scope === "service" && result.items.length === 0) {
-      return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
-    }
-
-    const serviceItem =
-      scope === "service"
-        ? result.items.find((item) => item.serviceId === payload.serviceId) ?? result.items[0] ?? null
-        : null
-
-    const answer = await routeServiceQuestion({
-      items: result.items,
-      scope,
-      serviceId: payload.serviceId,
-      question: payload.question ?? null,
-    })
-
-    return res.json({
-      ok: true,
-      scope: {
-        mode: scope,
-        serviceId: serviceItem?.serviceId ?? null,
-        serviceName: serviceItem?.serviceName ?? null,
-      },
-      answer,
     })
   } catch (error) {
     return next(error)
@@ -3290,7 +2774,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
   try {
     const authed = req as AuthedRequest
     const { tenantId } = TenantPathSchema.parse(req.params)
-    const { page, pageSize, contactId, status } = ContactServicesListQuerySchema.parse(req.query)
+    const { page, pageSize, contactId, status, readOnly } = ContactServicesListQuerySchema.parse(req.query)
 
     const membership = await requireActiveMembership(authed, res, tenantId)
     if (!membership) return
@@ -3314,6 +2798,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: true,
           status: true,
           purchasedAt: true,
+          tenantId: true,
+          workflowKind: true,
+          configurationSnapshot: true,
+          assignedProfessionalSnapshot: true,
+          serviceSteps: enrolledServiceStepsSelect,
+          stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3329,7 +2820,9 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
               checklistItems: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                 },
@@ -3337,21 +2830,9 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
-            },
-          },
-          followUpTemplateVersion: {
-            select: {
-              definition: true,
-            },
-          },
-          followUpRun: {
-            select: {
-              status: true,
-              resumeAt: true,
-              waitingNodeId: true,
-              leaseToken: true,
             },
           },
           followUpSteps: {
@@ -3390,6 +2871,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
               status: true,
               completedAt: true,
               checklistItem: {
@@ -3403,15 +2885,17 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               },
             },
             orderBy: [
+              { sortOrderSnapshot: "asc" },
               { checklistItem: { sortOrder: "asc" } },
               { createdAt: "asc" },
             ],
           },
+          retiredWorkflowSnapshot: true
         },
       }),
     ])
 
-    const syncResults = await prisma.$transaction(async (tx) => {
+    const syncResults = readOnly === "true" ? { activatedIds: [], checklistBackfilled: false, statusReconciled: false } : await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any
       const activatedIds: string[] = []
       let checklistBackfilled = false
@@ -3424,7 +2908,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         })
         if (activatedId) activatedIds.push(activatedId)
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -3475,6 +2959,13 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: true,
           status: true,
           purchasedAt: true,
+          tenantId: true,
+          workflowKind: true,
+          configurationSnapshot: true,
+          assignedProfessionalSnapshot: true,
+          serviceSteps: enrolledServiceStepsSelect,
+          stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
+          ...billingAccountSelect,
           totalPriceCents: true,
           currency: true,
           followUpCoordinatorUserId: true,
@@ -3490,7 +2981,9 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               name: true,
+              parentService: { select: { id: true, name: true } },
               checklistItems: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                 },
@@ -3498,21 +2991,9 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             },
           },
           payments: {
+            where: { voidedAt: null },
             select: {
               amountCents: true,
-            },
-          },
-          followUpTemplateVersion: {
-            select: {
-              definition: true,
-            },
-          },
-          followUpRun: {
-            select: {
-              status: true,
-              resumeAt: true,
-              waitingNodeId: true,
-              leaseToken: true,
             },
           },
           followUpSteps: {
@@ -3551,6 +3032,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
             select: {
               id: true,
               checklistItemId: true,
+              ...enrolledChecklistSnapshotSelect,
               status: true,
               completedAt: true,
               checklistItem: {
@@ -3564,10 +3046,12 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
               },
             },
             orderBy: [
+              { sortOrderSnapshot: "asc" },
               { checklistItem: { sortOrder: "asc" } },
               { createdAt: "asc" },
             ],
           },
+          retiredWorkflowSnapshot: true
         },
       })
     }
@@ -3586,7 +3070,7 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
         _sum: { totalPriceCents: true },
       }),
       prismaWithServices.contactServicePayment.aggregate({
-        where: {
+        where: { voidedAt: null,
           tenantId,
           contactService: {
             is: summaryWhere,
@@ -3614,16 +3098,22 @@ router.get("/:tenantId/contact-services", requireAuth, async (req, res, next) =>
           id: item.id,
           status: item.status,
           purchasedAt: item.purchasedAt,
+          billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant?.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant?.timezone)) }),
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
           currency: item.currency,
           followUpCoordinatorUserId: item.followUpCoordinatorUserId,
           followUpCoordinator: item.followUpCoordinator,
+          workflowKind: item.workflowKind,
+          retiredWorkflow: retiredWorkflowSummary(item.retiredWorkflowSnapshot),
+          followUpTemplate: retiredTemplate(item.retiredWorkflowSnapshot),
+          serviceSteps: item.serviceSteps ?? [],
+          stepMovements: item.stepMovements ?? [],
+          stepProgress: item.workflowKind === "SERVICE_STEPS" ? enrolledStepProgress(item.serviceSteps ?? [], item.stepMovements ?? []) : null,
           service: item.service,
           nextFollowUp: followUpMetadata.nextFollowUp,
-          followUpRun: followUpMetadata.followUpRun,
-          followUpSteps: followUpMetadata.followUpSteps,
+          followUpSteps: followUpMetadata.followUpSteps
         }
       }),
       pagination: {
@@ -3668,62 +3158,7 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         },
         select: {
           id: true,
-          basePriceCents: true,
-          currency: true,
-          isTaxExempt: true,
-          allowPartialPayments: true,
-          minimumPartialPaymentCents: true,
-          installmentCount: true,
-          installmentFrequency: true,
-          tenant: {
-            select: {
-              taxEnabled: true,
-              taxLabel: true,
-              defaultTaxRateBps: true,
-            },
-          },
-          professionals: {
-            select: {
-              id: true,
-            },
-          },
-          checklistItems: {
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: { id: true },
-          },
-          followUpTemplates: {
-            where: { isPublished: true, activeVersionId: { not: null } },
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: {
-              id: true,
-              activeVersion: {
-                select: {
-                  id: true,
-                  definition: true,
-                },
-              },
-              steps: {
-                orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-                select: {
-                  templateNodeId: true,
-                  title: true,
-                  notesTemplate: true,
-                  dueDaysFromStart: true,
-                  sortOrder: true,
-                },
-              },
-            },
-          },
-          followUpTemplateSteps: {
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: {
-              templateNodeId: true,
-              title: true,
-              notesTemplate: true,
-              dueDaysFromStart: true,
-              sortOrder: true,
-            },
-          },
+          kind: true,
         },
       }),
     ])
@@ -3736,32 +3171,8 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       return res.status(400).json({ error: "INVALID_SERVICE" })
     }
 
-    const selectedPublishedTemplate = payload.followUpTemplateId
-      ? service.followUpTemplates.find((item: any) => item.id === payload.followUpTemplateId) ?? null
-      : service.followUpTemplates[0] ?? null
-    if (payload.followUpTemplateId && !selectedPublishedTemplate) {
-      return res.status(400).json({ error: "INVALID_FOLLOW_UP_TEMPLATE" })
-    }
-    const templateStepsForEnrollment =
-      selectedPublishedTemplate?.steps?.length
-        ? selectedPublishedTemplate.steps
-        : service.followUpTemplateSteps
-    if (
-      payload.followUpTemplateId &&
-      !selectedPublishedTemplate?.activeVersion &&
-      !templateStepsForEnrollment.length
-    ) {
-      return res.status(400).json({ error: "FOLLOW_UP_TEMPLATE_HAS_NO_STEPS" })
-    }
-
-    const selectedAssignedProfessional = payload.assignedProfessionalId
-      ? service.professionals.find(
-          (item: { id: string }) => item.id === payload.assignedProfessionalId,
-        ) ?? null
-      : null
-
-    if (payload.assignedProfessionalId && !selectedAssignedProfessional) {
-      return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
+    if (service.kind !== "OFFERING") {
+      return res.status(400).json({ error: "SUB_SERVICE_REQUIRED" })
     }
 
     if (payload.followUpAssignedToUserId) {
@@ -3782,49 +3193,54 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
       }
     }
 
+    if ((payload.initialPaymentCents ?? 0) > 0 && !canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+
     const purchasedAt = payload.purchasedAt ? new Date(payload.purchasedAt) : new Date()
     const startedAt = payload.startedAt ? new Date(payload.startedAt) : new Date()
-    const totalPriceCents = getServiceTotalWithTaxCents({
-      basePriceCents: service.basePriceCents,
-      isTaxExempt: service.isTaxExempt,
-      taxEnabled: service.tenant.taxEnabled,
-      defaultTaxRateBps: service.tenant.defaultTaxRateBps ?? null,
-    })
     const initialPaymentCents = payload.initialPaymentCents ?? 0
-
-    const initialPaymentError = getServiceTransactionPaymentValidationError({
-      totalPriceCents,
-      alreadyPaidCents: 0,
-      paymentAmountCents: initialPaymentCents,
-      allowPartialPayments: service.allowPartialPayments,
-      minimumPartialPaymentCents: service.minimumPartialPaymentCents,
-    })
-    if (initialPaymentError) {
-      return res.status(400).json({
-        error:
-          initialPaymentError === "PAYMENT_EXCEEDS_SERVICE_TOTAL"
-            ? "INVALID_INITIAL_PAYMENT"
-            : initialPaymentError,
-      })
-    }
+    const enrollmentCommand = { tenantId, actorUserId: authed.user.id, payload }
     const created = await prisma.$transaction(async (tx) => {
+      const replay = await replayFinancialWriteTx(tx, tenantId, payload.requestKey, enrollmentCommand)
+      if (replay) return replay as unknown as { contactService: { id: string } }
       const prismaTx = tx as any
-
+      await assertServiceEnrollableTx(tx, tenantId, payload.serviceId)
+      const effective = await loadEffectiveServiceConfiguration(tx, tenantId, payload.serviceId)
+      const tenantBilling = await tx.tenant.findUniqueOrThrow({ where: { id: tenantId },
+        select: { timezone: true, taxEnabled: true, taxLabel: true, defaultTaxRateBps: true } })
+      const billingPreview = previewServiceBilling(effective, tenantBilling, { terms: payload.paymentTerms, initialPaymentCents, purchasedAt: payload.purchasedAt })
+      const totalPriceCents = billingPreview.totalPriceCents
+      if (billingPreview.configurationVersion !== payload.configurationVersion) throw new ServiceCollectionError("BILLING_CONFIGURATION_CHANGED", 409)
+      if (payload.assignedProfessionalId && !effective.professionals.some(p => p.id === payload.assignedProfessionalId)) {
+        throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
+      }
+      const activeChecklist = effective.checklistItems
+      if (!effective.steps.length) throw new ServiceCollectionError("SERVICE_STEPS_REQUIRED")
+      const workflowKind = "SERVICE_STEPS"
+      const serviceAutomations = await captureServiceAutomationsTx(tx, {
+        tenantId, serviceId: effective.id, groupId: effective.parentService?.id ?? null,
+        sourceStepIds: effective.steps.map(step => step.id),
+      })
+      const billingSnapshot = { schemaVersion: 1, sourceServiceId: effective.inheritance.billing.sourceServiceId ?? payload.serviceId,
+        ...pickBilling(effective), ...tenantBilling, totalPriceCents }
+      const selectedProfessional = effective.professionals.find(p => p.id === payload.assignedProfessionalId) ?? null
       const contactService = await prismaTx.contactService.create({
         data: {
           tenantId,
           contactId: payload.contactId,
           serviceId: payload.serviceId,
-          followUpTemplateId: selectedPublishedTemplate?.id ?? null,
-          followUpTemplateVersionId: selectedPublishedTemplate?.activeVersion?.id ?? null,
+          workflowKind,
+          configurationSnapshot: captureEnrollmentConfiguration({ service: effective, billing: billingSnapshot, workflowKind, serviceAutomations,
+            followUpTemplateVersionId: null }),
+          assignedProfessionalSnapshot: selectedProfessional ? professionalSnapshot(selectedProfessional) : Prisma.DbNull,
           followUpCoordinatorUserId: payload.followUpAssignedToUserId ?? null,
-          assignedProfessionalId: selectedAssignedProfessional?.id ?? null,
+          assignedProfessionalId: payload.assignedProfessionalId ?? null,
           status: "IN_PROGRESS",
           startedAt,
           purchasedAt,
           totalPriceCents,
-          currency: service.currency,
-          allowPartialPayments: service.allowPartialPayments,
+          billingSnapshot,
+          currency: effective.currency,
+          allowPartialPayments: effective.allowPartialPayments,
           notes: payload.notes ?? null,
         },
         select: {
@@ -3832,97 +3248,58 @@ router.post("/:tenantId/contact-services", requireAuth, async (req, res, next) =
         },
       })
 
+      let initialPayment: any = null
       if (initialPaymentCents > 0) {
-        await prismaTx.contactServicePayment.create({
+        initialPayment = await prismaTx.contactServicePayment.create({
           data: {
             tenantId,
             contactServiceId: contactService.id,
             amountCents: initialPaymentCents,
             paidAt: purchasedAt,
-            paymentMethod: null,
-            note: "Initial payment",
+            paymentMethod: payload.initialPaymentMethod ?? null,
+            note: payload.initialPaymentNote ?? null,
             recordedById: authed.user.id,
           },
         })
       }
 
-      if (service.checklistItems.length) {
+      await replacePaymentPlanTx(tx, { tenantId, contactServiceId: contactService.id, plan: billingPreview.plan, dues: billingPreview.dues, paidCents: initialPaymentCents })
+
+      if (activeChecklist.length) {
         await prismaTx.contactServiceChecklistItem.createMany({
-          data: service.checklistItems.map((item: { id: string }) => ({
+          data: activeChecklist.map(item => ({
             tenantId,
             contactServiceId: contactService.id,
             checklistItemId: item.id,
+            labelSnapshot: item.label, descriptionSnapshot: item.description,
+            isRequiredSnapshot: item.isRequired, sortOrderSnapshot: item.sortOrder,
           })),
         })
       }
 
-      let followUpRunId: string | null = null
-      if (selectedPublishedTemplate?.activeVersion) {
-        const run = await createFollowUpRunTx({
-          prismaTx,
-          tenantId,
-          templateId: selectedPublishedTemplate.id,
-          contactId: payload.contactId,
-          contactServiceId: contactService.id,
-          templateVersion: selectedPublishedTemplate.activeVersion,
-          startedByUserId: authed.user.id,
-          assignedToUserId: payload.followUpAssignedToUserId ?? null,
-        })
-        followUpRunId = run.id
-      } else if (templateStepsForEnrollment.length) {
-        await prismaTx.contactServiceFollowUpStep.createMany({
-          data: templateStepsForEnrollment.map((step: any, index: number) => {
-            const dueAt = new Date(startedAt)
-            dueAt.setDate(dueAt.getDate() + step.dueDaysFromStart)
-
-            return {
-              tenantId,
-              contactServiceId: contactService.id,
-              templateNodeId: step.templateNodeId ?? null,
-              title: step.title,
-              notesTemplate: step.notesTemplate,
-              status: index === 0 ? "ACTIVE" : "PENDING",
-              availableAt: index === 0 ? startedAt : dueAt,
-              dueAt,
-              assignedToUserId: payload.followUpAssignedToUserId ?? null,
-              sortOrder: step.sortOrder,
-            }
-          }),
-        })
-      }
-
-      if (selectedPublishedTemplate?.id && !selectedPublishedTemplate.activeVersion) {
-        await executeFollowUpFromStart({
-          prismaTx,
-          tenantId,
-          contactServiceId: contactService.id,
-          actorUserId: authed.user.id,
-          ignoreWaitNodes: true,
-        })
-      }
-
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaTx,
-        tenantId,
-        contactService.id,
-        authed.user.id,
-      )
-
-      return { contactService, followUpRunId }
-    })
-
-    if (created.followUpRunId) {
-      await executeFollowUpRun({
-        runId: created.followUpRunId,
-        actorUserId: authed.user.id,
+      const definitions = await tx.contactServiceStep.createManyAndReturn({
+        data: effective.steps.map(({ id, automations: _automations, ...step }) => ({ ...step, sourceStepId: id, tenantId, contactServiceId: contactService.id })),
       })
-    }
+      const first = definitions.sort((a, b) => a.sortOrder - b.sortOrder)[0]
+      await createServiceStepOccurrenceTx(tx, { tenantId, contactServiceId: contactService.id,
+        stepId: first.id, entryKey: "enrollment", enteredAt: new Date(), enteredByUserId: authed.user.id })
+      // The first occurrence is active; a new enrollment cannot be finished yet.
+
+      {
+        await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_ENROLLED", next: { status: "IN_PROGRESS" }, actor: { actorUserId: authed.user.id } })
+        if (initialPayment) await emitServiceAutomationEventTx(tx, { tenantId, contactServiceId: contactService.id, triggerType: "SERVICE_PAYMENT_CHANGED", recordId: initialPayment.id, change: "ADDED", isInitialPayment: true, next: initialPayment, actor: { actorUserId: authed.user.id } })
+      }
+      const result = { contactService }
+      await saveFinancialChangeTx(tx, { tenantId, contactServiceId: contactService.id, requestKey: payload.requestKey, command: enrollmentCommand, kind: "ACCOUNT_CREATED", revision: 1, actorUserId: authed.user.id, next: { plan: billingPreview.plan, schedule: billingPreview.dues, initialPayment }, result })
+      return result
+    }, { maxWait: 5_000, timeout: 20_000 })
 
     return res.status(201).json({
       ok: true,
       contactService: created.contactService,
     })
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
     return next(error)
   }
 })
@@ -3950,9 +3327,17 @@ router.get(
             status: true,
             startedAt: true,
             purchasedAt: true,
+            tenantId: true,
+            workflowKind: true,
+            configurationSnapshot: true,
+            assignedProfessionalSnapshot: true,
+            serviceSteps: enrolledServiceStepsSelect,
+            stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
+            ...billingAccountSelect,
             totalPriceCents: true,
+            billingSnapshot: true,
             currency: true,
             allowPartialPayments: true,
             notes: true,
@@ -3990,6 +3375,7 @@ router.get(
             },
             service: {
               select: {
+                ...serviceConfigurationSelect,
                 id: true,
                 name: true,
                 description: true,
@@ -3999,6 +3385,7 @@ router.get(
                 installmentCount: true,
                 installmentFrequency: true,
                 professionals: {
+                  where: { archivedAt: null },
                   orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                   select: {
                     id: true,
@@ -4018,39 +3405,18 @@ router.get(
                 },
                 tenant: {
                   select: {
+                    timezone: true,
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
-                    timezone: true,
                   },
                 },
                 checklistItems: {
+                  where: { archivedAt: null },
                   select: {
                     id: true,
                   },
                 },
-              },
-            },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            followUpTemplateVersion: {
-              select: { id: true, versionNumber: true, definition: true },
-            },
-            followUpRun: {
-              select: {
-                id: true,
-                status: true,
-                resumeAt: true,
-                waitingNodeId: true,
-                leaseToken: true,
-                failureNodeId: true,
-                failureCode: true,
-                failureMessage: true,
-                failedAt: true,
               },
             },
             followUpSteps: {
@@ -4078,6 +3444,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                ...enrolledChecklistSnapshotSelect,
                 status: true,
                 completedAt: true,
                 checklistItem: {
@@ -4090,10 +3457,12 @@ router.get(
                 },
               },
               orderBy: [
+                { sortOrderSnapshot: "asc" },
                 { checklistItem: { sortOrder: "asc" } },
                 { createdAt: "asc" },
               ],
             },
+            retiredWorkflowSnapshot: true
           },
         })
 
@@ -4111,7 +3480,7 @@ router.get(
           contactServiceId: item.id,
         })
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -4160,26 +3529,12 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      const [paymentAggregate, scheduledPaymentsRecordedCount] = await Promise.all([
-        prismaWithServices.contactServicePayment.aggregate({
-          where: { tenantId, contactServiceId },
-          _sum: { amountCents: true },
-          _max: { paidAt: true },
-          _count: { _all: true },
-        }),
-        prismaWithServices.contactServicePayment.count({
-          where: {
-            tenantId,
-            contactServiceId,
-            OR: [
-              { note: null },
-              { NOT: { note: { equals: "initial payment", mode: "insensitive" } } },
-            ],
-          },
-        }),
-      ])
+      const paymentAggregate = await prismaWithServices.contactServicePayment.aggregate({
+        where: { tenantId, contactServiceId, voidedAt: null },
+        _sum: { amountCents: true }, _max: { paidAt: true }, _count: { _all: true },
+      })
       const paidCents = paymentAggregate._sum.amountCents ?? 0
-      const followUpState = resolveVersionedFollowUpState(item)
+      const followUpState = resolveSavedFollowUpState(item)
       const nextFollowUp = serializeEffectiveNextFollowUp(followUpState.effectiveNextFollowUp)
       const followUpCompletedCount = item.followUpSteps.filter((step: any) =>
         ["COMPLETED", "SKIPPED"].includes(step.status),
@@ -4223,14 +3578,11 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
           nextFollowUp,
           followUpSummary: {
             totalCount: item.followUpSteps.length,
             completedCount: followUpCompletedCount,
-            runStatus: item.followUpRun?.status ?? null,
-            failureMessage: item.followUpRun?.failureMessage ?? null,
-            failedAt: item.followUpRun?.failedAt ?? null,
             items: followUpItems,
           },
           checklistSummary: {
@@ -4238,21 +3590,11 @@ router.get(
             receivedCount: checklistSummary.received,
             missingCount: checklistSummary.missing,
             informedCount: checklistSummary.informed,
-            items: item.checklistItems.map((checklistItem: any) => ({
-              id: checklistItem.id,
-              checklistItemId: checklistItem.checklistItemId,
-              status: checklistItem.status,
-              completedAt: checklistItem.completedAt,
-              label: checklistItem.checklistItem?.label ?? "",
-              description: checklistItem.checklistItem?.description ?? null,
-              isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-              sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-            })),
+            items: item.checklistItems.map((checklistItem: any) => serializeEnrolledChecklistItem(checklistItem)),
           },
           paymentSummary: {
             latestPaidAt: paymentAggregate._max.paidAt ?? null,
             totalPaymentsCount: paymentAggregate._count._all,
-            scheduledPaymentsRecordedCount,
           },
         },
       })
@@ -4262,147 +3604,37 @@ router.get(
   },
 )
 
-router.patch(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-coordinator",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const payload = UpdateFollowUpCoordinatorSchema.parse(req.body)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+router.patch("/:tenantId/contact-services/:contactServiceId/follow-up-coordinator", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    const payload = UpdateFollowUpCoordinatorSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const updated = await prisma.$transaction(async tx => {
+      const scoped = await tx.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
+      if (!scoped) throw new ServiceCollectionError("CONTACT_SERVICE_NOT_FOUND", 404)
+      if (scoped.workflowKind === "SERVICE_STEPS") {
+        await mutateEnrolledServiceTx(tx, { tenantId, contactServiceId, requestId: randomUUID(), actor: { actorUserId: authed.user.id }, action: { type: "SET_SERVICE_COORDINATOR", serviceConfig: { assignedToUserId: payload.assignedToUserId } } })
+      } else {
+        const enrollment = await lockSavedFollowUpEnrollment(tx, tenantId, contactServiceId)
+        if (["COMPLETED", "CANCELED"].includes(enrollment.status)) throw new ServiceCollectionError("FOLLOW_UP_COORDINATOR_LOCKED", 409)
+        if (payload.assignedToUserId && !await tx.membership.findFirst({ where: { tenantId, userId: payload.assignedToUserId, status: "ACTIVE" } })) throw new ServiceCollectionError("INVALID_FOLLOW_UP_COORDINATOR")
+        if (payload.assignedToUserId !== enrollment.followUpCoordinatorUserId) {
+          await tx.contactService.update({ where: { id: contactServiceId }, data: { followUpCoordinatorUserId: payload.assignedToUserId } })
+          await tx.serviceFollowUpExecutionLog.create({ data: { tenantId, contactServiceId, contactId: enrollment.contactId, actorUserId: authed.user.id, eventType: "FOLLOW_UP_COORDINATOR_CHANGED", title: "Enrollment coordinator updated", payload: { previousUserId: enrollment.followUpCoordinatorUserId, userId: payload.assignedToUserId } } })
+        }
       }
-
-      const nextCoordinatorMembership = payload.assignedToUserId
-        ? await prisma.membership.findUnique({
-            where: {
-              userId_tenantId: {
-                userId: payload.assignedToUserId,
-                tenantId,
-              },
-            },
-            select: {
-              status: true,
-              user: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                  image: true,
-                },
-              },
-            },
-          })
-        : null
-
-      if (
-        payload.assignedToUserId &&
-        (!nextCoordinatorMembership || nextCoordinatorMembership.status !== "ACTIVE")
-      ) {
-        return res.status(400).json({ error: "INVALID_FOLLOW_UP_COORDINATOR" })
-      }
-
-      const existing = await prismaWithServices.contactService.findFirst({
-        where: { id: contactServiceId, tenantId },
-        select: {
-          id: true,
-          contactId: true,
-          followUpTemplateId: true,
-          followUpCoordinatorUserId: true,
-          followUpCoordinator: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              image: true,
-            },
-          },
-          followUpRun: {
-            select: { status: true },
-          },
-          followUpSteps: {
-            select: { status: true },
-          },
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-      if (!existing.followUpRun && existing.followUpSteps.length === 0) {
-        return res.status(409).json({ error: "FOLLOW_UP_NOT_CONFIGURED" })
-      }
-      if (
-        isServiceFollowUpWorkflowCompleted({
-          runStatus: existing.followUpRun?.status ?? null,
-          stepStatuses: existing.followUpSteps.map((step: any) => step.status),
-        })
-      ) {
-        return res.status(409).json({ error: "FOLLOW_UP_COORDINATOR_LOCKED" })
-      }
-
-      const nextCoordinatorUserId = payload.assignedToUserId ?? null
-      if (existing.followUpCoordinatorUserId === nextCoordinatorUserId) {
-        return res.json({
-          ok: true,
-          followUpCoordinatorUserId: existing.followUpCoordinatorUserId,
-          followUpCoordinator: existing.followUpCoordinator,
-        })
-      }
-
-      const nextCoordinator = nextCoordinatorMembership?.user ?? null
-      const updated = await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any
-        const contactService = await prismaTx.contactService.update({
-          where: { id: contactServiceId },
-          data: { followUpCoordinatorUserId: nextCoordinatorUserId },
-          select: {
-            followUpCoordinatorUserId: true,
-            followUpCoordinator: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-          },
-        })
-
-        const previousLabel = getServiceUserLabel(existing.followUpCoordinator)
-        const nextLabel = getServiceUserLabel(nextCoordinator)
-        await prismaTx.serviceFollowUpExecutionLog.create({
-          data: {
-            tenantId,
-            templateId: existing.followUpTemplateId,
-            contactServiceId,
-            contactId: existing.contactId,
-            actorUserId: authed.user.id,
-            eventType: "FOLLOW_UP_COORDINATOR_CHANGED",
-            title: "Follow-up coordinator updated",
-            details: `Changed from ${previousLabel} to ${nextLabel}.`,
-            payload: {
-              previousUserId: existing.followUpCoordinatorUserId,
-              previousUserName: previousLabel,
-              userId: nextCoordinatorUserId,
-              userName: nextLabel,
-            },
-          },
-        })
-
-        return contactService
-      })
-
-      return res.json({ ok: true, ...updated })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
+      return tx.contactService.findFirstOrThrow({ where: { tenantId, id: contactServiceId }, select: { followUpCoordinatorUserId: true, followUpCoordinator: { select: { id: true, name: true, email: true, image: true } } } })
+    })
+    return res.json({ ok: true, ...updated })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
 router.get(
   "/:tenantId/contact-services/:contactServiceId/transaction",
@@ -4420,6 +3652,7 @@ router.get(
         select: {
           ...contactServiceWorkspaceBaseSelect,
           payments: {
+            where: { voidedAt: null },
             select: {
               id: true,
               amountCents: true,
@@ -4450,7 +3683,7 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
           payments: item.payments,
           followUpSteps: [],
           checklistItems: [],
@@ -4481,22 +3714,6 @@ router.get(
           where: { id: contactServiceId, tenantId },
           select: {
             ...contactServiceWorkspaceBaseSelect,
-            followUpTemplateVersion: {
-              select: { id: true, versionNumber: true, definition: true },
-            },
-            followUpRun: {
-              select: {
-                id: true,
-                status: true,
-                resumeAt: true,
-                waitingNodeId: true,
-                leaseToken: true,
-                failureNodeId: true,
-                failureCode: true,
-                failureMessage: true,
-                failedAt: true,
-              },
-            },
             followUpSteps: {
               select: {
                 id: true,
@@ -4533,6 +3750,7 @@ router.get(
               },
               orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             },
+            retiredWorkflowSnapshot: true
           },
         })
 
@@ -4568,7 +3786,7 @@ router.get(
       }
 
       const paymentAggregate = await prismaWithServices.contactServicePayment.aggregate({
-        where: { tenantId, contactServiceId },
+        where: { voidedAt: null, tenantId, contactServiceId },
         _sum: { amountCents: true },
       })
       const paidCents = paymentAggregate._sum.amountCents ?? 0
@@ -4576,8 +3794,8 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(item, paidCents),
-          ...serializeVersionedFollowUpMetadata(
+          ...(await serializeContactServiceWorkspaceBase(item, paidCents)),
+          ...serializeSavedFollowUpMetadata(
             item,
             getSafeTimezone(item.service.tenant.timezone),
           ),
@@ -4634,9 +3852,17 @@ router.get(
             status: true,
             startedAt: true,
             purchasedAt: true,
+            tenantId: true,
+            workflowKind: true,
+            configurationSnapshot: true,
+            assignedProfessionalSnapshot: true,
+            serviceSteps: enrolledServiceStepsSelect,
+            stepMovements: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] },
             completedAt: true,
             canceledAt: true,
+            ...billingAccountSelect,
             totalPriceCents: true,
+            billingSnapshot: true,
             currency: true,
             allowPartialPayments: true,
             notes: true,
@@ -4674,6 +3900,7 @@ router.get(
             },
             service: {
               select: {
+                ...serviceConfigurationSelect,
                 id: true,
                 name: true,
                 description: true,
@@ -4683,6 +3910,7 @@ router.get(
                 installmentCount: true,
                 installmentFrequency: true,
                 professionals: {
+                  where: { archivedAt: null },
                   orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
                   select: {
                     id: true,
@@ -4702,13 +3930,14 @@ router.get(
                 },
                 tenant: {
                   select: {
+                    timezone: true,
                     taxEnabled: true,
                     taxLabel: true,
                     defaultTaxRateBps: true,
-                    timezone: true,
                   },
                 },
                 checklistItems: {
+                  where: { archivedAt: null },
                   select: {
                     id: true,
                     label: true,
@@ -4720,29 +3949,8 @@ router.get(
                 },
               },
             },
-            followUpTemplate: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            followUpTemplateVersion: {
-              select: { id: true, versionNumber: true, definition: true },
-            },
-            followUpRun: {
-              select: {
-                id: true,
-                status: true,
-                resumeAt: true,
-                waitingNodeId: true,
-                leaseToken: true,
-                failureNodeId: true,
-                failureCode: true,
-                failureMessage: true,
-                failedAt: true,
-              },
-            },
             payments: {
+              where: { voidedAt: null },
               select: {
                 id: true,
                 amountCents: true,
@@ -4849,6 +4057,7 @@ router.get(
               select: {
                 id: true,
                 checklistItemId: true,
+                ...enrolledChecklistSnapshotSelect,
                 status: true,
                 completedAt: true,
                 checklistItem: {
@@ -4862,10 +4071,12 @@ router.get(
                 },
               },
               orderBy: [
+                { sortOrderSnapshot: "asc" },
                 { checklistItem: { sortOrder: "asc" } },
                 { createdAt: "asc" },
               ],
             },
+            retiredWorkflowSnapshot: true
           },
         })
 
@@ -4883,7 +4094,7 @@ router.get(
           contactServiceId: item.id,
         })
 
-        const serviceChecklistItemIds = (item.service?.checklistItems ?? []).map(
+        const serviceChecklistItemIds = (item.configurationSnapshot ? [] : item.service?.checklistItems ?? []).map(
           (checklistItem: { id: string }) => checklistItem.id,
         )
         const existingChecklistItemIds = new Set(
@@ -4932,6 +4143,7 @@ router.get(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
+      item = await resolveEnrollmentConfiguration(item)
       const paidCents = item.payments.reduce(
         (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
         0,
@@ -4945,12 +4157,18 @@ router.get(
         ok: true,
         contactService: {
           id: item.id,
+          workflowKind: item.workflowKind,
+          configurationSnapshot: item.configurationSnapshot,
+
+          serviceSteps: item.serviceSteps ?? [],
+          stepMovements: item.stepMovements ?? [],
           contactId: item.contactId,
           status: item.status,
           startedAt: item.startedAt,
           purchasedAt: item.purchasedAt,
           completedAt: item.completedAt,
           canceledAt: item.canceledAt,
+          billing: summarizeServiceBilling({ ...item, dues: item.paymentDues ?? [], paidCents, timezone: getSafeTimezone(item.service.tenant?.timezone), today: tenantDateOnly(getSafeTimezone(item.service.tenant?.timezone)) }),
           totalPriceCents: item.totalPriceCents,
           paidCents,
           remainingCents: Math.max(0, item.totalPriceCents - paidCents),
@@ -4966,12 +4184,14 @@ router.get(
           service: {
             id: item.service.id,
             name: item.service.name,
+            parentService: item.service.parentService,
             description: item.service.description,
             basePriceCents: item.service.basePriceCents,
             isTaxExempt: item.service.isTaxExempt,
             minimumPartialPaymentCents: item.service.minimumPartialPaymentCents,
             installmentCount: item.service.installmentCount,
             installmentFrequency: item.service.installmentFrequency,
+            paymentSettings: resolvePaymentSettings(item.service),
             professionals: item.service.professionals,
           },
           tenantBilling: {
@@ -4979,12 +4199,11 @@ router.get(
             taxLabel: item.service.tenant.taxLabel,
             defaultTaxRatePercent:
               item.service.tenant.defaultTaxRateBps !== null &&
-              item.service.tenant.defaultTaxRateBps !== undefined
+                item.service.tenant.defaultTaxRateBps !== undefined
                 ? item.service.tenant.defaultTaxRateBps / 100
                 : null,
           },
-          followUpTemplate: item.followUpTemplate,
-          ...serializeVersionedFollowUpMetadata(
+          ...serializeSavedFollowUpMetadata(
             item,
             getSafeTimezone(item.service.tenant.timezone),
           ),
@@ -5000,16 +4219,7 @@ router.get(
             createdAt: activity.createdAt,
             actor: activity.actor,
           })),
-          checklistItems: item.checklistItems.map((checklistItem: any) => ({
-            id: checklistItem.id,
-            checklistItemId: checklistItem.checklistItemId,
-            status: checklistItem.status,
-            completedAt: checklistItem.completedAt,
-            label: checklistItem.checklistItem?.label ?? "",
-            description: checklistItem.checklistItem?.description ?? null,
-            isRequired: Boolean(checklistItem.checklistItem?.isRequired),
-            sortOrder: checklistItem.checklistItem?.sortOrder ?? 0,
-          })),
+          checklistItems: item.checklistItems.map((checklistItem: any) => serializeEnrolledChecklistItem(checklistItem))
         },
       })
     } catch (error) {
@@ -5048,12 +4258,12 @@ router.get(
       }
       const searchWhere = query.q
         ? {
-            OR: [
-              { title: { contains: query.q, mode: "insensitive" as const } },
-              { body: { contains: query.q, mode: "insensitive" as const } },
-              { createdBy: authorSearch },
-            ],
-          }
+          OR: [
+            { title: { contains: query.q, mode: "insensitive" as const } },
+            { body: { contains: query.q, mode: "insensitive" as const } },
+            { createdBy: authorSearch },
+          ],
+        }
         : {}
       const serviceWhere = { tenantId, contactServiceId, ...searchWhere }
       const contactWhere = { tenantId, contactServiceId, ...searchWhere }
@@ -5062,7 +4272,7 @@ router.get(
         prismaWithServices.contactServiceNote.count({ where: serviceWhere }),
         prismaWithServices.contactNote.count({ where: contactWhere }),
         prismaWithServices.contactServicePayment.aggregate({
-          where: { tenantId, contactServiceId },
+          where: { voidedAt: null, tenantId, contactServiceId },
           _sum: { amountCents: true },
         }),
       ])
@@ -5114,8 +4324,8 @@ router.get(
           where: contactWhere,
           select: {
             ...noteSelect,
-            followUpTemplate: { select: { name: true } },
             contactServiceFollowUpStep: { select: { title: true } },
+            retiredWorkflowSnapshot: true
           },
           orderBy,
           take: page.candidateTake,
@@ -5134,7 +4344,7 @@ router.get(
             note,
             resolveContactServiceNoteKind({
               isServiceNote: false,
-              hasFollowUpTemplate: Boolean(note.followUpTemplate),
+              hasFollowUpTemplate: Boolean(retiredTemplate(note.retiredWorkflowSnapshot)),
               hasFollowUpStep: Boolean(note.contactServiceFollowUpStep),
             }),
             { membership, userId: authed.user.id },
@@ -5147,10 +4357,10 @@ router.get(
       return res.json({
         ok: true,
         contactService: {
-          ...serializeContactServiceWorkspaceBase(
+          ...(await serializeContactServiceWorkspaceBase(
             enrollment,
             paymentAggregate._sum.amountCents ?? 0,
-          ),
+          )),
           followUpSteps: [],
           checklistItems: [],
         },
@@ -5446,299 +4656,68 @@ router.delete(
   },
 )
 
-router.post(
-  "/:tenantId/contact-services/:contactServiceId/payments",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const payload = CreateContactServicePaymentSchema.parse(req.body)
+router.post("/:tenantId/contact-services/:contactServiceId/payments", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    const payload = CreateContactServicePaymentSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "ADDED", actorUserId: authed.user.id, payload, requestKey: payload.requestKey, expectedRevision: payload.expectedRevision })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      return { payment: result.payment, summary: result.summary }
+    })
+    return res.status(201).json({ ok: true, payment: result.payment, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
+router.patch("/:tenantId/contact-services/:contactServiceId/payments/:paymentId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, paymentId } = TenantContactServicePaymentPathSchema.parse(req.params)
+    const payload = UpdateContactServicePaymentSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    if (!Object.keys(payload).length) return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "UPDATED", actorUserId: authed.user.id, paymentId, payload, reason: payload.reason, requestKey: payload.requestKey, expectedRevision: payload.expectedRevision })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      return { payment: result.payment, summary: result.summary }
+    })
+    return res.status(200).json({ ok: true, payment: result.payment, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-      const contactService = await prismaWithServices.contactService.findFirst({
-        where: {
-          id: contactServiceId,
-          tenantId,
-        },
-        select: {
-          id: true,
-          totalPriceCents: true,
-          allowPartialPayments: true,
-          service: {
-            select: {
-              minimumPartialPaymentCents: true,
-            },
-          },
-        },
-      })
+router.delete("/:tenantId/contact-services/:contactServiceId/payments/:paymentId", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, paymentId } = TenantContactServicePaymentPathSchema.parse(req.params)
 
-      if (!contactService) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-      const existingPayments = await prismaWithServices.contactServicePayment.findMany({
-        where: {
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          amountCents: true,
-        },
-      })
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
 
-      const currentPaidCents = existingPayments.reduce(
-        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-        0,
-      )
-
-      const paymentError = getServiceTransactionPaymentValidationError({
-        totalPriceCents: contactService.totalPriceCents,
-        alreadyPaidCents: currentPaidCents,
-        paymentAmountCents: payload.amountCents,
-        allowPartialPayments: contactService.allowPartialPayments,
-        minimumPartialPaymentCents:
-          contactService.service.minimumPartialPaymentCents,
-      })
-      if (paymentError) {
-        return res.status(400).json({ error: paymentError })
-      }
-
-      const payment = await prismaWithServices.contactServicePayment.create({
-        data: {
-          tenantId,
-          contactServiceId,
-          amountCents: payload.amountCents,
-          paidAt: payload.paidAt ? new Date(payload.paidAt) : new Date(),
-          paymentMethod: payload.paymentMethod ?? null,
-          note: payload.note ?? null,
-          recordedById: authed.user.id,
-        },
-        select: {
-          id: true,
-          amountCents: true,
-          paidAt: true,
-          paymentMethod: true,
-          note: true,
-          recordedById: true,
-        },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.status(201).json({
-        ok: true,
-        payment,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.patch(
-  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, paymentId } =
-        TenantContactServicePaymentPathSchema.parse(req.params)
-      const payload = UpdateContactServicePaymentSchema.parse(req.body)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
-
-      if (Object.keys(payload).length === 0) {
-        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" })
-      }
-
-      const existing = await prismaWithServices.contactServicePayment.findFirst({
-        where: {
-          id: paymentId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-          amountCents: true,
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
-      }
-
-      const contactService = await prismaWithServices.contactService.findFirst({
-        where: {
-          id: contactServiceId,
-          tenantId,
-        },
-        select: {
-          totalPriceCents: true,
-          allowPartialPayments: true,
-          service: {
-            select: {
-              minimumPartialPaymentCents: true,
-            },
-          },
-        },
-      })
-
-      if (!contactService) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-
-      const otherPayments = await prismaWithServices.contactServicePayment.findMany({
-        where: {
-          tenantId,
-          contactServiceId,
-          id: { not: paymentId },
-        },
-        select: {
-          amountCents: true,
-        },
-      })
-
-      const otherPaidCents = otherPayments.reduce(
-        (sum: number, payment: { amountCents: number }) => sum + payment.amountCents,
-        0,
-      )
-      const nextAmountCents = payload.amountCents ?? existing.amountCents
-
-      const paymentError = getServiceTransactionPaymentValidationError({
-        totalPriceCents: contactService.totalPriceCents,
-        alreadyPaidCents: otherPaidCents,
-        paymentAmountCents: nextAmountCents,
-        allowPartialPayments: contactService.allowPartialPayments,
-        minimumPartialPaymentCents:
-          contactService.service.minimumPartialPaymentCents,
-      })
-      if (paymentError) {
-        return res.status(400).json({ error: paymentError })
-      }
-
-      const payment = await prismaWithServices.contactServicePayment.update({
-        where: { id: paymentId },
-        data: {
-          ...(payload.amountCents !== undefined ? { amountCents: payload.amountCents } : {}),
-          ...(payload.paidAt !== undefined ? { paidAt: new Date(payload.paidAt) } : {}),
-          ...(payload.paymentMethod !== undefined
-            ? { paymentMethod: payload.paymentMethod }
-            : {}),
-          ...(payload.note !== undefined
-            ? { note: payload.note }
-            : {}),
-        },
-        select: {
-          id: true,
-          amountCents: true,
-          paidAt: true,
-          paymentMethod: true,
-          note: true,
-          recordedById: true,
-        },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.json({
-        ok: true,
-        payment,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.delete(
-  "/:tenantId/contact-services/:contactServiceId/payments/:paymentId",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, paymentId } =
-        TenantContactServicePaymentPathSchema.parse(req.params)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      if (!canManageContactServices(membership)) {
-        return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
-      }
-
-      const existing = await prismaWithServices.contactServicePayment.findFirst({
-        where: {
-          id: paymentId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_PAYMENT_NOT_FOUND" })
-      }
-
-      await prismaWithServices.contactServicePayment.delete({
-        where: { id: paymentId },
-      })
-
-      const summary = await summarizeContactServicePayments(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-      )
-      await reconcileContactServiceCompletionFromFollowUps(
-        prismaWithServices,
-        tenantId,
-        contactServiceId,
-        authed.user.id,
-      )
-
-      return res.json({
-        ok: true,
-        summary,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
+    const result = await prisma.$transaction(async tx => {
+      const result = await mutateServicePaymentTx(tx, { tenantId, contactServiceId, operation: "REMOVED", actorUserId: authed.user.id, paymentId, ...FinancialWriteSchema.extend({ reason: FinancialReasonSchema }).strict().parse(req.body) })
+      if (result.enrollment.workflowKind !== "SERVICE_STEPS") await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      return { payment: result.payment, summary: result.summary }
+    })
+    return res.status(200).json({ ok: true, summary: result.summary })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
 router.patch(
   "/:tenantId/contact-services/:contactServiceId",
@@ -5760,6 +4739,24 @@ router.patch(
         return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
       }
 
+      const scopedEnrollment = await prisma.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
+      if (scopedEnrollment?.workflowKind === "SERVICE_STEPS") {
+        const contactService = await prisma.$transaction(async tx => {
+          const locked = await lockServiceActionEnrollment(tx, tenantId, contactServiceId)
+          const actor = { actorUserId: authed.user.id }
+          if (payload.status && payload.status !== locked.status) {
+            if (payload.status !== "IN_PROGRESS" && payload.status !== "CANCELED") throw new ServiceCollectionError("SERVICE_STATUS_IS_DERIVED", 409)
+            await mutateEnrolledServiceTx(tx, { tenantId, contactServiceId, actor, requestId: randomUUID(), action: { type: "SET_SERVICE_STATUS", serviceConfig: { status: payload.status } } })
+          }
+          if (payload.assignedProfessionalId !== undefined) await mutateEnrolledServiceTx(tx, { tenantId, contactServiceId, actor, requestId: randomUUID(), action: { type: "SET_SERVICE_PROFESSIONAL", serviceConfig: { professionalId: payload.assignedProfessionalId } } })
+          return tx.contactService.update({ where: { id: contactServiceId }, data: {
+              ...(payload.notes !== undefined ? { notes: payload.notes } : {}),
+              ...(payload.startedAt !== undefined ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null } : {}),
+              ...(payload.purchasedAt !== undefined ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null } : {}),
+            }, include: { assignedProfessional: true } })
+        })
+        return res.json({ ok: true, contactService: { ...contactService, assignedProfessional: readProfessionalSnapshot(contactService.assignedProfessionalSnapshot) ?? contactService.assignedProfessional } })
+      }
       const existing = await prismaWithServices.contactService.findFirst({
         where: {
           id: contactServiceId,
@@ -5771,6 +4768,8 @@ router.patch(
           contactId: true,
           followUpTemplateId: true,
           assignedProfessionalId: true,
+          configurationSnapshot: true,
+          assignedProfessionalSnapshot: true,
           assignedProfessional: {
             select: {
               id: true,
@@ -5788,9 +4787,11 @@ router.patch(
           },
           service: {
             select: {
+              ...serviceConfigurationSelect,
               id: true,
               name: true,
               professionals: {
+                where: { archivedAt: null },
                 select: {
                   id: true,
                   kind: true,
@@ -5815,10 +4816,13 @@ router.patch(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
+      const eligibleProfessionals = await enrollmentProfessionalOptions(prisma, tenantId, existing.configurationSnapshot,
+        resolveServiceConfiguration(existing.service).professionals)
+      const previousAttribution = readProfessionalSnapshot(existing.assignedProfessionalSnapshot)
       const professionalChange = resolveServiceProfessionalChange({
         assignedProfessionalId: payload.assignedProfessionalId,
-        previousProfessional: existing.assignedProfessional,
-        professionals: existing.service.professionals,
+        previousProfessional: previousAttribution?.id === existing.assignedProfessional?.id ? previousAttribution : existing.assignedProfessional,
+        professionals: eligibleProfessionals,
       })
       if (!professionalChange.valid) {
         return res.status(400).json({ error: "INVALID_ASSIGNED_SERVICE_PROFESSIONAL" })
@@ -5829,23 +4833,23 @@ router.patch(
           ? {}
           : payload.status === "COMPLETED"
             ? {
-                status: "COMPLETED" as const,
-                completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
-                canceledAt: null,
-              }
+              status: "COMPLETED" as const,
+              completedAt: payload.completedAt ? new Date(payload.completedAt) : new Date(),
+              canceledAt: null,
+            }
             : payload.status === "CANCELED"
               ? {
-                  status: "CANCELED" as const,
-                  canceledAt: payload.canceledAt ? new Date(payload.canceledAt) : new Date(),
-                  completedAt: null,
-                }
+                status: "CANCELED" as const,
+                canceledAt: payload.canceledAt ? new Date(payload.canceledAt) : new Date(),
+                completedAt: null,
+              }
               : {
-                  status: payload.status,
-                  completedAt: null,
-                  canceledAt: null,
-                }
+                status: payload.status,
+                completedAt: null,
+                canceledAt: null,
+              }
 
-      const executionLogs = []
+      const executionLogs: Prisma.ServiceFollowUpExecutionLogUncheckedCreateWithoutContactServiceInput[] = []
       if (payload.status !== undefined && payload.status !== existing.status && existing.followUpTemplateId) {
         executionLogs.push({
           tenantId,
@@ -5872,58 +4876,75 @@ router.patch(
       }
 
       // Nested activity creation and the enrollment update commit or roll back together.
-      const updated = await prisma.contactService.update({
-        where: { id: contactServiceId, tenantId },
-        data: {
-          ...statusUpdate,
-          ...(payload.startedAt !== undefined
-            ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null }
-            : {}),
-          ...(payload.purchasedAt !== undefined
-            ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
-            : {}),
-          ...(payload.notes !== undefined
-            ? { notes: payload.notes }
-            : {}),
-          ...(payload.assignedProfessionalId !== undefined
-            ? { assignedProfessionalId: payload.assignedProfessionalId }
-            : {}),
-          ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
-        },
-        select: {
-          id: true,
-          status: true,
-          startedAt: true,
-          purchasedAt: true,
-          completedAt: true,
-          canceledAt: true,
-          totalPriceCents: true,
-          notes: true,
-          assignedProfessionalId: true,
-          assignedProfessional: {
-            select: {
-              id: true,
-              kind: true,
-              userId: true,
-              externalProfessionalName: true,
-              externalContact: true,
-              user: {
-                select: {
-                  name: true,
-                  email: true,
-                  image: true,
+      const updated = await prisma.$transaction(async (tx) => {
+        await lockServiceHierarchyTx(tx, tenantId, existing.service.id)
+        const effective = await loadEffectiveServiceConfiguration(tx, tenantId, existing.service.id)
+        const current = await tx.contactService.findUniqueOrThrow({
+          where: { id: contactServiceId, tenantId }, select: { assignedProfessionalId: true, configurationSnapshot: true },
+        })
+        const currentOptions = await enrollmentProfessionalOptions(tx, tenantId, current.configurationSnapshot, effective.professionals)
+        const nextAttribution = currentOptions.find(p => p.id === payload.assignedProfessionalId) ?? null
+        if (payload.assignedProfessionalId && payload.assignedProfessionalId !== current.assignedProfessionalId &&
+          !currentOptions.some(p => p.id === payload.assignedProfessionalId)) {
+          throw new ServiceCollectionError("INVALID_ASSIGNED_SERVICE_PROFESSIONAL")
+        }
+        return tx.contactService.update({
+          where: { id: contactServiceId, tenantId },
+          data: {
+            ...statusUpdate,
+            ...(payload.startedAt !== undefined
+              ? { startedAt: payload.startedAt ? new Date(payload.startedAt) : null }
+              : {}),
+            ...(payload.purchasedAt !== undefined
+              ? { purchasedAt: payload.purchasedAt ? new Date(payload.purchasedAt) : null }
+              : {}),
+            ...(payload.notes !== undefined
+              ? { notes: payload.notes }
+              : {}),
+            ...(payload.assignedProfessionalId !== undefined
+              ? { assignedProfessionalId: payload.assignedProfessionalId,
+                ...(payload.assignedProfessionalId !== current.assignedProfessionalId
+                  ? { assignedProfessionalSnapshot: nextAttribution ? professionalSnapshot(nextAttribution) : Prisma.DbNull } : {}) }
+              : {}),
+            ...(executionLogs.length ? { executionLogs: { create: executionLogs } } : {}),
+          },
+          select: {
+            id: true,
+            status: true,
+            startedAt: true,
+            purchasedAt: true,
+            completedAt: true,
+            canceledAt: true,
+            totalPriceCents: true,
+            notes: true,
+            assignedProfessionalId: true,
+            assignedProfessionalSnapshot: true,
+            assignedProfessional: {
+              select: {
+                id: true,
+                kind: true,
+                userId: true,
+                externalProfessionalName: true,
+                externalContact: true,
+                user: {
+                  select: {
+                    name: true,
+                    email: true,
+                    image: true,
+                  },
                 },
               },
             },
           },
-        },
+        })
       })
 
       return res.json({
         ok: true,
-        contactService: updated,
+        contactService: { ...updated, assignedProfessional: readProfessionalSnapshot(updated.assignedProfessionalSnapshot) ?? updated.assignedProfessional },
       })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
   },
@@ -5958,12 +4979,16 @@ router.delete(
         return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
       }
 
-      await prismaWithServices.contactService.delete({
-        where: { id: contactServiceId },
+      await prisma.$transaction(async tx => {
+        await tx.$queryRaw(Prisma.sql`SELECT id FROM "ContactService" WHERE "tenantId"=${tenantId} AND id=${contactServiceId} FOR UPDATE`)
+        const receipts = await tx.contactServicePayment.count({ where: { tenantId, contactServiceId } })
+        if (receipts > 0) throw new ServiceCollectionError("SERVICE_HAS_PAYMENT_HISTORY_CANCEL_INSTEAD", 409)
+        await tx.contactService.delete({ where: { id: contactServiceId } })
       })
 
       return res.json({ ok: true })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
   },
@@ -5989,6 +5014,19 @@ router.patch(
       const membership = await requireActiveMembership(authed, res, tenantId)
       if (!membership) return
 
+      const scopedEnrollment = await prisma.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
+      if (scopedEnrollment?.workflowKind === "SERVICE_STEPS") {
+        const nextStatus = resolveContactServiceChecklistStatus(parsedPayload.data)
+        const result = await prisma.$transaction(async tx => {
+          const item = await tx.contactServiceChecklistItem.findFirst({ where: { tenantId, contactServiceId, id: checklistItemId } })
+          if (!item) throw new ServiceCollectionError("CONTACT_SERVICE_CHECKLIST_ITEM_NOT_FOUND", 404)
+          const changed = await mutateEnrolledServiceTx(tx, { tenantId, contactServiceId, actor: { actorUserId: authed.user.id }, requestId: randomUUID(), action: { type: "SET_SERVICE_CHECKLIST_STATUS", serviceConfig: { checklistItemId: item.checklistItemId, status: nextStatus } } })
+          const checklistItem = await tx.contactServiceChecklistItem.findUniqueOrThrow({ where: { id: item.id }, include: { checklistItem: true } })
+          const activity = changed.changed ? await tx.contactServiceChecklistActivity.findFirst({ where: { tenantId, contactServiceChecklistItemId: item.id }, orderBy: { createdAt: "desc" }, include: { actor: { select: { id: true, name: true } } } }) : null
+          return { checklistItem, activity }
+        })
+        return res.json({ ok: true, checklistItem: serializeEnrolledChecklistItem(result.checklistItem), activity: result.activity ? { ...result.activity, label: result.activity.itemLabel } : null })
+      }
       const nextStatus = resolveContactServiceChecklistStatus(parsedPayload.data)
       const result = await prisma.$transaction(async (tx) => {
         const prismaTx = tx as any
@@ -6001,6 +5039,7 @@ router.patch(
           select: {
             id: true,
             checklistItemId: true,
+            ...enrolledChecklistSnapshotSelect,
             status: true,
             completedAt: true,
             checklistItem: {
@@ -6037,6 +5076,7 @@ router.patch(
           select: {
             id: true,
             checklistItemId: true,
+            ...enrolledChecklistSnapshotSelect,
             status: true,
             completedAt: true,
             checklistItem: {
@@ -6055,7 +5095,7 @@ router.patch(
             tenantId,
             contactServiceId,
             contactServiceChecklistItemId: existing.id,
-            itemLabel: existing.checklistItem?.label ?? "Checklist item",
+            itemLabel: serializeEnrolledChecklistItem(existing).label || "Checklist item",
             previousStatus: existing.status,
             status: nextStatus,
             actorUserId: authed.user.id,
@@ -6087,1071 +5127,211 @@ router.patch(
 
       return res.json({
         ok: true,
-        checklistItem: {
-          id: updated.id,
-          checklistItemId: updated.checklistItemId,
-          status: updated.status,
-          completedAt: updated.completedAt,
-          label: updated.checklistItem?.label ?? "",
-          description: updated.checklistItem?.description ?? null,
-          isRequired: Boolean(updated.checklistItem?.isRequired),
-          sortOrder: updated.checklistItem?.sortOrder ?? 0,
-        },
+        checklistItem: serializeEnrolledChecklistItem(updated),
         activity: result.activity
           ? {
-              id: result.activity.id,
-              checklistItemId: result.activity.contactServiceChecklistItemId,
-              label: result.activity.itemLabel,
-              previousStatus: result.activity.previousStatus,
-              status: result.activity.status,
-              createdAt: result.activity.createdAt,
-              actor: result.activity.actor,
-            }
+            id: result.activity.id,
+            checklistItemId: result.activity.contactServiceChecklistItemId,
+            label: result.activity.itemLabel,
+            previousStatus: result.activity.previousStatus,
+            status: result.activity.status,
+            createdAt: result.activity.createdAt,
+            actor: result.activity.actor,
+          }
           : null,
       })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
   },
 )
 
-router.patch(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId",
-  requireAuth,
-  async (req, res, next) => {
+router.post("/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/complete", requireAuth, async (req, res, next) => {
+  try {
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, occurrenceId } = TenantContactServicePathSchema.extend({ occurrenceId: z.uuid() }).parse(req.params)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const occurrence = await prisma.$transaction(tx => completeServiceStepOccurrenceTx(tx, {
+      tenantId, contactServiceId, occurrenceId, actorUserId: authed.user.id,
+    }))
+    return res.json({ ok: true, occurrence })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.post("/:tenantId/contact-services/:contactServiceId/step-movements", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = TenantContactServicePathSchema.parse(req.params)
+    const payload = MoveServiceStepSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const movement = await prisma.$transaction(tx => moveServiceStepTx(tx, { ...path, ...payload, actorUserId: authed.user.id }))
+    return res.json({ ok: true, movement })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.patch("/:tenantId/contact-services/:contactServiceId/service-steps/:stepId/owner", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const path = TenantContactServicePathSchema.extend({ stepId: z.uuid() }).parse(req.params)
+    const payload = z.object({ assignedToUserId: z.uuid().nullable() }).strict().parse(req.body)
+    const authed = req as AuthedRequest
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    await prisma.$transaction(tx => mutateEnrolledServiceTx(tx, { ...path, actor: { actorUserId: authed.user.id }, requestId: randomUUID(), action: { type: "SET_SERVICE_STEP_OWNER", serviceConfig: payload } }))
+    const step = await prisma.contactServiceStep.findFirstOrThrow({ where: { tenantId: path.tenantId, contactServiceId: path.contactServiceId, id: path.stepId }, include: { assignedTo: { select: { id: true, name: true, email: true } } } })
+    return res.json({ ok: true, step })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    next(error)
+  }
+})
+
+const StepOccurrencePathSchema = TenantContactServicePathSchema.extend({ occurrenceId: z.uuid() })
+router.post("/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/deadline", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const path = StepOccurrencePathSchema.parse(req.params)
+    const payload = ChangeServiceStepDeadlineSchema.parse(req.body)
+    const membership = await requireActiveMembership(authed, res, path.tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    const occurrence = await prisma.$transaction(tx => changeServiceStepDeadlineTx(tx, { ...path, ...payload, actorUserId: authed.user.id }))
+    return res.json({ ok: true, occurrence })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+
+router.get("/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/completion-wait", requireAuth, async (req, res, next) => {
+  try {
+    const input = StepOccurrencePathSchema.parse(req.params)
+    if (!await requireActiveMembership(req as AuthedRequest, res, input.tenantId)) return
+    const waits = await getServiceStepCompletionWaits(prisma, input)
+    return res.json({ ok: true, waits, wait: waits[0] ?? null })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
+for (const type of ["CONTINUE", "RESCHEDULE"] as const) {
+  router.post(`/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/completion-wait/${type === "CONTINUE" ? "continue" : "reschedule"}`, requireAuth, async (req, res, next) => {
     try {
+      const input = StepOccurrencePathSchema.parse(req.params)
       const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(
-        req.params,
-      )
-      const payload = UpdateFollowUpStepSchema.parse(req.body)
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
+      const membership = await requireActiveMembership(authed, res, input.tenantId)
       if (!membership) return
-
-      const requestedAssigneeMembership = payload.assignedToUserId
-        ? await prisma.membership.findUnique({
-            where: {
-              userId_tenantId: {
-                userId: payload.assignedToUserId,
-                tenantId,
-              },
-            },
-            select: {
-              status: true,
-              user: {
-                select: {
-                  id: true,
-                  name: true,
-                  email: true,
-                },
-              },
-            },
-          })
-        : null
-
-      if (
-        payload.assignedToUserId &&
-        (!requestedAssigneeMembership || requestedAssigneeMembership.status !== "ACTIVE")
-      ) {
-        return res.status(400).json({ error: "INVALID_ASSIGNEE" })
-      }
-
-      const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
-        where: {
-          id: followUpStepId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-          title: true,
-          status: true,
-          completedAt: true,
-          dueAt: true,
-          availableAt: true,
-          sortOrder: true,
-          templateNodeId: true,
-          runId: true,
-          resolutionSource: true,
-          assignedToUserId: true,
-          assignedTo: {
-            select: {
-              name: true,
-              email: true,
-            },
-          },
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
-      }
-      const isReopenAction = payload.action === "REOPEN"
-      const isAssigneeOnlyUpdate =
-        payload.assignedToUserId !== undefined &&
-        Object.keys(payload).every((key) => key === "assignedToUserId")
-
-      if (
-        payload.assignedToUserId !== undefined &&
-        !canChangeServiceFollowUpStepAssignee(existing.status)
-      ) {
-        return res.status(409).json({ error: "FOLLOW_UP_STEP_ASSIGNEE_LOCKED" })
-      }
-
-      const versionedRun = existing.runId
-        ? await prismaWithServices.contactServiceFollowUpRun.findUnique({
-            where: { id: existing.runId },
-            include: { templateVersion: { select: { definition: true } } },
-          })
-        : null
-      const userScheduledWait =
-        versionedRun?.templateVersion && existing.templateNodeId
-          ? getUserScheduledWaitForStep(
-              versionedRun.templateVersion.definition,
-              existing.templateNodeId,
-            )
-          : null
-      const isCompleting = payload.status === "COMPLETED" || Boolean(payload.completedAt)
-      const isUserSkipping = payload.status === "SKIPPED"
-      const nextFollowUpDate = payload.nextFollowUpAt
-        ? new Date(payload.nextFollowUpAt)
-        : null
-
-      if (existing.runId && !isReopenAction && !isAssigneeOnlyUpdate) {
-        const isCurrentStep =
-          versionedRun?.activeStepId === existing.id ||
-          (versionedRun?.activeStepId === null &&
-            versionedRun.cursorNodeId === existing.templateNodeId &&
-            ["AWAITING_STEP", "WAITING"].includes(versionedRun.status))
-        if (!isCurrentStep || existing.status !== "ACTIVE") {
-          return res.status(409).json({ error: "FOLLOW_UP_STEP_NOT_CURRENT" })
-        }
-        if (payload.status === "PENDING" || payload.status === "ACTIVE") {
-          return res.status(400).json({ error: "INVALID_FOLLOW_UP_STEP_TRANSITION" })
-        }
-      }
-
-      if (payload.nextFollowUpAt && (!isCompleting || !userScheduledWait)) {
-        return res.status(400).json({ error: "NEXT_FOLLOW_UP_AT_NOT_ALLOWED" })
-      }
-      if (userScheduledWait && isCompleting && !nextFollowUpDate) {
-        return res.status(422).json({
-          error: "NEXT_FOLLOW_UP_AT_REQUIRED",
-          completionRequirement: {
-            type: "NEXT_FOLLOW_UP_AT",
-            actionId: userScheduledWait.actionId,
-            prompt: userScheduledWait.prompt,
-          },
-        })
-      }
-      if (
-        nextFollowUpDate &&
-        (Number.isNaN(nextFollowUpDate.getTime()) || nextFollowUpDate.getTime() <= Date.now())
-      ) {
-        return res.status(422).json({ error: "INVALID_NEXT_FOLLOW_UP_AT" })
-      }
-
-      if (
-        isReopenAction &&
-        (existing.resolutionSource === "CONDITION_SKIPPED" ||
-          existing.resolutionSource === "FLOW_SKIPPED")
-      ) {
-        return res.status(409).json({ error: "AUTO_SKIPPED_STEP_CANNOT_REOPEN" })
-      }
-
-      if (isReopenAction && !["COMPLETED", "SKIPPED", "POSTPONED"].includes(existing.status)) {
-        return res.status(409).json({ error: "STEP_REOPEN_NOT_ALLOWED" })
-      }
-
-      if (isReopenAction) {
-        const laterCompletedStep = await prismaWithServices.contactServiceFollowUpStep.findFirst({
-          where: {
-            tenantId,
-            contactServiceId,
-            sortOrder: { gt: existing.sortOrder },
-            status: { in: ["COMPLETED", "SKIPPED"] },
-          },
-          select: { id: true },
-        })
-
-        if (laterCompletedStep) {
-          return res.status(409).json({ error: "STEP_REOPEN_BLOCKED_BY_LATER_COMPLETED_STEPS" })
-        }
-      }
-
-      if (
-        ["COMPLETED", "SKIPPED"].includes(existing.status) &&
-        !isReopenAction &&
-        (payload.status !== undefined ||
-          payload.completedAt !== undefined ||
-          payload.postponeTo !== undefined)
-      ) {
-        return res.status(409).json({ error: "STEP_REOPEN_REQUIRED" })
-      }
-
-      const mutationTime = new Date()
-      const statusUpdate =
-        isReopenAction
-          ? {
-              status: "ACTIVE" as const,
-              completedAt: null,
-            }
-          : payload.status === undefined
-          ? payload.completedAt === undefined
-            ? {}
-            : payload.completedAt
-              ? {
-                  status: "COMPLETED" as const,
-                  completedAt: new Date(payload.completedAt),
-                }
-              : {
-                  status: existing.status === "SKIPPED" ? "SKIPPED" : "ACTIVE",
-                  completedAt: null,
-                }
-          : payload.status === "COMPLETED"
-            ? {
-                status: "COMPLETED" as const,
-                completedAt: payload.completedAt ? new Date(payload.completedAt) : mutationTime,
-              }
-            : {
-                status: payload.status,
-                completedAt: null,
-              }
-      const resolutionUpdate = buildFollowUpStepResolutionUpdate({
-        action: isReopenAction ? "REOPEN" : undefined,
-        nextStatus: payload.status,
-        completedAtProvided: payload.completedAt !== undefined,
-        completedAtValue: payload.completedAt,
-        actorUserId: authed.user.id,
-        now: mutationTime,
-      })
-
-      const postponeToDate = payload.postponeTo ? new Date(payload.postponeTo) : null
-      if (payload.postponeTo && Number.isNaN(postponeToDate?.getTime() ?? NaN)) {
-        return res.status(400).json({ error: "INVALID_POSTPONE_DATE" })
-      }
-      const requestedDueAt = postponeToDate ??
-        (payload.dueAt !== undefined
-          ? payload.dueAt
-            ? new Date(payload.dueAt)
-            : null
-          : undefined)
-      const dueAtChanged = requestedDueAt !== undefined &&
-        (requestedDueAt?.getTime() ?? null) !== (existing.dueAt?.getTime() ?? null)
-
-      let updated: any
-      let v2RunToAdvanceId: string | null = null
-      await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any
-
-        if (isReopenAction) {
-          if (existing.runId && existing.templateNodeId) {
-            const resetWait = await resetUserScheduledWaitForStepTx({
-              prismaTx,
-              runId: existing.runId,
-              stepNodeId: existing.templateNodeId,
-            })
-            if (resetWait) {
-              const contactServiceForLog = await prismaTx.contactService.findUnique({
-                where: { id: contactServiceId },
-                select: { contactId: true, followUpTemplateId: true },
-              })
-              if (contactServiceForLog?.followUpTemplateId) {
-                await prismaTx.serviceFollowUpExecutionLog.create({
-                  data: {
-                    tenantId,
-                    templateId: contactServiceForLog.followUpTemplateId,
-                    templateVersionId: versionedRun?.templateVersionId ?? null,
-                    contactServiceId,
-                    contactId: contactServiceForLog.contactId,
-                    actorUserId: authed.user.id,
-                    flowNodeId: resetWait.actionId,
-                    stepId: existing.id,
-                    eventType: "MANUAL_WAIT_CANCELED",
-                    title: "Canceled the scheduled next follow-up after reopening its source step.",
-                  },
-                })
-              }
-            }
-          }
-          await prismaTx.contactServiceFollowUpStep.updateMany({
-            where: {
-              tenantId,
-              contactServiceId,
-              id: { not: followUpStepId },
-              status: "ACTIVE",
-            },
-            data: {
-              status: "PENDING",
-            },
-          })
-
-          await prismaTx.contactServiceFollowUpStep.updateMany({
-            where: {
-              tenantId,
-              contactServiceId,
-              sortOrder: { gt: existing.sortOrder },
-              status: { in: ["PENDING", "ACTIVE", "POSTPONED"] },
-            },
-            data: {
-              status: "PENDING",
-            },
-          })
-        }
-
-        if (!isReopenAction && statusUpdate.status === "ACTIVE") {
-          await prismaTx.contactServiceFollowUpStep.updateMany({
-            where: {
-              tenantId,
-              contactServiceId,
-              id: { not: followUpStepId },
-              status: "ACTIVE",
-            },
-            data: { status: "PENDING" },
-          })
-        }
-
-        updated = await prismaTx.contactServiceFollowUpStep.update({
-          where: {
-            id: followUpStepId,
-          },
-          data: {
-            ...(payload.title !== undefined ? { title: sanitizeSingleLineText(payload.title) } : {}),
-            ...(payload.notesTemplate !== undefined
-              ? {
-                  notesTemplate:
-                    payload.notesTemplate && payload.notesTemplate.trim().length
-                      ? sanitizeMultilineText(payload.notesTemplate)
-                      : null,
-                }
-              : {}),
-            ...statusUpdate,
-            ...resolutionUpdate,
-            ...(isReopenAction
-              ? { resolutionSource: null, resolutionReason: null }
-              : payload.status === "SKIPPED"
-                ? { resolutionSource: "USER_SKIPPED" as const, resolutionReason: null }
-                : payload.status === "COMPLETED" || Boolean(payload.completedAt)
-                  ? { resolutionSource: "USER_COMPLETED" as const, resolutionReason: null }
-                  : {}),
-            ...(payload.availableAt !== undefined
-              ? { availableAt: payload.availableAt ? new Date(payload.availableAt) : null }
-              : {}),
-            ...(requestedDueAt !== undefined ? { dueAt: requestedDueAt } : {}),
-            ...(dueAtChanged
-              ? { overdueNotifiedAt: null, overdueNotifiedDueAt: null }
-              : {}),
-            ...(payload.assignedToUserId !== undefined
-              ? { assignedToUserId: payload.assignedToUserId || null }
-              : {}),
-            ...(payload.note !== undefined
-              ? {
-                  note:
-                    payload.note && payload.note.trim().length
-                      ? sanitizeMultilineText(payload.note)
-                      : null,
-                }
-              : {}),
-            ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-          },
-          select: {
-            id: true,
-            title: true,
-            notesTemplate: true,
-            status: true,
-            availableAt: true,
-            dueAt: true,
-            completedAt: true,
-            assignedToUserId: true,
-            resolvedByUserId: true,
-            resolvedAt: true,
-            assignedTo: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-            resolvedBy: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-            note: true,
-            sortOrder: true,
-            templateNodeId: true,
-            runId: true,
-            resolutionSource: true,
-            resolutionReason: true,
-          },
-        })
-
-        const contactServiceRecord = await prismaTx.contactService.findUnique({
-          where: { id: contactServiceId },
-          select: {
-            contactId: true,
-            followUpTemplateId: true,
-          },
-        })
-
-        if (
-          contactServiceRecord &&
-          payload.assignedToUserId !== undefined &&
-          existing.assignedToUserId !== updated.assignedToUserId
-        ) {
-          const previousAssigneeLabel = getServiceUserLabel(existing.assignedTo)
-          const nextAssigneeLabel = getServiceUserLabel(
-            requestedAssigneeMembership?.user ?? null,
-          )
-          await prismaTx.serviceFollowUpExecutionLog.create({
-            data: {
-              tenantId,
-              templateId: contactServiceRecord.followUpTemplateId,
-              contactServiceId,
-              contactId: contactServiceRecord.contactId,
-              actorUserId: authed.user.id,
-              flowNodeId: updated.templateNodeId ?? null,
-              stepId: updated.id,
-              eventType: "STEP_ASSIGNEE_CHANGED",
-              title: `Step assignee updated: ${updated.title}`,
-              details: `Changed from ${previousAssigneeLabel} to ${nextAssigneeLabel}.`,
-              payload: {
-                previousUserId: existing.assignedToUserId,
-                previousUserName: previousAssigneeLabel,
-                userId: updated.assignedToUserId,
-                userName: nextAssigneeLabel,
-              },
-            },
-          })
-        }
-
-        if (
-          contactServiceRecord &&
-          (isReopenAction ||
-            payload.status !== undefined ||
-            payload.completedAt !== undefined ||
-            payload.postponeTo !== undefined)
-        ) {
-          await prismaTx.serviceFollowUpExecutionLog.create({
-            data: {
-              tenantId,
-              templateId: contactServiceRecord.followUpTemplateId,
-              contactServiceId,
-              contactId: contactServiceRecord.contactId,
-              actorUserId: authed.user.id,
-              flowNodeId: updated.templateNodeId ?? null,
-              stepId: updated.id,
-              eventType: "STEP_STATUS_UPDATED",
-              title: isReopenAction ? `Reopened step: ${updated.title}` : `Updated step status: ${updated.title}`,
-              details: isReopenAction
-                ? "Step reopened and moved back to active."
-                : `Step moved to ${updated.status.toLowerCase().replace(/_/g, " ")}.`,
-              payload: {
-                status: updated.status,
-                dueAt: updated.dueAt,
-                completedAt: updated.completedAt,
-                resolvedAt: updated.resolvedAt,
-                resolvedByUserId: updated.resolvedByUserId,
-                assignedToUserId: updated.assignedToUserId,
-                assignedToName: getServiceUserLabel(updated.assignedTo),
-                postponeTo: payload.postponeTo ?? null,
-                action: payload.action ?? null,
-              },
-            },
-          })
-        }
-
-        if (updated.status === "ACTIVE") {
-          await prismaTx.contactServiceFollowUpStep.updateMany({
-            where: {
-              tenantId,
-              contactServiceId,
-              id: { not: followUpStepId },
-              status: "ACTIVE",
-            },
-            data: {
-              status: "PENDING",
-            },
-          })
-        }
-
-        if (isReopenAction && existing.runId) {
-          await prismaTx.contactServiceFollowUpRun.update({
-            where: { id: existing.runId },
-            data: {
-              status: "AWAITING_STEP",
-              cursorNodeId: existing.templateNodeId,
-              activeStepId: followUpStepId,
-              resumeAt: null,
-              waitingNodeId: null,
-              leaseToken: null,
-              leaseExpiresAt: null,
-              failureNodeId: null,
-              failureCode: null,
-              failureMessage: null,
-              failedAt: null,
-            },
-          })
-        }
-
-        if (postponeToDate && existing.dueAt) {
-          const shiftMs = postponeToDate.getTime() - existing.dueAt.getTime()
-          const shouldCascade = payload.cascadeFutureSteps !== false
-
-          if (shouldCascade && shiftMs !== 0) {
-            const futureSteps = await prismaTx.contactServiceFollowUpStep.findMany({
-              where: {
-                tenantId,
-                contactServiceId,
-                sortOrder: { gt: existing.sortOrder },
-                status: { in: ["PENDING", "ACTIVE"] },
-              },
-              orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-              select: {
-                id: true,
-                dueAt: true,
-                availableAt: true,
-              },
-            })
-
-            for (const futureStep of futureSteps) {
-              await prismaTx.contactServiceFollowUpStep.update({
-                where: { id: futureStep.id },
-                data: {
-                  ...(futureStep.dueAt
-                    ? { dueAt: new Date(futureStep.dueAt.getTime() + shiftMs) }
-                    : {}),
-                  ...(futureStep.availableAt
-                    ? { availableAt: new Date(futureStep.availableAt.getTime() + shiftMs) }
-                    : {}),
-                  overdueNotifiedAt: null,
-                  overdueNotifiedDueAt: null,
-                },
-              })
-            }
-          }
-        }
-
-        if (existing.runId && postponeToDate && existing.templateNodeId) {
-          await postponeFollowUpRunStepTx({
-            prismaTx,
-            runId: existing.runId,
-            stepNodeId: existing.templateNodeId,
-            resumeAt: postponeToDate,
-          })
-        }
-
-        if (
-          existing.status === "ACTIVE" &&
-          (updated.status === "COMPLETED" || updated.status === "SKIPPED")
-        ) {
-          if (existing.runId && existing.templateNodeId) {
-            if (userScheduledWait) {
-              await stageUserScheduledWaitInputTx({
-                prismaTx,
-                runId: existing.runId,
-                stepNodeId: existing.templateNodeId,
-                actorUserId: authed.user.id,
-                scheduledFor: nextFollowUpDate,
-                bypassed: isUserSkipping,
-              })
-            }
-            await continueFollowUpRunFromStepTx({
-              prismaTx,
-              runId: existing.runId,
-              stepNodeId: existing.templateNodeId,
-            })
-            v2RunToAdvanceId = existing.runId
-          } else {
-            await executeFollowUpFromStep({
-              prismaTx,
-              tenantId,
-              contactServiceId,
-              completedStepId: followUpStepId,
-              completedStepSortOrder: existing.sortOrder,
-              completedStepTemplateNodeId: existing.templateNodeId,
-              actorUserId: authed.user.id,
-              ignoreWaitNodes: false,
-            })
-            await syncContactServiceActiveStep({
-              prismaTx,
-              tenantId,
-              contactServiceId,
-            })
-          }
-        }
-
-        if (
-          isReopenAction ||
-          payload.status !== undefined ||
-          payload.completedAt !== undefined ||
-          payload.postponeTo !== undefined
-        ) {
-          await reconcileContactServiceCompletionFromFollowUps(
-            prismaTx,
-            tenantId,
-            contactServiceId,
-            authed.user.id,
-          )
-        }
-      })
-
-      if (v2RunToAdvanceId) {
-        await executeFollowUpRun({
-          runId: v2RunToAdvanceId,
-          actorUserId: authed.user.id,
-        })
-      }
-
-      return res.json({
-        ok: true,
-        followUpStep: updated,
-      })
+      if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+      const change = type === "CONTINUE" ? { type, ...ContinueServiceStepWaitSchema.parse(req.body) } : { type, ...RescheduleServiceStepWaitSchema.parse(req.body) }
+      const wait = await prisma.$transaction(tx => changeServiceStepCompletionWaitTx(tx, { ...input, actorUserId: authed.user.id, change }))
+      if (type === "CONTINUE") kickAutomationRunWorker({ queueOpportunityEvent: queueOpportunityAutomationEvent })
+      return res.json({ ok: true, wait })
     } catch (error) {
+      if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
       return next(error)
     }
-  },
-)
+  })
+}
 
-router.post(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-steps",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const payload = CreateFollowUpStepSchema.parse(req.body)
+router.use("/:tenantId/contact-services/:contactServiceId/follow-up-steps", requireAuth, async (req, res, next) => {
+  if (!["POST", "PATCH", "DELETE"].includes(req.method)) return next()
+  try {
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    if (!await requireActiveMembership(req as AuthedRequest, res, tenantId)) return
+    const enrollment = await prisma.contactService.findFirst({ where: { tenantId, id: contactServiceId }, select: { workflowKind: true } })
+    if (enrollment?.workflowKind === "SERVICE_STEPS") return res.status(409).json({ error: "SERVICE_STEP_WORKFLOW_REQUIRES_SERVICE_ACTIONS" })
+    return next()
+  } catch (error) { return next(error) }
+})
 
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
+router.patch("/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(req.params)
+    const payload = UpdateFollowUpStepSchema.parse(req.body)
+    if (!await requireActiveMembership(authed, res, tenantId)) return
+    const updated = await prisma.$transaction(async tx => {
+      const step = await patchSavedFollowUpTx(tx, { tenantId, contactServiceId, stepId: followUpStepId, actorUserId: authed.user.id, patch: payload })
+      await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      return step
+    })
+    return res.json({ ok: true, followUpStep: updated })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-      if (payload.assignedToUserId) {
-        const assigneeMembership = await prisma.membership.findUnique({
-          where: {
-            userId_tenantId: {
-              userId: payload.assignedToUserId,
-              tenantId,
-            },
-          },
-          select: {
-            status: true,
-          },
-        })
+router.post("/:tenantId/contact-services/:contactServiceId/follow-up-steps", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
+    const payload = CreateFollowUpStepSchema.parse(req.body)
+    if (!await requireActiveMembership(authed, res, tenantId)) return
+    const step = await prisma.$transaction(async tx => {
+      const enrollment = await lockSavedFollowUpEnrollment(tx, tenantId, contactServiceId)
+      if (["CANCELED", "COMPLETED"].includes(enrollment.status)) throw new ServiceCollectionError("ENROLLMENT_NOT_ACTIVE", 409)
+      if (payload.assignedToUserId && !await tx.membership.findFirst({ where: { tenantId, userId: payload.assignedToUserId, status: "ACTIVE" } })) throw new ServiceCollectionError("INVALID_ASSIGNEE")
+      const steps = await tx.contactServiceFollowUpStep.findMany({ where: { tenantId, contactServiceId }, orderBy: { sortOrder: "desc" } })
+      const hasOpen = steps.some(item => ["ACTIVE", "PENDING", "POSTPONED"].includes(item.status))
+      const status = payload.status ?? (hasOpen ? "PENDING" : "ACTIVE")
+      if (status === "ACTIVE" && hasOpen) throw new ServiceCollectionError("FOLLOW_UP_ALREADY_HAS_ACTIVE_STEP", 409)
+      const now = new Date()
+      const created = await tx.contactServiceFollowUpStep.create({ data: {
+          tenantId, contactServiceId, title: payload.title, notesTemplate: payload.notesTemplate, note: payload.note,
+          assignedToUserId: payload.assignedToUserId, status, sortOrder: payload.sortOrder ?? (steps[0]?.sortOrder ?? 0) + 10,
+          availableAt: payload.availableAt ? new Date(payload.availableAt) : null,
+          dueAt: payload.dueAt ? new Date(payload.dueAt) : null,
+          completedAt: status === "COMPLETED" ? now : null,
+          ...buildFollowUpStepResolutionUpdate({ nextStatus: status, actorUserId: authed.user.id, now }),
+        }, include: { assignedTo: { select: { id: true, name: true, email: true, image: true } } } })
+      await tx.serviceFollowUpExecutionLog.create({ data: { tenantId, contactServiceId, contactId: enrollment.contactId, actorUserId: authed.user.id, stepId: created.id, eventType: "SAVED_FOLLOW_UP_CREATED", title: "Saved step added: " + created.title } })
+      await reconcileContactServiceCompletionFromFollowUps(tx, tenantId, contactServiceId, authed.user.id)
+      return created
+    })
+    return res.status(201).json({ ok: true, followUpStep: step })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
-        if (!assigneeMembership || assigneeMembership.status !== "ACTIVE") {
-          return res.status(400).json({ error: "INVALID_ASSIGNEE" })
-        }
-      }
-
-      const contactService = await prismaWithServices.contactService.findFirst({
-        where: {
-          id: contactServiceId,
-          tenantId,
-        },
-        select: {
-          id: true,
-          followUpRun: { select: { id: true } },
-        },
-      })
-
-      if (!contactService) {
-        return res.status(404).json({ error: "CONTACT_SERVICE_NOT_FOUND" })
-      }
-      if (contactService.followUpRun) {
-        return res.status(409).json({ error: "VERSIONED_FOLLOW_UP_STEPS_IMMUTABLE" })
-      }
-
-      const maxSortOrder = await prismaWithServices.contactServiceFollowUpStep.findFirst({
-        where: {
-          tenantId,
-          contactServiceId,
-        },
-        orderBy: { sortOrder: "desc" },
-        select: { sortOrder: true },
-      })
-      const hasActiveStep = await prismaWithServices.contactServiceFollowUpStep.findFirst({
-        where: {
-          tenantId,
-          contactServiceId,
-          status: "ACTIVE",
-        },
-        select: { id: true },
-      })
-
-      const nextStatus = payload.status ?? (hasActiveStep ? "PENDING" : "ACTIVE")
-      if (nextStatus === "ACTIVE" && hasActiveStep) {
-        return res.status(409).json({ error: "FOLLOW_UP_ALREADY_HAS_ACTIVE_STEP" })
-      }
-      const resolvedAt =
-        nextStatus === "COMPLETED" || nextStatus === "SKIPPED" ? new Date() : null
-      const nextDueAt = payload.dueAt ? new Date(payload.dueAt) : null
-      const nextAvailableAt =
-        payload.availableAt !== undefined
-          ? payload.availableAt
-            ? new Date(payload.availableAt)
-            : null
-          : nextStatus === "ACTIVE"
-            ? new Date()
-            : nextDueAt
-
-      const created = await prismaWithServices.contactServiceFollowUpStep.create({
-        data: {
-          tenantId,
-          contactServiceId,
-          title: sanitizeSingleLineText(payload.title),
-          notesTemplate:
-            payload.notesTemplate && payload.notesTemplate.trim().length
-              ? sanitizeMultilineText(payload.notesTemplate)
-              : null,
-          status: nextStatus,
-          availableAt: nextAvailableAt,
-          dueAt: nextDueAt,
-          completedAt: nextStatus === "COMPLETED" ? resolvedAt : null,
-          resolvedByUserId: resolvedAt ? authed.user.id : null,
-          resolvedAt,
-          resolutionSource:
-            nextStatus === "COMPLETED"
-              ? "USER_COMPLETED"
-              : nextStatus === "SKIPPED"
-                ? "USER_SKIPPED"
-                : null,
-          assignedToUserId: payload.assignedToUserId || null,
-          note:
-            payload.note && payload.note.trim().length
-              ? sanitizeMultilineText(payload.note)
-              : null,
-          sortOrder: payload.sortOrder ?? (maxSortOrder?.sortOrder ?? 0) + 10,
-        },
-        select: {
-          id: true,
-          title: true,
-          notesTemplate: true,
-          status: true,
-          availableAt: true,
-          dueAt: true,
-          completedAt: true,
-          assignedToUserId: true,
-          resolvedByUserId: true,
-          resolvedAt: true,
-          resolvedBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true,
-              image: true,
-            },
-          },
-          note: true,
-          sortOrder: true,
-        },
-      })
-
-      return res.status(201).json({
-        ok: true,
-        followUpStep: created,
-      })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.patch(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-run/next-follow-up",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const payload = RescheduleNextFollowUpSchema.parse(req.body)
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      const scheduledFor = new Date(payload.nextFollowUpAt)
-      if (Number.isNaN(scheduledFor.getTime()) || scheduledFor.getTime() <= Date.now()) {
-        return res.status(422).json({ error: "INVALID_NEXT_FOLLOW_UP_AT" })
-      }
-
-      const result = await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any
-        const run = await prismaTx.contactServiceFollowUpRun.findFirst({
-          where: { tenantId, contactServiceId },
-          include: {
-            templateVersion: { select: { definition: true, templateId: true } },
-            contactService: { select: { contactId: true, followUpTemplateId: true } },
-          },
-        })
-        if (!run || run.status !== "WAITING" || !run.waitingNodeId) return null
-        const wait = getUserScheduledWaitByActionId(
-          run.templateVersion?.definition,
-          run.waitingNodeId,
-        )
-        if (!wait) return null
-        if (run.leaseToken) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
-
-        const execution = await prismaTx.serviceFollowUpNodeExecution.findUnique({
-          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
-          select: { input: true },
-        })
-        const previousInput =
-          execution?.input && typeof execution.input === "object" && !Array.isArray(execution.input)
-            ? execution.input
-            : {}
-        const previousScheduledFor = run.resumeAt
-        const updated = await prismaTx.contactServiceFollowUpRun.updateMany({
-          where: {
-            id: run.id,
-            status: "WAITING",
-            waitingNodeId: wait.actionId,
-            leaseToken: null,
-          },
-          data: { resumeAt: scheduledFor },
-        })
-        if (!updated.count) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
-        await prismaTx.serviceFollowUpNodeExecution.update({
-          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
-          data: {
-            input: {
-              ...previousInput,
-              scheduledFor: scheduledFor.toISOString(),
-              suppliedByUserId: authed.user.id,
-              bypassed: false,
-            },
-            output: { scheduledFor: scheduledFor.toISOString() },
-          },
-        })
-        const templateId = run.contactService.followUpTemplateId ?? run.templateVersion?.templateId
-        if (templateId) {
-          await prismaTx.serviceFollowUpExecutionLog.create({
-            data: {
-              tenantId,
-              templateId,
-              templateVersionId: run.templateVersionId,
-              contactServiceId,
-              contactId: run.contactService.contactId,
-              actorUserId: authed.user.id,
-              flowNodeId: wait.actionId,
-              eventType: "MANUAL_WAIT_RESCHEDULED",
-              title: `Next follow-up rescheduled for ${scheduledFor.toISOString()}`,
-              payload: {
-                previousScheduledFor,
-                scheduledFor,
-              },
-            },
-          })
-        }
-        return {
-          manualWait: {
-            actionId: wait.actionId,
-            prompt: wait.prompt,
-            scheduledFor,
-            canReschedule: true,
-            canContinueNow: true,
-          },
-        }
-      })
-
-      if (!result) {
-        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_MANUALLY_WAITING" })
-      }
-      if ("conflict" in result) {
-        return res.status(409).json({ error: result.conflict })
-      }
-      return res.json({ ok: true, ...result })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.post(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-run/continue-now",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      const claimed = await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any
-        const run = await prismaTx.contactServiceFollowUpRun.findFirst({
-          where: { tenantId, contactServiceId },
-          include: {
-            templateVersion: { select: { definition: true, templateId: true } },
-            contactService: { select: { contactId: true, followUpTemplateId: true } },
-          },
-        })
-        if (!run || run.status !== "WAITING" || !run.waitingNodeId) return null
-        const wait = getWorkflowWaitByActionId(
-          run.templateVersion?.definition,
-          run.waitingNodeId,
-        )
-        if (!wait) return null
-        if (run.leaseToken) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
-
-        const continuedEarlyAt = new Date()
-        const leaseToken = randomUUID()
-        const updated = await prismaTx.contactServiceFollowUpRun.updateMany({
-          where: {
-            id: run.id,
-            status: "WAITING",
-            waitingNodeId: wait.actionId,
-            leaseToken: null,
-          },
-          data: {
-            status: "RUNNING",
-            leaseToken,
-            leaseExpiresAt: new Date(continuedEarlyAt.getTime() + 60_000),
-          },
-        })
-        if (!updated.count) return { conflict: "FOLLOW_UP_WAIT_ALREADY_RESUMING" as const }
-
-        const execution = await prismaTx.serviceFollowUpNodeExecution.findUnique({
-          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
-          select: { input: true },
-        })
-        const previousInput =
-          execution?.input && typeof execution.input === "object" && !Array.isArray(execution.input)
-            ? execution.input
-            : {}
-        await prismaTx.serviceFollowUpNodeExecution.update({
-          where: { runId_nodeId: { runId: run.id, nodeId: wait.actionId } },
-          data: {
-            input: {
-              ...previousInput,
-              continuedEarlyAt: continuedEarlyAt.toISOString(),
-              continuedEarlyByUserId: authed.user.id,
-            },
-          },
-        })
-
-        const templateId = run.contactService.followUpTemplateId ?? run.templateVersion?.templateId
-        if (templateId) {
-          await prismaTx.serviceFollowUpExecutionLog.create({
-            data: {
-              tenantId,
-              templateId,
-              templateVersionId: run.templateVersionId,
-              contactServiceId,
-              contactId: run.contactService.contactId,
-              actorUserId: authed.user.id,
-              flowNodeId: wait.actionId,
-              eventType:
-                wait.waitMode === "USER_SCHEDULED"
-                  ? "MANUAL_WAIT_CONTINUED_EARLY"
-                  : "DURATION_WAIT_CONTINUED_EARLY",
-              title:
-                wait.waitMode === "USER_SCHEDULED"
-                  ? "Continued the user-scheduled follow-up early."
-                  : "Continued the duration-based follow-up early.",
-              payload: {
-                scheduledFor: run.resumeAt,
-                continuedEarlyAt,
-              },
-            },
-          })
-        }
-
-        return { runId: run.id, leaseToken }
-      })
-
-      if (!claimed) {
-        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_MANUALLY_WAITING" })
-      }
-      if ("conflict" in claimed) {
-        return res.status(409).json({ error: claimed.conflict })
-      }
-
-      const result = await executeFollowUpRun({
-        runId: claimed.runId,
-        actorUserId: authed.user.id,
-        expectedLeaseToken: claimed.leaseToken,
-      })
-      if (result.status === "LEASE_LOST") {
-        return res.status(409).json({ error: "FOLLOW_UP_WAIT_ALREADY_RESUMING" })
-      }
-      return res.json({ ok: true, result })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.post(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-run/retry",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId } = TenantContactServicePathSchema.parse(req.params)
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-      if (membership.role !== "TENANT_ADMIN") {
-        return res.status(403).json({ error: "TENANT_ADMIN_REQUIRED" })
-      }
-      const run = await prismaWithServices.contactServiceFollowUpRun.findFirst({
-        where: { tenantId, contactServiceId },
-        select: { id: true, status: true },
-      })
-      if (!run) return res.status(404).json({ error: "FOLLOW_UP_RUN_NOT_FOUND" })
-      if (run.status !== "FAILED") {
-        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_RETRYABLE" })
-      }
-      const result = await retryFailedFollowUpRun({ runId: run.id, actorUserId: authed.user.id })
-      if (result.status === "NOT_RETRYABLE") {
-        return res.status(409).json({ error: "FOLLOW_UP_RUN_NOT_RETRYABLE" })
-      }
-      return res.json({ ok: result.status !== "FAILED", run: result })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
-
-router.delete(
-  "/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId",
-  requireAuth,
-  async (req, res, next) => {
-    try {
-      const authed = req as AuthedRequest
-      const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(
-        req.params,
-      )
-
-      const membership = await requireActiveMembership(authed, res, tenantId)
-      if (!membership) return
-
-      const existing = await prismaWithServices.contactServiceFollowUpStep.findFirst({
-        where: {
-          id: followUpStepId,
-          tenantId,
-          contactServiceId,
-        },
-        select: {
-          id: true,
-        },
-      })
-
-      if (!existing) {
-        return res.status(404).json({ error: "FOLLOW_UP_STEP_NOT_FOUND" })
-      }
-
-      await prismaWithServices.contactServiceFollowUpStep.delete({
-        where: { id: followUpStepId },
-      })
-
-      return res.json({ ok: true })
-    } catch (error) {
-      return next(error)
-    }
-  },
-)
+router.delete("/:tenantId/contact-services/:contactServiceId/follow-up-steps/:followUpStepId", requireAuth, async (req, res, next) => {
+  try {
+    enforceSameOrigin(req)
+    const authed = req as AuthedRequest
+    const { tenantId, contactServiceId, followUpStepId } = TenantFollowUpStepPathSchema.parse(req.params)
+    const membership = await requireActiveMembership(authed, res, tenantId)
+    if (!membership) return
+    if (!canManageContactServices(membership)) return res.status(403).json({ error: "INSUFFICIENT_SECURITY_LEVEL" })
+    await prisma.$transaction(async tx => {
+      await lockSavedFollowUpEnrollment(tx, tenantId, contactServiceId)
+      const step = await tx.contactServiceFollowUpStep.findFirst({ where: { tenantId, contactServiceId, id: followUpStepId }, include: { _count: { select: { tasks: true, contactNotes: true } } } })
+      if (!step) throw new ServiceCollectionError("FOLLOW_UP_STEP_NOT_FOUND", 404)
+      if (step.status !== "PENDING" || step.runId || step.resolvedAt || step.note || step._count.tasks || step._count.contactNotes) throw new ServiceCollectionError("SAVED_STEP_HISTORY_PROTECTED", 409)
+      await tx.contactServiceFollowUpStep.delete({ where: { id: step.id } })
+    })
+    return res.json({ ok: true })
+  } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code })
+    return next(error)
+  }
+})
 
 export default router

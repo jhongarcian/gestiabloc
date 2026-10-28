@@ -10,6 +10,7 @@ import {
   type StackedAvatarGroupItem,
 } from "@/components/stacked-avatar-group"
 import { api } from "@/lib/api"
+import { serviceOfferingLabel } from "@/lib/service-hierarchy"
 import { formatPhoneNumber } from "@/lib/format-phone-number"
 import { getServiceEnrollmentFollowUpHref } from "@/lib/routes"
 import { getCalendarMeta, type CalendarMetaResponse } from "../../calendar/_lib/calendar-api"
@@ -175,6 +176,23 @@ export default async function ContactDetailsLayout({
     activeFollowUpServices = services
       .filter((service) => ACTIVE_CONTACT_SERVICE_STATUSES.has(service.status))
       .map((service) => {
+        if (service.workflowKind === "SERVICE_STEPS") {
+          const steps = service.serviceSteps ?? []
+          const entries = steps.flatMap(step => step.occurrences.filter(entry => !entry.supersededAt).map(entry => ({ ...entry, step })))
+          const current = entries.find(entry => entry.status === "ACTIVE" || ["WAITING_AUTOMATION", "PAUSED"].includes(entry.progressionStatus))
+          if (!current) return null
+          const progress = service.stepProgress ?? { total: steps.length, completed: 0, percentage: 0 }
+          return {
+            id: service.id,
+            name: serviceOfferingLabel(service.service),
+            ...progress,
+            currentStepTitle: current.step.title,
+            currentStepDueAt: current.dueAt,
+            currentStepIsScheduled: false,
+            isOverdue: current.status === "ACTIVE" && isPastDue(current.dueAt),
+            collaborators: steps.flatMap(step => step.assignedTo ? [{ id: step.assignedTo.id, label: step.assignedTo.name || step.assignedTo.email, tone: "internal" as const }] : []),
+          }
+        }
         const total = service.followUpSteps.length
         const completed = service.followUpSteps.filter(
           (step) =>
@@ -213,7 +231,7 @@ export default async function ContactDetailsLayout({
         return hasActiveFollowUp
           ? {
               id: service.id,
-              name: service.service.name,
+              name: serviceOfferingLabel(service.service),
               completed,
               total,
               percentage: total > 0 ? Math.round((completed / total) * 100) : 0,

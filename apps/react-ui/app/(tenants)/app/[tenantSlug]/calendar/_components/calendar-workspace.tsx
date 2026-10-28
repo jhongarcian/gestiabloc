@@ -1,5 +1,7 @@
 "use client"
 
+import { serviceOfferingLabel } from "@/lib/service-hierarchy"
+
 import Link from "next/link"
 import {
   addDays,
@@ -1724,7 +1726,7 @@ function CalendarFilterControls({
                   </AvatarFallback>
                 </Avatar>
                 <span className="truncate font-medium text-slate-800">
-                  {selectedService?.name ?? "All services"}
+                  {selectedService ? serviceOfferingLabel(selectedService) : "All sub-services"}
                 </span>
               </span>
               <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
@@ -1771,7 +1773,7 @@ function CalendarFilterControls({
                   {options.services.map((service) => (
                     <CommandItem
                       key={service.id}
-                      value={`${service.name} ${service.id}`}
+                      value={`${serviceOfferingLabel(service)} ${service.id}`}
                       onSelect={() => {
                         onServiceChange(service.id)
                         setServicePickerOpen(false)
@@ -1785,7 +1787,7 @@ function CalendarFilterControls({
                         </AvatarFallback>
                       </Avatar>
                       <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
-                        {service.name}
+                        {serviceOfferingLabel(service)}
                       </span>
                       <Check
                         className={cn(

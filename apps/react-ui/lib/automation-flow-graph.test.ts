@@ -1,3 +1,4 @@
+import { SERVICE_ACTION_LABELS } from "./service-automation-action.js"
 import assert from "node:assert/strict"
 import { describe, test } from "node:test"
 
@@ -5,6 +6,7 @@ import { buildAutomationFlowGraph } from "../app/(tenants)/app/[tenantSlug]/acco
 import type { AutomationCatalog } from "../app/(tenants)/app/[tenantSlug]/account-settings/_components/automation-types.js"
 
 const labels = {
+  ...SERVICE_ACTION_LABELS,
   CREATE_CONTACT: "Create contact",
   UPDATE_CONTACT_CUSTOM_FIELDS: "Update contact fields",
   SET_CONTACT_STATUS: "Set contact status",
@@ -984,3 +986,12 @@ describe("buildAutomationFlowGraph", () => {
     }
   })
 })
+
+for (const type of ["MOVE_SERVICE_STEP", "COMPLETE_SERVICE_STEP", "SKIP_SERVICE_STEP", "SET_SERVICE_STATUS"] as const) {
+  test(`${type} has no insertion control after its terminal node`, () => {
+    const graph = buildAutomationFlowGraph({ triggerType: "SERVICE_STEP_ENTERED", pipelineId: "", targetStageId: "", conditions: [], actions: [{ nodeKey: "terminal-service", type, serviceConfig: { status: "CANCELED" } }] }, null, labels)
+    assert.ok(graph.nodes.some(node => node.id === "add-0"))
+    assert.equal(graph.nodes.some(node => node.id === "add-1"), false)
+    assert.equal(graph.nodes.find(node => node.id === "complete")?.data.subtitle, "Workflow ended by service action")
+  })
+}

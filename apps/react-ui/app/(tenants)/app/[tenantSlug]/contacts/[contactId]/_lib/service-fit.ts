@@ -1,5 +1,7 @@
 export type ServiceFitScanItem = {
   serviceId: string
+  serviceGroupId?: string | null
+  serviceGroupName?: string | null
   serviceName: string
   description: string | null
   fitProfile: {
@@ -17,6 +19,7 @@ export type ServiceFitScanItem = {
   configurationGapNotes: string[]
   recommendedUpdates: string[]
   hasPurchased: boolean
+  purchaseCount?: number
   hasActiveEnrollment: boolean
   currentContactServiceId: string | null
   currentContactServiceStatus:

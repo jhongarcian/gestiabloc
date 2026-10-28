@@ -28,9 +28,14 @@ function getOriginVariants(origin: string) {
 }
 
 export function getAllowedWebOrigins() {
-  const configuredOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000"
+  const configuredOrigins = [
+    process.env.WEB_ORIGIN ?? "http://localhost:3000",
+    ...(process.env.WEB_ADDITIONAL_ORIGINS ?? "").split(","),
+  ]
+    .map((origin) => origin.trim())
+    .filter(Boolean)
 
-  return [...new Set(getOriginVariants(configuredOrigin))]
+  return [...new Set(configuredOrigins.flatMap(getOriginVariants))]
 }
 
 /**

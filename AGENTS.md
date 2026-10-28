@@ -104,6 +104,7 @@ node --import tsx apps/backend/src/lib/service-fit.test.ts
 - `DATABASE_URL` — PostgreSQL connection string (required)
 - `PORT` — backend port (default 4000)
 - `WEB_ORIGIN` — allowed CORS origin (default http://localhost:3000)
+- `WEB_ADDITIONAL_ORIGINS` — optional comma-separated trusted origins for CORS, Socket.io, and CSRF checks (e.g. http://localhost:3001 for a second dev frontend). Keep `WEB_ORIGIN` as the canonical frontend URL used in email links. Restart the backend after changing either setting.
 - `COOKIE_DOMAIN` — optional, for cross-subdomain cookies
 
 **Frontend** (`apps/react-ui/.env`):
@@ -115,4 +116,4 @@ node --import tsx apps/backend/src/lib/service-fit.test.ts
 - Prisma schema has **tenant-scoped composite unique constraints** pattern: `@@unique([tenantId, id])` on most tables
 - Custom field values support **encryption** (`isEncrypted` flag on `ContactCustomField`, ciphertext/iv/authTag columns)
 - Service fit analysis has its own subsystem in `src/lib/service-fit*.ts` with AI assistant integration
-- Follow-up templates store flow graph as JSON (`flowNodes`, `flowEdges` on `ServiceFollowUpTemplate`)
+- New enrollments use saved service steps and the shared automation queue. Retired template provenance lives in `retiredWorkflowSnapshot`; saved manual follow-up steps and logs remain, but no template executor or template models exist.

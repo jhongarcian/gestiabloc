@@ -1,8 +1,9 @@
 "use client"
 
+import Link from "next/link"
 import { isAxiosError } from "axios"
 import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import {
   closestCenter,
   DndContext,
@@ -19,10 +20,13 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable"
-import { AlertTriangle, CheckCircle2, GripVertical } from "lucide-react"
+import { CSS } from "@dnd-kit/utilities"
+import { ArrowRight, FolderTree, GripVertical, Layers, Plus } from "lucide-react"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -32,11 +36,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -53,265 +58,145 @@ import { Textarea } from "@/components/ui/textarea"
 import { api } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
+export type ParentService = { id: string; name: string; isActive: boolean }
 type ServiceItem = {
   id: string
+  kind: "GROUP" | "OFFERING"
+  parentServiceId: string | null
   name: string
   description: string | null
   basePriceCents: number
   currency: string
-  allowPartialPayments: boolean
-  minimumPartialPaymentCents: number | null
   isActive: boolean
   sortOrder: number
+  _count: { subServices: number }
   checklistItems: Array<{ id: string }>
-  followUpTemplateSteps: Array<{ id: string }>
-  followUpTemplates?: Array<{ id: string }>
   professionals: Array<{ id: string }>
+  steps: Array<{ id: string }>
 }
-
 type ServicesResponse = {
-  ok: boolean
   items: ServiceItem[]
-  pagination: {
-    page: number
-    pageSize: number
-    total: number
-    totalPages: number
-  }
+  pagination: { page: number; pageSize: number; total: number; totalPages: number }
 }
 
-type ServicesConfigPanelProps = {
-  tenantId: string
-  tenantSlug: string
-}
-
-type ServiceForm = {
-  name: string
-  description: string
-  basePrice: string
-  currency: string
-  allowPartialPayments: boolean
-  minimumPartialPayment: string
-  isActive: boolean
-}
-
-const PAGE_SIZE_OPTIONS = [10, 25] as const
-
-function toTranslateString(transform: { x: number; y: number } | null) {
-  if (!transform) return undefined
-  return `translate3d(${Math.round(transform.x)}px, ${Math.round(transform.y)}px, 0)`
-}
-
-function dollarsToCents(value: string) {
-  const numericValue = Number.parseFloat(value)
-  if (!Number.isFinite(numericValue) || numericValue < 0) {
-    return null
-  }
-
-  return Math.round(numericValue * 100)
-}
-
-function defaultServiceForm(): ServiceForm {
-  return {
-    name: "",
-    description: "",
-    basePrice: "0.00",
-    currency: "USD",
-    allowPartialPayments: false,
-    minimumPartialPayment: "",
-    isActive: true,
-  }
+const errorText = (error: unknown, fallback: string) => {
+  const code = isAxiosError(error) ? error.response?.data?.error : null
+  return code === "SERVICE_NAME_ALREADY_EXISTS"
+    ? "That name is already used in this account."
+    : typeof code === "string"
+      ? code.replace(/_/g, " ")
+      : fallback
 }
 
 function ServiceCreateDialog({
   tenantId,
-  onSaved,
+  parentService,
+  onCreated,
 }: {
   tenantId: string
-  onSaved: () => Promise<void> | void
+  parentService?: ParentService
+  onCreated: (id: string) => void
 }) {
   const [open, setOpen] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [form, setForm] = useState<ServiceForm>(defaultServiceForm())
+  const [isSaving, setIsSaving] = useState(false)
+  const [name, setName] = useState("")
+  const [description, setDescription] = useState("")
+  const saving = useRef(false)
+  const label = parentService ? "sub-service" : "service"
 
-  useEffect(() => {
-    if (!open) {
-      setForm(defaultServiceForm())
-    }
-  }, [open])
-
-  const onSubmit = async () => {
-    const basePriceCents = dollarsToCents(form.basePrice)
-    if (!form.name.trim()) {
-      toast.error("Service name is required.")
-      return
-    }
-
-    if (basePriceCents === null) {
-      toast.error("Base price must be a valid positive number.")
-      return
-    }
-
-    const minimumPartialPaymentCents = form.allowPartialPayments
-      ? dollarsToCents(form.minimumPartialPayment)
-      : null
-
-    if (form.allowPartialPayments && minimumPartialPaymentCents === null) {
-      toast.error("Minimum partial payment must be a valid number.")
-      return
-    }
-
-    if (
-      form.allowPartialPayments &&
-      minimumPartialPaymentCents !== null &&
-      minimumPartialPaymentCents > basePriceCents
-    ) {
-      toast.error("Minimum partial payment cannot exceed base price.")
-      return
-    }
-
-    setIsSubmitting(true)
-
+  const save = async () => {
+    if (saving.current) return
+    if (!name.trim()) return toast.error("Enter a name.")
+    saving.current = true
+    setIsSaving(true)
     try {
-      await api.post(`/api/account-settings/${tenantId}/services`, {
-        name: form.name.trim(),
-        description: form.description.trim() || null,
-        basePriceCents,
-        currency: form.currency.trim().toUpperCase() || "USD",
-        allowPartialPayments: form.allowPartialPayments,
-        minimumPartialPaymentCents,
-        isActive: form.isActive,
-      })
-
-      toast.success("Service created.")
+      const { data } = await api.post<{ service: { id: string } }>(
+        `/api/account-settings/${tenantId}/services`,
+        {
+          name: name.trim(),
+          description: description.trim() || null,
+          kind: parentService ? "OFFERING" : "GROUP",
+          parentServiceId: parentService?.id ?? null,
+          basePriceCents: 0,
+          isActive: true,
+        },
+      )
+      toast.success(parentService ? "Sub-service created." : "Service created.")
       setOpen(false)
-      await onSaved()
+      onCreated(data.service.id)
     } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        toast.error(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not create service.",
-        )
-      } else {
-        toast.error("Could not create service.")
-      }
+      toast.error(errorText(error, `Could not create ${label}.`))
     } finally {
-      setIsSubmitting(false)
+      saving.current = false
+      setIsSaving(false)
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(value) => {
+        if (saving.current) return
+        setOpen(value)
+        if (!value) {
+          setName("")
+          setDescription("")
+        }
+      }}
+    >
       <DialogTrigger asChild>
-        <Button type="button">Create service</Button>
+        <Button>
+          <Plus data-icon="inline-start" />
+          Create {label}
+        </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-xl">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Create service</DialogTitle>
+          <DialogTitle>Create {label}</DialogTitle>
           <DialogDescription>
-            Start with core billing data. Then open the service to finish checklist, follow-ups, and professionals.
+            {parentService
+              ? `Add an offering under ${parentService.name}. Contacts will enroll into this sub-service.`
+              : "Create a parent service such as Medicare, then add the sub-services contacts can enroll into."}
           </DialogDescription>
         </DialogHeader>
-
-        <div className="grid gap-4">
-          <div className="grid gap-2">
-            <Label>Service name</Label>
-            <Input
-              value={form.name}
-              onChange={(event) => setForm((prev) => ({ ...prev, name: event.target.value }))}
-              placeholder="Medicare application"
-            />
-          </div>
-
-          <div className="grid gap-2">
-            <Label>Description</Label>
-            <Textarea
-              rows={3}
-              value={form.description}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, description: event.target.value }))
-              }
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-4">
-            <div className="grid gap-2 md:col-span-2">
-              <Label>Base price</Label>
+        <fieldset disabled={isSaving}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="service-create-name">
+                {parentService ? "Sub-service name" : "Service name"}
+              </FieldLabel>
               <Input
-                type="number"
-                min={0}
-                step="0.01"
-                value={form.basePrice}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, basePrice: event.target.value }))
-                }
+                id="service-create-name"
+                maxLength={120}
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder={parentService ? "Medicare Advantage" : "Medicare"}
               />
-            </div>
-            <div className="grid gap-2 md:col-span-1">
-              <Label>Currency</Label>
-              <Input
-                maxLength={3}
-                value={form.currency}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, currency: event.target.value.toUpperCase() }))
-                }
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="service-create-description">Description</FieldLabel>
+              <Textarea
+                id="service-create-description"
+                maxLength={2000}
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                rows={3}
               />
-            </div>
-            <div className="grid gap-2 md:col-span-1">
-              <Label>Status</Label>
-              <Select
-                value={form.isActive ? "active" : "inactive"}
-                onValueChange={(value) =>
-                  setForm((prev) => ({ ...prev, isActive: value === "active" }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-[auto_1fr] md:items-end">
-            <div className="flex items-center gap-2 pb-2">
-              <input
-                id="allow-partials"
-                type="checkbox"
-                checked={form.allowPartialPayments}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, allowPartialPayments: event.target.checked }))
-                }
-              />
-              <Label htmlFor="allow-partials">Allow partial payments</Label>
-            </div>
-            <div className="grid gap-2">
-              <Label>Minimum partial payment</Label>
-              <Input
-                type="number"
-                min={0}
-                step="0.01"
-                disabled={!form.allowPartialPayments}
-                value={form.minimumPartialPayment}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, minimumPartialPayment: event.target.value }))
-                }
-              />
-            </div>
-          </div>
-        </div>
-
+            </Field>
+            {parentService ? (
+              <p className="text-sm leading-6 text-muted-foreground">
+                Billing, checklist, and professionals start with {parentService.name}’s settings.
+                You can customize each section after creating this sub-service.
+              </p>
+            ) : null}
+          </FieldGroup>
+        </fieldset>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+          <Button variant="outline" disabled={isSaving} onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
-            {isSubmitting ? "Creating..." : "Create service"}
+          <Button disabled={isSaving} onClick={save}>
+            {isSaving ? "Creating..." : `Create ${label}`}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -319,14 +204,14 @@ function ServiceCreateDialog({
   )
 }
 
-function SortableServiceRow({
-  onOpen,
+function ServiceRow({
   service,
+  href,
   isBusy,
   canReorder,
 }: {
-  onOpen: (serviceId: string) => void
   service: ServiceItem
+  href: string
   isBusy: boolean
   canReorder: boolean
 }) {
@@ -339,369 +224,355 @@ function SortableServiceRow({
     transition,
     isDragging,
   } = useSortable({ id: service.id, disabled: isBusy || !canReorder })
-
-  const isConfigured =
+  const isGroup = service.kind === "GROUP"
+  const ready =
     service.checklistItems.length > 0 &&
-    ((service.followUpTemplates?.length ?? 0) > 0 ||
-      service.followUpTemplateSteps.length > 0) &&
-    service.professionals.length > 0
-
+    service.professionals.length > 0 &&
+    service.steps.length > 0
   return (
     <TableRow
       ref={setNodeRef}
-      style={{ transform: toTranslateString(transform), transition }}
-      className={cn(
-        "cursor-pointer transition-colors hover:bg-slate-50",
-        isDragging && "bg-slate-50",
-      )}
-      onClick={() => onOpen(service.id)}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={cn(isDragging && "bg-muted")}
     >
-      <TableCell className="w-10">
-        <button
+      <TableCell className="w-12">
+        <Button
           ref={setActivatorNodeRef}
-          type="button"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500",
-            canReorder && !isBusy
-              ? "cursor-grab hover:bg-slate-100 active:cursor-grabbing"
-              : "cursor-not-allowed opacity-50",
-          )}
+          variant="ghost"
+          size="icon"
           aria-label={`Reorder ${service.name}`}
           disabled={isBusy || !canReorder}
-          onClick={(event) => event.stopPropagation()}
           {...attributes}
           {...listeners}
         >
-          <GripVertical className="h-4 w-4" />
-        </button>
+          <GripVertical />
+        </Button>
       </TableCell>
-      <TableCell className="font-medium text-slate-900">{service.name}</TableCell>
-      <TableCell>
-        {(service.basePriceCents / 100).toLocaleString(undefined, {
-          style: "currency",
-          currency: service.currency,
-          minimumFractionDigits: 2,
-        })}
-      </TableCell>
-      <TableCell>
-        {service.allowPartialPayments
-          ? `Partial${service.minimumPartialPaymentCents !== null ? ` (min ${(service.minimumPartialPaymentCents / 100).toFixed(2)})` : ""}`
-          : "Full only"}
-      </TableCell>
-      <TableCell>{service.followUpTemplates?.length ?? 0}</TableCell>
-      <TableCell>
-        {isConfigured ? (
-          <span className="inline-flex items-center gap-1 text-emerald-700">
-            <CheckCircle2 className="h-4 w-4" />
-            Complete
+      <TableCell className="min-w-48">
+        <Link href={href} className="flex items-center gap-3 py-2 font-medium hover:underline">
+          {isGroup ? (
+            <FolderTree aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
+          ) : (
+            <Layers aria-hidden="true" className="size-5 shrink-0 text-muted-foreground" />
+          )}
+          <span>
+            {service.name}
+            {service.description ? (
+              <span className="mt-1 block max-w-md truncate text-sm font-normal text-muted-foreground">
+                {service.description}
+              </span>
+            ) : null}
           </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-amber-700">
-            <AlertTriangle className="h-4 w-4" />
-            Incomplete
-          </span>
-        )}
+        </Link>
+      </TableCell>
+      <TableCell>
+        {isGroup
+          ? `${service._count.subServices} sub-service${service._count.subServices === 1 ? "" : "s"}`
+          : (service.basePriceCents / 100).toLocaleString(undefined, {
+              style: "currency",
+              currency: service.currency,
+            })}
+      </TableCell>
+      <TableCell>
+        <Badge variant={service.isActive ? "secondary" : "outline"}>
+          {service.isActive ? "Active" : "Inactive"}
+        </Badge>
+      </TableCell>
+      {!isGroup ? (
+        <TableCell>
+          <Badge variant={ready ? "secondary" : "outline"}>
+            {ready ? "Ready" : "Setup needed"}
+          </Badge>
+        </TableCell>
+      ) : null}
+      <TableCell className="text-right">
+        <Button asChild variant="ghost" size="icon">
+          <Link href={href} aria-label={`Open ${service.name}`}>
+            <ArrowRight />
+          </Link>
+        </Button>
       </TableCell>
     </TableRow>
   )
 }
 
-export function ServicesConfigPanel({ tenantId, tenantSlug }: ServicesConfigPanelProps) {
+export function ServicesConfigPanel({
+  tenantId,
+  tenantSlug,
+  parentService,
+}: {
+  tenantId: string
+  tenantSlug: string
+  parentService?: ParentService
+}) {
   const router = useRouter()
   const [query, setQuery] = useState("")
-  const [debouncedQuery, setDebouncedQuery] = useState("")
-  const [isActiveFilter, setIsActiveFilter] = useState<"ALL" | "true" | "false">("ALL")
+  const [search, setSearch] = useState("")
+  const [status, setStatus] = useState("ALL")
   const [page, setPage] = useState(1)
-  const [pageSize, setPageSize] = useState<(typeof PAGE_SIZE_OPTIONS)[number]>(10)
-  const [isLoading, setIsLoading] = useState(false)
-  const [isBusy, setIsBusy] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [servicesData, setServicesData] = useState<ServicesResponse | null>(null)
-  const [services, setServices] = useState<ServiceItem[]>([])
-
+  const [pageSize, setPageSize] = useState(10)
+  const [data, setData] = useState<ServicesResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const requestId = useRef(0)
+  const reordering = useRef(false)
+  const parentId = parentService?.id
+  const title = parentService ? "Sub-services" : "Services"
   const sensors = useSensors(
-    useSensor(PointerSensor, {
-      activationConstraint: { distance: 6 },
-    }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    }),
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
-
   useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      setDebouncedQuery(query.trim())
+    const id = window.setTimeout(() => {
+      setSearch(query.trim())
       setPage(1)
     }, 300)
-
-    return () => window.clearTimeout(timeout)
+    return () => window.clearTimeout(id)
   }, [query])
-
-  const loadServices = useCallback(async () => {
-    setIsLoading(true)
-    setErrorMessage(null)
-
+  const load = useCallback(async () => {
+    const id = ++requestId.current
+    setLoading(true)
+    setError(null)
     try {
-      const { data } = await api.get<ServicesResponse>(`/api/account-settings/${tenantId}/services`, {
+      const result = await api.get<ServicesResponse>(`/api/account-settings/${tenantId}/services`, {
         params: {
+          kind: parentId ? "OFFERING" : "GROUP",
+          parentServiceId: parentId,
           page,
           pageSize,
-          search: debouncedQuery || undefined,
-          isActive: isActiveFilter === "ALL" ? undefined : isActiveFilter,
+          search: search || undefined,
+          isActive: status === "ALL" ? undefined : status,
         },
       })
-      setServicesData(data)
-      setServices(
-        [...data.items].sort(
-          (a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name),
-        ),
-      )
-    } catch (error) {
-      if (isAxiosError(error)) {
-        const backendError = error.response?.data?.error
-        setErrorMessage(
-          typeof backendError === "string"
-            ? backendError.replace(/_/g, " ")
-            : "Could not load services.",
-        )
-      } else {
-        setErrorMessage("Could not load services.")
+      if (id !== requestId.current) return
+      if (page > result.data.pagination.totalPages) {
+        setPage(result.data.pagination.totalPages)
+        return
       }
+      setData(result.data)
+    } catch (error) {
+      if (id === requestId.current) setError(errorText(error, "Could not load services."))
     } finally {
-      setIsLoading(false)
+      if (id === requestId.current) setLoading(false)
     }
-  }, [tenantId, page, pageSize, debouncedQuery, isActiveFilter])
-
+  }, [tenantId, parentId, page, pageSize, search, status])
   useEffect(() => {
-    void loadServices()
-  }, [loadServices])
-
-  const total = servicesData?.pagination.total ?? 0
-  const totalPages = servicesData?.pagination.totalPages ?? 1
-  const canReorder = page === 1 && debouncedQuery.length === 0 && isActiveFilter === "ALL"
-
-  const summary = useMemo(() => {
-    if (!total) return "No services found"
-    const start = (page - 1) * pageSize + 1
-    const end = start + services.length - 1
-    return `Showing ${start}-${end} of ${total} services`
-  }, [page, pageSize, services.length, total])
-
-  const persistReorder = async (reordered: ServiceItem[]) => {
-    const nextServices = reordered.map((service, index) => ({
-      ...service,
-      sortOrder: (index + 1) * 10,
-    }))
-
-    setServices(nextServices)
-    setIsBusy(true)
-
+    void load()
+  }, [load])
+  const items = data?.items ?? []
+  const total = data?.pagination.total ?? 0
+  const totalPages = data?.pagination.totalPages ?? 1
+  const canReorder = total <= pageSize && !search && status === "ALL"
+  const reorder = async ({ active, over }: DragEndEvent) => {
+    if (reordering.current || loading || !canReorder || !over || active.id === over.id) return
+    const from = items.findIndex((item) => item.id === active.id)
+    const to = items.findIndex((item) => item.id === over.id)
+    if (from < 0 || to < 0) return
+    reordering.current = true
+    setBusy(true)
+    const reordered = arrayMove(items, from, to)
+    setData((current) => (current ? { ...current, items: reordered } : current))
     try {
       await Promise.all(
-        nextServices.map((service) =>
-          api.patch(`/api/account-settings/${tenantId}/services/${service.id}`, {
-            sortOrder: service.sortOrder,
+        reordered.map((item, index) =>
+          api.patch(`/api/account-settings/${tenantId}/services/${item.id}`, {
+            sortOrder: (index + 1) * 10,
           }),
         ),
       )
-      await loadServices()
-    } catch {
-      toast.error("Could not save service order.")
-      await loadServices()
+    } catch (error) {
+      toast.error(errorText(error, "Could not save service order."))
     } finally {
-      setIsBusy(false)
+      await load()
+      reordering.current = false
+      setBusy(false)
     }
   }
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    const { active, over } = event
-    if (!canReorder || !over || active.id === over.id || isBusy) return
-
-    const oldIndex = services.findIndex((service) => service.id === active.id)
-    const newIndex = services.findIndex((service) => service.id === over.id)
-    if (oldIndex < 0 || newIndex < 0) return
-
-    void persistReorder(arrayMove(services, oldIndex, newIndex))
-  }
-
   return (
-    <div className="space-y-6">
-      <section className="overflow-hidden rounded-[28px] border border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#eff6ff_45%,#fff7ed_100%)]">
-        <div className="grid gap-6 p-5 lg:grid-cols-[minmax(0,1.3fr)_360px] lg:p-7">
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">
-                Service Builder
-              </p>
-              <div className="space-y-3">
-                <h2 className="max-w-2xl text-2xl font-semibold tracking-tight text-slate-950">
-                  Create services, then finish setup across checklist, follow-ups, and professionals.
-                </h2>
-                <p className="max-w-2xl text-sm leading-6 text-slate-600">
-                  A service starts as incomplete. Open Configure to complete each section from the dedicated tabs.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col justify-between rounded-[24px] border border-slate-300/60 bg-slate-950 p-5 text-white shadow-sm">
-            <div className="space-y-3">
-              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-blue-200/90">
-                Actions
-              </p>
-              <div>
-                <p className="text-lg font-semibold">Services library</p>
-                <p className="mt-1 text-sm leading-6 text-slate-300">
-                  Keep order meaningful and open each service to finish checklist, follow-ups, and professionals.
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-6 space-y-3">
-              <ServiceCreateDialog tenantId={tenantId} onSaved={loadServices} />
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">
-                {total} configured service{total === 1 ? "" : "s"}.
-              </div>
-            </div>
-          </div>
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+        <div className="flex flex-col gap-2">
+          {!parentService ? (
+            <p className="text-xs font-medium uppercase tracking-widest text-muted-foreground">
+              Service catalog
+            </p>
+          ) : null}
+          <h2
+            className={cn("font-semibold tracking-tight", parentService ? "text-xl" : "text-3xl")}
+          >
+            {title}
+          </h2>
+          <p className="max-w-xl text-sm leading-6 text-muted-foreground">
+            {parentService
+              ? `Choose a sub-service under ${parentService.name} to configure its billing, checklist, steps, automations, and professionals.`
+              : "Organize your offerings by service. Open a parent service to create and manage the sub-services contacts enroll into."}
+          </p>
         </div>
-      </section>
-
-      <section className="overflow-hidden rounded-[24px] border border-slate-200 bg-white shadow-sm">
-        <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="space-y-1">
-            <h3 className="text-xl font-semibold text-slate-950">Configured services</h3>
-            <p className="text-sm text-slate-500">{summary}</p>
+        <ServiceCreateDialog
+          tenantId={tenantId}
+          parentService={parentService}
+          onCreated={(id) => router.push(`/app/${tenantSlug}/account-settings/services/${id}`)}
+        />
+      </div>
+      <Card>
+        <CardHeader className="gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>{parentService ? "Offerings" : "Parent services"}</CardTitle>
+              <CardDescription>
+                {total} {parentService ? "sub-service" : "service"}
+                {total === 1 ? "" : "s"}
+              </CardDescription>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                aria-label={`Search ${title.toLowerCase()}`}
+                placeholder={
+                  parentService ? "Search sub-services" : "Search services or sub-services"
+                }
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="sm:w-64"
+              />
+              <Select
+                value={status}
+                onValueChange={(value) => {
+                  setStatus(value)
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger aria-label="Service status filter" className="sm:w-36">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="ALL">All statuses</SelectItem>
+                    <SelectItem value="true">Active</SelectItem>
+                    <SelectItem value="false">Inactive</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-
-          <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[minmax(220px,1fr)_180px_auto]">
-            <Input
-              placeholder="Search services"
-              value={query}
-              onChange={(event) => {
-                setQuery(event.target.value)
-                setPage(1)
-              }}
-            />
-            <Select
-              value={isActiveFilter}
-              onValueChange={(value) => {
-                setIsActiveFilter(value as "ALL" | "true" | "false")
-                setPage(1)
-              }}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All statuses</SelectItem>
-                <SelectItem value="true">Active</SelectItem>
-                <SelectItem value="false">Inactive</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setQuery("")
-                setDebouncedQuery("")
-                setIsActiveFilter("ALL")
-                setPage(1)
-              }}
-            >
-              Clear
-            </Button>
-          </div>
-        </div>
-
-        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-          <div className="min-h-0 overflow-auto">
+        </CardHeader>
+        <CardContent>
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={reorder}>
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10" />
-                  <TableHead>Name</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Billing</TableHead>
-                  <TableHead>Templates</TableHead>
-                  <TableHead>Setup status</TableHead>
+                  <TableHead className="w-12">
+                    <span className="sr-only">Order</span>
+                  </TableHead>
+                  <TableHead>{parentService ? "Sub-service" : "Service"}</TableHead>
+                  <TableHead>{parentService ? "Price" : "Offerings"}</TableHead>
+                  <TableHead>Status</TableHead>
+                  {parentService ? <TableHead>Setup</TableHead> : null}
+                  <TableHead>
+                    <span className="sr-only">Open</span>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {isLoading ? (
+                {loading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-slate-500">
-                      Loading services...
+                    <TableCell
+                      colSpan={parentService ? 6 : 5}
+                      className="py-12 text-center text-muted-foreground"
+                    >
+                      Loading {title.toLowerCase()}...
                     </TableCell>
                   </TableRow>
-                ) : errorMessage ? (
+                ) : error ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-rose-600">
-                      {errorMessage}
+                    <TableCell colSpan={parentService ? 6 : 5} className="py-12 text-center">
+                      <p role="alert" className="text-destructive">
+                        {error}
+                      </p>
+                      <Button variant="outline" className="mt-3" onClick={load}>
+                        Try again
+                      </Button>
                     </TableCell>
                   </TableRow>
-                ) : services.length ? (
+                ) : items.length ? (
                   <SortableContext
-                    items={services.map((service) => service.id)}
+                    items={items.map((item) => item.id)}
                     strategy={verticalListSortingStrategy}
                   >
-                    {services.map((service) => (
-                      <SortableServiceRow
+                    {items.map((service) => (
+                      <ServiceRow
                         key={service.id}
-                        onOpen={(serviceId) =>
-                          router.push(`/app/${tenantSlug}/account-settings/services/${serviceId}`)
-                        }
                         service={service}
-                        isBusy={isBusy}
+                        href={`/app/${tenantSlug}/account-settings/services/${service.id}`}
+                        isBusy={busy || loading}
                         canReorder={canReorder}
                       />
                     ))}
                   </SortableContext>
                 ) : (
                   <TableRow>
-                    <TableCell colSpan={6} className="py-8 text-center text-slate-500">
-                      No services configured yet.
+                    <TableCell
+                      colSpan={parentService ? 6 : 5}
+                      className="py-12 text-center text-muted-foreground"
+                    >
+                      {search || status !== "ALL"
+                        ? "No matching services. Try another search or status."
+                        : parentService
+                          ? "No sub-services yet. Create the first offering for this service."
+                          : "Create your first service to start organizing your offerings."}
                     </TableCell>
                   </TableRow>
                 )}
               </TableBody>
             </Table>
+          </DndContext>
+          <div className="mt-4 flex flex-col justify-between gap-3 border-t pt-4 text-xs text-muted-foreground sm:flex-row sm:items-center">
+            <p>
+              {canReorder
+                ? "Drag to reorder within this list."
+                : "Show all rows and clear filters to reorder."}
+            </p>
+            <div className="flex items-center gap-2">
+              <Select
+                value={String(pageSize)}
+                onValueChange={(value) => {
+                  setPageSize(Number(value))
+                  setPage(1)
+                }}
+              >
+                <SelectTrigger aria-label="Rows per page" className="h-8 w-28">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    <SelectItem value="10">10 rows</SelectItem>
+                    <SelectItem value="25">25 rows</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page <= 1 || loading || busy}
+                onClick={() => setPage((value) => value - 1)}
+              >
+                Previous
+              </Button>
+              <span>
+                {page} / {totalPages}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={page >= totalPages || loading || busy}
+                onClick={() => setPage((value) => value + 1)}
+              >
+                Next
+              </Button>
+            </div>
           </div>
-        </DndContext>
-
-        <div className="flex flex-col gap-2 border-t border-slate-200 px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-xs text-slate-500">
-            {canReorder ? "Drag rows to reorder." : "Clear filters and go to page 1 to reorder."}
-          </p>
-          <div className="flex items-center gap-2">
-            <Select
-              value={String(pageSize)}
-              onValueChange={(value) => {
-                setPageSize(Number(value) as (typeof PAGE_SIZE_OPTIONS)[number])
-                setPage(1)
-              }}
-            >
-              <SelectTrigger className="h-8 w-[96px]">
-                <SelectValue placeholder="Rows" />
-              </SelectTrigger>
-              <SelectContent>
-                {PAGE_SIZE_OPTIONS.map((option) => (
-                  <SelectItem key={option} value={String(option)}>
-                    {option} rows
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button type="button" variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((prev) => prev - 1)}>
-              Previous
-            </Button>
-            <span className="text-xs text-slate-500">Page {page} / {totalPages}</span>
-            <Button type="button" variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((prev) => prev + 1)}>
-              Next
-            </Button>
-          </div>
-        </div>
-      </section>
+        </CardContent>
+      </Card>
     </div>
   )
 }

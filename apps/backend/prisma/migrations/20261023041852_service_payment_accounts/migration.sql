@@ -1,0 +1,2 @@
+-- RenameIndex
+ALTER INDEX "ContactServicePaymentDue_tenantId_contactServiceId_sortOrder_id" RENAME TO "ContactServicePaymentDue_tenantId_contactServiceId_sortOrde_idx";

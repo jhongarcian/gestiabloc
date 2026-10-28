@@ -1,4 +1,5 @@
 import type { ServiceFitExplanationRuleSummary } from "./service-fit-explanations.js"
+import type { ServiceFitProfile } from "./service-fit.js"
 
 type ServiceFitAssistantStatus = "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
 
@@ -23,9 +24,11 @@ export type ServiceFitAssistantScanItem = {
   hasPurchased: boolean
   hasActiveEnrollment: boolean
   currentContactServiceStatus: ContactServiceEnrollmentStatus | null
+  fitProfile?: ServiceFitProfile
 }
 
 export type ServiceFitAssistantReply = {
+  outcome?: "ANSWERED" | "NEEDS_REVIEW"
   title: string
   summary: string
   bullets: string[]

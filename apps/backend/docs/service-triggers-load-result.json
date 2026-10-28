@@ -1,0 +1,36 @@
+{
+  "environment": "Disposable local PostgreSQL staging harness with real CRM API routes",
+  "jobs": 5000,
+  "tenants": 10,
+  "initialEvents": 2520,
+  "resumedRuns": 2480,
+  "triggerTypes": [
+    "SERVICE_ENROLLED",
+    "SERVICE_STATUS_CHANGED",
+    "SERVICE_CHECKLIST_STATUS_CHANGED",
+    "SERVICE_PAYMENT_CHANGED"
+  ],
+  "totalMs": 107169,
+  "maxActiveExecutions": 4,
+  "maxPerTenant": 2,
+  "duplicateDeliveriesTested": 68,
+  "tenantsServed": 10,
+  "terminal": [
+    {
+      "_count": 5000,
+      "status": "SUCCEEDED"
+    }
+  ],
+  "uniqueMutations": 5000,
+  "duplicateChanges": 0,
+  "api": {
+    "baselineRequests": 12,
+    "baselineP50Ms": 27,
+    "baselineP95Ms": 118,
+    "loadedRequests": 821,
+    "loadedP50Ms": 27,
+    "loadedP95Ms": 32,
+    "loadedMaxMs": 55,
+    "timeouts": 0
+  }
+}

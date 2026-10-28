@@ -1,7 +1,13 @@
 "use client"
 
+import { paymentOptionsLabel, type PaymentSettings } from "@/lib/service-billing"
+
+import { ServicePaymentFields } from "@/components/service-payment-fields"
+import { RecordServicePaymentDialog } from "@/components/record-service-payment-dialog"
+import { type EnrollmentBillingValue } from "@/lib/service-billing"
+
 import Link from "next/link"
-import { type ReactNode, useCallback, useEffect, useMemo, useState } from "react"
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { isAxiosError } from "axios"
 import { z } from "zod"
 import {
@@ -55,7 +61,6 @@ import {
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
 import {
   Popover,
   PopoverContent,
@@ -93,6 +98,10 @@ import {
   type ContactServicesPageSize,
 } from "@/lib/routes"
 import { cn } from "@/lib/utils"
+import { ServiceOfferingPicker } from "@/components/service-scope-fields"
+import { ServiceWorkflowTimeline } from "@/components/service-workflow-timeline"
+import { serviceOfferingLabel, serviceWorkflowError, type ServiceOfferingOption } from "@/lib/service-hierarchy"
+import type { ServiceStepItem } from "../../../account-settings/_components/service-steps-panel"
 import {
   FIT_STATUS_STYLES,
   type ServiceFitScanItem,
@@ -101,6 +110,9 @@ import {
 } from "../_lib/service-fit"
 
 type ContactServiceItem = {
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  serviceSteps?: Array<{ id: string; assignedTo?: { id: string; name: string | null; email: string | null } | null }>
+  stepProgress?: { total: number; completed: number; remaining: number; percentage: number } | null
   id: string
   status: "IN_PROGRESS" | "PENDING_PAYMENT" | "COMPLETED" | "CANCELED"
   purchasedAt?: string | null
@@ -118,6 +130,7 @@ type ContactServiceItem = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
     checklistItems?: Array<{
       id: string
     }>
@@ -125,7 +138,7 @@ type ContactServiceItem = {
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
   followUpSteps: Array<{
@@ -179,13 +192,7 @@ type ContactServicesResponse = {
 
 const PAGE_SIZE_OPTIONS = CONTACT_SERVICES_PAGE_SIZES
 
-type ServiceOptionsResponse = {
-  ok: boolean
-  items: Array<{
-    id: string
-    name: string
-  }>
-}
+type ServiceOptionsResponse = { ok: boolean; items: ServiceOfferingOption[] }
 
 type ServiceProfessional = {
   id: string
@@ -210,7 +217,8 @@ type ServiceDetailsResponse = {
     basePriceCents: number
     currency: string
     isTaxExempt: boolean
-    allowPartialPayments: boolean
+    paymentSettings?: PaymentSettings
+  allowPartialPayments: boolean
     minimumPartialPaymentCents: number | null
     installmentCount: number | null
     installmentFrequency: "WEEKLY" | "BIWEEKLY" | "MONTHLY" | null
@@ -221,12 +229,7 @@ type ServiceDetailsResponse = {
       isRequired: boolean
       sortOrder: number
     }>
-    followUpTemplates: Array<{
-      id: string
-      name: string
-      isPublished: boolean
-      sortOrder: number
-    }>
+    steps: ServiceStepItem[]
     professionals: ServiceProfessional[]
     tenantBilling: {
       taxEnabled: boolean
@@ -252,6 +255,7 @@ type ContactServicesPanelProps = {
   tenantId: string
   tenantSlug: string
   contactId: string
+  membershipRole: string
   membershipSecurityLevel: "LOW" | "MEDIUM" | "MAX"
   initialCreateServiceId?: string | null
   initialCreateOpen?: boolean
@@ -266,15 +270,6 @@ const currencyFormatter = (valueCents: number, currency: string) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format((valueCents || 0) / 100)
-
-const centsToUsdInput = (valueCents: number) => ((valueCents || 0) / 100).toFixed(2)
-const parseUsdToCents = (value: string) => {
-  const normalized = value.replace(/\$/g, "").replace(/,/g, "").trim()
-  if (!normalized) return null
-  const parsed = Number.parseFloat(normalized)
-  if (!Number.isFinite(parsed) || parsed < 0) return null
-  return Math.round(parsed * 100)
-}
 
 const formatDate = (value: string | null | undefined) => {
   if (!value) return "-"
@@ -306,12 +301,6 @@ const getServiceTotalWithTaxCents = ({
 
   return basePriceCents + Math.round(basePriceCents * (defaultTaxRatePercent / 100))
 }
-
-const INSTALLMENT_FREQUENCY_LABELS = {
-  WEEKLY: "Weekly",
-  BIWEEKLY: "Biweekly",
-  MONTHLY: "Monthly",
-} as const
 
 const PROFESSIONAL_TONE_STYLES = {
   internal: {
@@ -433,6 +422,7 @@ function getFollowUpParticipants(item: ContactServiceItem) {
   }
 
   addParticipant(item.followUpCoordinator, "COORDINATOR")
+  item.serviceSteps?.forEach(step => { if (step.assignedTo) addParticipant({ ...step.assignedTo, image: null }, "ASSIGNEE") })
   item.followUpSteps.forEach((step) => {
     addParticipant(step.assignedTo, "ASSIGNEE")
     addParticipant(step.resolvedBy, "RESOLVER")
@@ -447,7 +437,7 @@ function getFollowUpParticipantLabel(participant: FollowUpParticipant) {
 
 function getFollowUpParticipantRoles(participant: FollowUpParticipant) {
   const roles: string[] = []
-  if (participant.isCoordinator) roles.push("Follow-up coordinator")
+  if (participant.isCoordinator) roles.push("Enrollment coordinator")
   if (participant.assignedStepCount) {
     roles.push(
       `Assigned to ${participant.assignedStepCount} ${participant.assignedStepCount === 1 ? "step" : "steps"}`,
@@ -590,99 +580,6 @@ function FlowStepCard({
   )
 }
 
-function ServicePicker({
-  services,
-  value,
-  onValueChange,
-  disabled,
-  isLoading,
-  ariaInvalid,
-}: {
-  services: Array<{ id: string; name: string }>
-  value: string
-  onValueChange: (value: string) => void
-  disabled?: boolean
-  isLoading?: boolean
-  ariaInvalid?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const selectedService = useMemo(
-    () => services.find((service) => service.id === value) ?? null,
-    [services, value],
-  )
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          id="contact-service-transaction-service"
-          type="button"
-          variant="outline"
-          disabled={disabled}
-          aria-invalid={ariaInvalid}
-          aria-expanded={open}
-          className="h-11 w-full justify-between rounded-xl border-blue-100 bg-white px-3 shadow-none hover:bg-white focus-visible:border-blue-400 focus-visible:ring-blue-100"
-        >
-          <span className="flex min-w-0 items-center gap-2.5">
-            <Avatar size="sm" className="ring-2 ring-blue-50">
-              <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
-                {selectedService ? getInitials(selectedService.name) : "—"}
-              </AvatarFallback>
-            </Avatar>
-            <span className="truncate font-medium text-slate-800">
-              {selectedService?.name ?? (isLoading ? "Loading services..." : "Select a service")}
-            </span>
-          </span>
-          {isLoading ? (
-            <Loader2 data-icon="inline-end" className="ml-auto animate-spin text-slate-400" />
-          ) : (
-            <ChevronDown data-icon="inline-end" className="ml-auto text-slate-400" />
-          )}
-        </Button>
-      </PopoverTrigger>
-
-      <PopoverContent
-        align="start"
-        className="w-[var(--radix-popover-trigger-width)] p-0"
-      >
-        <Command>
-          <CommandInput placeholder="Search services..." />
-          <CommandList>
-            <CommandEmpty>No services found.</CommandEmpty>
-            <CommandGroup heading="Services">
-              {services.map((service) => (
-                <CommandItem
-                  key={service.id}
-                  value={`${service.name} ${service.id}`}
-                  onSelect={() => {
-                    onValueChange(service.id)
-                    setOpen(false)
-                  }}
-                  className="cursor-pointer gap-3 py-2.5"
-                >
-                  <Avatar size="sm" className="ring-2 ring-blue-50">
-                    <AvatarFallback className="bg-blue-50 font-semibold text-blue-950">
-                      {getInitials(service.name)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span className="min-w-0 flex-1 truncate font-medium text-slate-900">
-                    {service.name}
-                  </span>
-                  <Check
-                    className={cn(
-                      "text-blue-800",
-                      selectedService?.id === service.id ? "opacity-100" : "opacity-0",
-                    )}
-                  />
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
-      </PopoverContent>
-    </Popover>
-  )
-}
 
 function AssignedProfessionalPicker({
   professionals,
@@ -997,6 +894,8 @@ export function ContactServicesPanel({
   tenantId,
   tenantSlug,
   contactId,
+  membershipSecurityLevel,
+  membershipRole,
   initialCreateServiceId,
   initialCreateOpen,
   initialPage = 1,
@@ -1023,21 +922,22 @@ export function ContactServicesPanel({
   const [isLoadingServiceOptions, setIsLoadingServiceOptions] = useState(false)
   const [isLoadingServiceDetails, setIsLoadingServiceDetails] = useState(false)
   const [isLoadingAssignees, setIsLoadingAssignees] = useState(false)
-  const [serviceOptions, setServiceOptions] = useState<Array<{ id: string; name: string }>>([])
+  const [serviceOptions, setServiceOptions] = useState<ServiceOfferingOption[]>([])
   const [followUpAssigneeOptions, setFollowUpAssigneeOptions] = useState<TenantAssigneeOption[]>([])
   const [createServiceDetails, setCreateServiceDetails] = useState<ServiceDetailsResponse["service"] | null>(null)
+  const serviceDetailsRequest = useRef(0)
   const [createServiceId, setCreateServiceId] = useState("")
-  const [createTemplateId, setCreateTemplateId] = useState("")
   const [createAssignedProfessionalId, setCreateAssignedProfessionalId] = useState("")
   const [createFollowUpAssignedToUserId, setCreateFollowUpAssignedToUserId] = useState("")
-  const [createPaymentMode, setCreatePaymentMode] = useState<"FULL" | "PARTIAL" | "LATER">("FULL")
-  const [createInitialPaymentUsd, setCreateInitialPaymentUsd] = useState("")
+  const [enrollmentBilling, setEnrollmentBilling] = useState<EnrollmentBillingValue | null>(null)
+  const enrollmentRequestKey = useRef("")
+  const enrollmentSaving = useRef(false)
+  const [recordPaymentId, setRecordPaymentId] = useState<string | null>(null)
   const [createNotes, setCreateNotes] = useState("")
   const [createErrors, setCreateErrors] = useState<
     Partial<
       Record<
         | "serviceId"
-        | "templateId"
         | "assignedProfessionalId"
         | "followUpAssignedToUserId"
         | "paymentMode"
@@ -1066,13 +966,15 @@ export function ContactServicesPanel({
   }, [currentListHref, initialCreateOpen, router])
 
   const resetCreate = useCallback(() => {
+    serviceDetailsRequest.current += 1
+    setIsLoadingServiceDetails(false)
     setCreateStep(1)
     setCreateServiceId("")
-    setCreateTemplateId("")
     setCreateAssignedProfessionalId("")
     setCreateFollowUpAssignedToUserId("")
-    setCreatePaymentMode("FULL")
-    setCreateInitialPaymentUsd("")
+    setEnrollmentBilling(null)
+    enrollmentRequestKey.current = ""
+    enrollmentSaving.current = false
     setCreateNotes("")
     setCreateServiceDetails(null)
     setCreateErrors({})
@@ -1151,7 +1053,7 @@ export function ContactServicesPanel({
     setIsLoadingServiceOptions(true)
     try {
       const { data } = await api.get<ServiceOptionsResponse>(
-        `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
+        `/api/services/${encodeURIComponent(tenantId)}/options`,
       )
       setServiceOptions(data.items)
     } catch {
@@ -1178,6 +1080,7 @@ export function ContactServicesPanel({
   }, [tenantId])
 
   const loadServiceDetails = useCallback(async (serviceId: string) => {
+    const requestId = ++serviceDetailsRequest.current
     if (!serviceId) {
       setCreateServiceDetails(null)
       return
@@ -1186,26 +1089,19 @@ export function ContactServicesPanel({
     setCreateServiceDetails(null)
     try {
       const { data } = await api.get<ServiceDetailsResponse>(
-        `/api/account-settings/${encodeURIComponent(tenantId)}/services/${encodeURIComponent(serviceId)}`,
+        `/api/services/${encodeURIComponent(tenantId)}/catalog/${encodeURIComponent(serviceId)}`,
       )
+      if (requestId !== serviceDetailsRequest.current) return
       setCreateServiceDetails(data.service)
       setCreateAssignedProfessionalId((current) =>
         data.service.professionals.some((item) => item.id === current) ? current : "",
       )
-      setCreateTemplateId((current) =>
-        data.service.followUpTemplates.some((item) => item.id === current) ? current : "",
-      )
-      setCreatePaymentMode((prev) => {
-        if (prev === "PARTIAL" && !data.service.allowPartialPayments) {
-          return "FULL"
-        }
-        return prev
-      })
     } catch {
+        if (requestId !== serviceDetailsRequest.current) return
       setCreateServiceDetails(null)
       toast.error("Could not load service details.")
     } finally {
-      setIsLoadingServiceDetails(false)
+      if (requestId === serviceDetailsRequest.current) setIsLoadingServiceDetails(false)
     }
   }, [tenantId])
 
@@ -1243,7 +1139,6 @@ export function ContactServicesPanel({
   useEffect(() => {
     if (!createServiceDetails) {
       setCreateAssignedProfessionalId("")
-      setCreateTemplateId("")
       return
     }
 
@@ -1255,12 +1150,7 @@ export function ContactServicesPanel({
       setCreateAssignedProfessionalId("")
     }
 
-    if (
-      !createServiceDetails.followUpTemplates.some((item) => item.id === createTemplateId)
-    ) {
-      setCreateTemplateId("")
-    }
-  }, [createAssignedProfessionalId, createServiceDetails, createTemplateId])
+  }, [createAssignedProfessionalId, createServiceDetails])
 
   useEffect(() => {
     if (!initialCreateOpen) return
@@ -1275,7 +1165,6 @@ export function ContactServicesPanel({
   const clearCreateError = (
     field:
       | "serviceId"
-      | "templateId"
       | "assignedProfessionalId"
       | "followUpAssignedToUserId"
       | "paymentMode"
@@ -1318,23 +1207,9 @@ export function ContactServicesPanel({
     () =>
       z
         .object({
-          templateId: optionalStringIdSchema,
           followUpAssignedToUserId: optionalStringIdSchema,
         })
         .superRefine((value, ctx) => {
-          if (
-            value.templateId &&
-            !createServiceDetails?.followUpTemplates.some(
-              (template) => template.id === value.templateId,
-            )
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["templateId"],
-              message: "Select a valid follow-up template.",
-            })
-          }
-
           if (
             value.followUpAssignedToUserId &&
             !followUpAssigneeOptions.some(
@@ -1348,75 +1223,12 @@ export function ContactServicesPanel({
             })
           }
         }),
-    [createServiceDetails, followUpAssigneeOptions],
-  )
-
-  const paymentStepSchema = useMemo(
-    () =>
-      z
-        .object({
-          paymentMode: z.enum(["FULL", "PARTIAL", "LATER"]),
-          initialPaymentUsd: z.string(),
-          notes: z.string().trim().max(4000, "Notes must be 4,000 characters or less."),
-        })
-        .superRefine((value, ctx) => {
-          if (value.paymentMode === "PARTIAL" && !createServiceDetails?.allowPartialPayments) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["paymentMode"],
-              message: "This service does not allow partial payments.",
-            })
-          }
-
-          if (value.paymentMode !== "PARTIAL" || !createServiceDetails) {
-            return
-          }
-
-          const initialPaymentCents = parseUsdToCents(value.initialPaymentUsd)
-          const maxAllowedTotalCents = createServiceDetails
-            ? getServiceTotalWithTaxCents({
-                basePriceCents: createServiceDetails.basePriceCents,
-                isTaxExempt: createServiceDetails.isTaxExempt,
-                taxEnabled: createServiceDetails.tenantBilling.taxEnabled,
-                defaultTaxRatePercent: createServiceDetails.tenantBilling.defaultTaxRatePercent,
-              })
-            : null
-
-          if (initialPaymentCents === null || initialPaymentCents <= 0) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Enter a valid partial payment amount in USD.",
-            })
-            return
-          }
-
-          if (maxAllowedTotalCents !== null && initialPaymentCents > maxAllowedTotalCents) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment cannot be greater than total amount.",
-            })
-          }
-
-          if (
-            createServiceDetails.minimumPartialPaymentCents !== null &&
-            initialPaymentCents < createServiceDetails.minimumPartialPaymentCents
-          ) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              path: ["initialPaymentUsd"],
-              message: "Partial payment is below the minimum allowed for this service.",
-            })
-          }
-        }),
-    [createServiceDetails],
+    [followUpAssigneeOptions],
   )
 
   const applyCreateSchemaErrors = <
     T extends
       | "serviceId"
-      | "templateId"
       | "assignedProfessionalId"
       | "followUpAssignedToUserId"
       | "paymentMode"
@@ -1443,6 +1255,8 @@ export function ContactServicesPanel({
   }
 
   const validateCreateServiceStep = () => {
+    const error = serviceWorkflowError(createServiceDetails?.id === createServiceId ? createServiceDetails : null)
+    if (error) { toast.error(error); return false }
     const result = serviceStepSchema.safeParse({
       serviceId: createServiceId,
       assignedProfessionalId: createAssignedProfessionalId,
@@ -1463,42 +1277,25 @@ export function ContactServicesPanel({
 
   const validateCreateFollowUpStep = () => {
     const result = followUpStepSchema.safeParse({
-      templateId: createTemplateId,
       followUpAssignedToUserId: createFollowUpAssignedToUserId,
     })
 
     if (result.success) {
       setCreateErrors((current) => ({
         ...current,
-        templateId: undefined,
         followUpAssignedToUserId: undefined,
       }))
       return true
     }
 
-    applyCreateSchemaErrors(result, ["templateId", "followUpAssignedToUserId"])
+    applyCreateSchemaErrors(result, ["followUpAssignedToUserId"])
     return false
   }
 
   const validateCreatePaymentStep = () => {
-    const result = paymentStepSchema.safeParse({
-      paymentMode: createPaymentMode,
-      initialPaymentUsd: createInitialPaymentUsd,
-      notes: createNotes,
-    })
-
-    if (result.success) {
-      setCreateErrors((current) => ({
-        ...current,
-        paymentMode: undefined,
-        initialPaymentUsd: undefined,
-        notes: undefined,
-      }))
-      return true
-    }
-
-    applyCreateSchemaErrors(result, ["paymentMode", "initialPaymentUsd", "notes"])
-    return false
+    if (!enrollmentBilling) return false
+    if (createNotes.length > 4000) { toast.error("Service notes must be 4000 characters or fewer."); return false }
+    return true
   }
 
   const onNextCreateStep = () => {
@@ -1562,6 +1359,7 @@ export function ContactServicesPanel({
   }, [page, pagination.totalPages])
 
   const getServiceProgress = (item: ContactServiceItem) => {
+    if (item.workflowKind === "SERVICE_STEPS" && item.stepProgress) return item.stepProgress
     const total = item.followUpSteps.length
     const completed = item.followUpSteps.filter(
       (step) =>
@@ -1622,13 +1420,12 @@ export function ContactServicesPanel({
       return
     }
 
-    const initialPaymentCents =
-      createPaymentMode === "FULL"
-        ? totalPriceCents
-        : createPaymentMode === "LATER"
-          ? 0
-          : parseUsdToCents(createInitialPaymentUsd)
+    if (enrollmentSaving.current) return
+    enrollmentSaving.current = true
+    enrollmentRequestKey.current ||= crypto.randomUUID()
 
+    const workflowError = serviceWorkflowError(createServiceDetails?.id === createServiceId ? createServiceDetails : null)
+    if (workflowError) { enrollmentSaving.current = false; toast.error(workflowError); return }
     setIsSaving(true)
     try {
       const { data } = await api.post<{ contactService: { id: string } }>(
@@ -1636,14 +1433,15 @@ export function ContactServicesPanel({
         {
         contactId,
         serviceId: createServiceId,
-        ...(createTemplateId ? { followUpTemplateId: createTemplateId } : {}),
+        workflowKind: "SERVICE_STEPS",
         ...(createFollowUpAssignedToUserId
           ? { followUpAssignedToUserId: createFollowUpAssignedToUserId }
           : {}),
         ...(createAssignedProfessionalId
           ? { assignedProfessionalId: createAssignedProfessionalId }
           : {}),
-        ...(initialPaymentCents !== null ? { initialPaymentCents } : {}),
+        ...enrollmentBilling,
+        requestKey: enrollmentRequestKey.current,
         ...(createNotes.trim() ? { notes: createNotes.trim() } : {}),
         },
       )
@@ -1675,6 +1473,7 @@ export function ContactServicesPanel({
         toast.error("Could not create service transaction.")
       }
     } finally {
+      enrollmentSaving.current = false
       setIsSaving(false)
     }
   }
@@ -1833,14 +1632,14 @@ export function ContactServicesPanel({
                     </TableHead>
                     <TableHead className="w-[15%] border-y bg-background px-4">
                       <div className="flex items-center gap-1">
-                        <span>Follow-up team</span>
+                        <span>Service team</span>
                         <Tooltip>
                           <TooltipTrigger asChild>
                             <button
                               type="button"
                               className="inline-flex size-4 cursor-pointer items-center justify-center text-slate-400 transition hover:text-slate-600"
                               onClick={(event) => event.stopPropagation()}
-                              aria-label="Follow-up team column help"
+                              aria-label="Service team column help"
                             >
                               <CircleHelp className="h-3.5 w-3.5" />
                             </button>
@@ -1887,10 +1686,10 @@ export function ContactServicesPanel({
                                   returnTo: currentListHref,
                                 })}
                                 className="block truncate font-medium text-foreground transition-colors before:absolute before:inset-0 before:z-10 before:rounded-md hover:text-blue-800 focus-visible:outline-none focus-visible:before:ring-2 focus-visible:before:ring-ring focus-visible:before:ring-offset-1"
-                                title={item.service.name}
-                                aria-label={`Open ${item.service.name}`}
+                                title={serviceOfferingLabel(item.service)}
+                                aria-label={`Open ${serviceOfferingLabel(item.service)}`}
                               >
-                                {item.service.name}
+                                {serviceOfferingLabel(item.service)}
                               </Link>
                             </TableCell>
                             <TableCell className="px-4 py-0">
@@ -1898,7 +1697,7 @@ export function ContactServicesPanel({
                                 variant="outline"
                                 className={cn("capitalize", SERVICE_STATUS_STYLES[item.status])}
                               >
-                                {toSentence(item.status)}
+                                {item.status === "PENDING_PAYMENT" || item.status === "COMPLETED" ? "Work finished" : item.status === "CANCELED" ? "Service canceled" : "Work in progress"}
                               </Badge>
                             </TableCell>
                             <TableCell className="px-4 py-0 text-foreground">
@@ -1920,8 +1719,10 @@ export function ContactServicesPanel({
                             <TableCell className="px-4 py-0 text-foreground">
                               {currencyFormatter(item.paidCents, item.currency)}
                             </TableCell>
-                            <TableCell className="px-4 py-0 text-foreground">
-                              {currencyFormatter(item.remainingCents, item.currency)}
+                            <TableCell className="relative z-20 px-4 py-0 text-foreground">
+                              <div className="flex flex-col items-start gap-1">{currencyFormatter(item.remainingCents, item.currency)}
+                                {(membershipRole === "TENANT_ADMIN" || membershipSecurityLevel !== "LOW") && item.remainingCents > 0 ? <Button type="button" size="sm" variant="outline" onClick={event => { event.stopPropagation(); setRecordPaymentId(item.id) }}>Record payment</Button> : null}
+                              </div>
                             </TableCell>
                             <TableCell className="relative z-20 px-4 py-0">
                               <Popover>
@@ -2061,6 +1862,8 @@ export function ContactServicesPanel({
         </TooltipProvider>
       </div>
 
+      {recordPaymentId ? <RecordServicePaymentDialog tenantId={tenantId} contactServiceId={recordPaymentId} open onOpenChange={value => { if (!value) setRecordPaymentId(null) }} onSaved={loadServices} /> : null}
+
       <Dialog
         open={isCreateOpen}
         onOpenChange={(open) => {
@@ -2098,7 +1901,7 @@ export function ContactServicesPanel({
             <div className="grid grid-cols-4 gap-2" aria-label={`Step ${createStep} of 4`}>
               {[
                 { value: 1, label: "Service" },
-                { value: 2, label: "Follow up" },
+                { value: 2, label: "Workflow" },
                 { value: 3, label: "Checklist" },
                 { value: 4, label: "Payment" },
               ].map((item) => {
@@ -2179,14 +1982,13 @@ export function ContactServicesPanel({
                           onClick={() => {
                             clearCreateError("serviceId")
                             setCreateServiceId(item.serviceId)
-                            setCreateTemplateId("")
-                            setCreateAssignedProfessionalId("")
+                                                    setCreateAssignedProfessionalId("")
                           }}
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div className="flex min-w-0 flex-col gap-1">
                               <p className="text-sm font-semibold text-slate-900">
-                                {item.serviceName}
+                                {item.serviceGroupName ? `${item.serviceGroupName} / ` : ""}{item.serviceName}
                               </p>
                               <p className="text-xs text-slate-500">
                                 {item.explanation ||
@@ -2223,19 +2025,7 @@ export function ContactServicesPanel({
                     <FieldLabel htmlFor="contact-service-transaction-service">
                       Service
                     </FieldLabel>
-                    <ServicePicker
-                      services={serviceOptions}
-                      value={createServiceId}
-                      onValueChange={(value) => {
-                        clearCreateError("serviceId")
-                        setCreateServiceId(value)
-                        setCreateTemplateId("")
-                        setCreateAssignedProfessionalId("")
-                      }}
-                      disabled={isLoadingServiceOptions || isSaving}
-                      isLoading={isLoadingServiceOptions}
-                      ariaInvalid={Boolean(createErrors.serviceId)}
-                    />
+                    <ServiceOfferingPicker options={serviceOptions} value={createServiceId} disabled={isLoadingServiceOptions || isSaving} onValueChange={value => { clearCreateError("serviceId"); serviceDetailsRequest.current += 1; setCreateServiceId(value); setCreateServiceDetails(null); setCreateAssignedProfessionalId("") }} />
                     <FieldDescription>
                       Search by service name. Selecting a service loads its price, workflow, and professionals.
                     </FieldDescription>
@@ -2307,11 +2097,7 @@ export function ContactServicesPanel({
                       </p>
                     ) : null}
                     <p className="text-sm text-slate-500">
-                      {createServiceDetails.allowPartialPayments
-                        ? createServiceDetails.installmentCount && createServiceDetails.installmentFrequency
-                          ? `Minimum deposit ${currencyFormatter(createServiceDetails.minimumPartialPaymentCents ?? 0, createServiceDetails.currency)} · ${createServiceDetails.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[createServiceDetails.installmentFrequency].toLowerCase()} installments`
-                          : "Partial payments allowed"
-                        : "Full payment only"}
+                      {paymentOptionsLabel(createServiceDetails)}
                     </p>
                   </div>
                 ) : null}
@@ -2320,79 +2106,15 @@ export function ContactServicesPanel({
 
             {createStep === 2 ? (
               <section className="mt-6 flex flex-col gap-5">
-                <div className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold text-blue-700">Follow-up workflow</p>
-                  <h3 className="text-base font-semibold text-slate-950">
-                    Set up the service follow-up
-                  </h3>
-                  <p className="text-sm leading-6 text-slate-600">
-                    Choose which follow-up template should start and who should be in charge of the follow-up work.
-                  </p>
-                </div>
-
-                <FlowStepCard
-                  stepNumber="1"
-                  title="Which follow-up plan should start?"
-                  description="Use the default published template or choose a different published template for this transaction."
-                  disabled={!createServiceId}
-                >
-                  <Field
-                    data-invalid={Boolean(createErrors.templateId)}
-                    data-disabled={!createServiceDetails || isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-template">
-                      Follow-up template
-                    </FieldLabel>
-                    <Select
-                      value={createTemplateId || "default"}
-                      onValueChange={(value) => {
-                        clearCreateError("templateId")
-                        setCreateTemplateId(value === "default" ? "" : value)
-                      }}
-                      disabled={!createServiceDetails || isSaving}
-                    >
-                      <SelectTrigger
-                        id="contact-service-transaction-template"
-                        aria-invalid={Boolean(createErrors.templateId)}
-                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
-                      >
-                        <SelectValue placeholder="Use default template selection" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="default" className="cursor-pointer">
-                            Use default published template
-                          </SelectItem>
-                          {(createServiceDetails?.followUpTemplates ?? []).map((template) => (
-                            <SelectItem key={template.id} value={template.id} className="cursor-pointer">
-                              {template.name}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {!createServiceId ? (
-                      <FieldDescription>
-                        Choose a service first to load its available follow-up templates.
-                      </FieldDescription>
-                    ) : (createServiceDetails?.followUpTemplates.length ?? 0) === 0 ? (
-                      <FieldDescription>
-                        No published templates are available for this service. The transaction can still proceed if the service has default follow-up steps.
-                      </FieldDescription>
-                    ) : (
-                      <FieldDescription>
-                        Leaving this on default uses the service&apos;s standard published template.
-                      </FieldDescription>
-                    )}
-                    <FieldError>{createErrors.templateId}</FieldError>
-                  </Field>
-                </FlowStepCard>
+                <ServiceWorkflowTimeline
+                  steps={createServiceDetails?.steps ?? []}
+                  serviceName={createServiceDetails?.name}
+                />
 
                 <FlowStepCard
                   stepNumber="2"
-                  title="Who should be in charge of the follow up?"
-                  description="Optional. This user will be assigned to the follow-up steps created from the selected template."
+                  title="Who should coordinate this enrollment?"
+                  description="Optional. Choose the person responsible for coordinating this enrollment’s follow-up work."
                   disabled={!createServiceId}
                 >
                   <Field
@@ -2401,7 +2123,7 @@ export function ContactServicesPanel({
                     className="gap-2"
                   >
                     <FieldLabel htmlFor="contact-service-transaction-follow-up-owner">
-                      Follow-up owner <span className="font-normal text-slate-500">(optional)</span>
+                      Enrollment coordinator <span className="font-normal text-slate-500">(optional)</span>
                     </FieldLabel>
                     <FollowUpAssigneePicker
                       id="contact-service-transaction-follow-up-owner"
@@ -2422,7 +2144,7 @@ export function ContactServicesPanel({
                       <FieldDescription>Loading tenant users...</FieldDescription>
                     ) : (
                       <FieldDescription>
-                        You can leave this unassigned and route follow-up later.
+                        You can leave this unassigned and choose a coordinator later.
                       </FieldDescription>
                     )}
                     <FieldError>{createErrors.followUpAssignedToUserId}</FieldError>
@@ -2505,198 +2227,10 @@ export function ContactServicesPanel({
               </section>
             ) : null}
 
-            {createStep === 4 ? (
-              <section className="mt-6 grid gap-5">
-                <div className="flex flex-col gap-1">
-                  <p className="text-xs font-semibold text-blue-700">Payment</p>
-                  <h3 className="text-base font-semibold text-slate-950">
-                    Confirm the purchase details
-                  </h3>
-                  <p className="text-sm leading-6 text-slate-600">
-                    Review the service cost, choose how payment will be handled, and add any final context.
-                  </p>
-                </div>
-                <FieldGroup className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    data-invalid={Boolean(createErrors.paymentMode)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-payment-type">
-                      Payment type
-                    </FieldLabel>
-                    <Select
-                      value={createPaymentMode}
-                      onValueChange={(value) => {
-                        clearCreateError("paymentMode")
-                        clearCreateError("initialPaymentUsd")
-                        setCreatePaymentMode(value as "FULL" | "PARTIAL" | "LATER")
-                      }}
-                      disabled={isSaving}
-                    >
-                      <SelectTrigger
-                        id="contact-service-transaction-payment-type"
-                        aria-invalid={Boolean(createErrors.paymentMode)}
-                        className="h-11 w-full rounded-xl border-slate-200 bg-slate-50/60 px-3 shadow-none data-[size=default]:h-11"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="FULL" className="cursor-pointer">Pay in full</SelectItem>
-                          <SelectItem
-                            value="PARTIAL"
-                            disabled={!createServiceDetails?.allowPartialPayments}
-                            className="cursor-pointer"
-                          >
-                            Partial payment
-                          </SelectItem>
-                          <SelectItem value="LATER" className="cursor-pointer">Pay later</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    {!createServiceDetails?.allowPartialPayments ? (
-                      <FieldDescription>
-                        This service supports full payment or pay later only.
-                      </FieldDescription>
-                    ) : null}
-                    <FieldError>{createErrors.paymentMode}</FieldError>
-                  </Field>
-
-                  <Field className="gap-2">
-                    <FieldLabel htmlFor="contact-service-transaction-cost">
-                      Service cost
-                    </FieldLabel>
-                    <Input
-                      id="contact-service-transaction-cost"
-                      value={
-                        createServiceTotalCents !== null
-                          ? centsToUsdInput(createServiceTotalCents)
-                          : ""
-                      }
-                      readOnly
-                      className="h-11 rounded-xl border-slate-200 bg-slate-50/60 px-4 text-slate-600 shadow-none"
-                    />
-                  </Field>
-                </FieldGroup>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  {createServiceDetails?.allowPartialPayments ? (
-                    <span>
-                      Payment plan:{" "}
-                      <span className="font-medium text-slate-900">
-                        {createServiceDetails.minimumPartialPaymentCents !== null
-                          ? `Minimum deposit ${currencyFormatter(createServiceDetails.minimumPartialPaymentCents, createServiceDetails.currency)}`
-                          : "Partial payments allowed"}
-                        {createServiceDetails.installmentCount && createServiceDetails.installmentFrequency
-                          ? ` · ${createServiceDetails.installmentCount} ${INSTALLMENT_FREQUENCY_LABELS[createServiceDetails.installmentFrequency].toLowerCase()} installments`
-                          : ""}
-                      </span>
-                    </span>
-                  ) : (
-                    <span>
-                      Payment plan: <span className="font-medium text-slate-900">Full payment only</span>
-                    </span>
-                  )}
-                </div>
-
-                {createAssignedProfessionalId && createServiceDetails ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Assigned professional:{" "}
-                    <span className="font-medium text-slate-900">
-                      {getProfessionalLabel(
-                        createServiceDetails.professionals.find(
-                          (item) => item.id === createAssignedProfessionalId,
-                        )!,
-                      )}
-                    </span>
-                  </div>
-                ) : null}
-
-                {createFollowUpAssignedToUserId ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Follow-up owner:{" "}
-                    <span className="font-medium text-slate-900">
-                      {followUpAssigneeOptions.find(
-                        (item) => item.value === createFollowUpAssignedToUserId,
-                      )?.label ?? "Assigned user"}
-                    </span>
-                  </div>
-                ) : null}
-
-                <FieldGroup className="grid gap-4 sm:grid-cols-2">
-                  <Field
-                    data-invalid={Boolean(createErrors.initialPaymentUsd)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-payment-now">
-                      {createPaymentMode === "PARTIAL" ? "Partial Payment Amount" : "Payment Now"}
-                    </FieldLabel>
-                    <Input
-                      id="contact-service-transaction-payment-now"
-                      value={
-                        createPaymentMode === "PARTIAL"
-                          ? createInitialPaymentUsd
-                          : createPaymentMode === "LATER"
-                            ? "0.00"
-                            : createServiceTotalCents !== null
-                              ? centsToUsdInput(createServiceTotalCents)
-                              : ""
-                      }
-                      onChange={(event) => {
-                        clearCreateError("initialPaymentUsd")
-                        setCreateInitialPaymentUsd(event.target.value)
-                      }}
-                      readOnly={createPaymentMode !== "PARTIAL"}
-                      disabled={isSaving}
-                      aria-invalid={Boolean(createErrors.initialPaymentUsd)}
-                      inputMode="decimal"
-                      placeholder="0.00"
-                      className={cn(
-                        "h-11 rounded-xl border-slate-200 px-4 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100",
-                        createPaymentMode === "PARTIAL"
-                          ? "bg-slate-50/60"
-                          : "bg-slate-50 text-slate-600",
-                      )}
-                    />
-                    {createPaymentMode === "PARTIAL" &&
-                    createServiceDetails?.minimumPartialPaymentCents ? (
-                      <FieldDescription>
-                        Minimum partial payment:{" "}
-                        {currencyFormatter(
-                          createServiceDetails.minimumPartialPaymentCents,
-                          createServiceDetails.currency,
-                        )}
-                      </FieldDescription>
-                    ) : null}
-                    <FieldError>{createErrors.initialPaymentUsd}</FieldError>
-                  </Field>
-
-                  <Field
-                    data-invalid={Boolean(createErrors.notes)}
-                    data-disabled={isSaving}
-                    className="gap-2"
-                  >
-                    <FieldLabel htmlFor="contact-service-transaction-notes">Notes</FieldLabel>
-                    <Textarea
-                      id="contact-service-transaction-notes"
-                      value={createNotes}
-                      onChange={(event) => {
-                        clearCreateError("notes")
-                        setCreateNotes(event.target.value)
-                      }}
-                      rows={3}
-                      disabled={isSaving}
-                      aria-invalid={Boolean(createErrors.notes)}
-                      placeholder="Add context for this service purchase"
-                      className="min-h-28 resize-y rounded-xl border-slate-200 bg-slate-50/60 px-4 py-3 leading-6 shadow-none focus-visible:border-blue-400 focus-visible:ring-blue-100"
-                    />
-                    <FieldError>{createErrors.notes}</FieldError>
-                  </Field>
-                </FieldGroup>
-              </section>
-            ) : null}
+            <section className={createStep === 4 ? "mt-6 flex flex-col gap-5" : "hidden"}>
+              {createServiceId && isCreateOpen ? <ServicePaymentFields key={createServiceId} tenantId={tenantId} serviceId={createServiceId} disabled={isSaving} onChange={setEnrollmentBilling} /> : null}
+              <FieldGroup><Field><FieldLabel htmlFor="contact-service-transaction-notes">Service notes (optional)</FieldLabel><Textarea id="contact-service-transaction-notes" value={createNotes} maxLength={4000} disabled={isSaving} onChange={event => setCreateNotes(event.target.value)} /></Field></FieldGroup>
+            </section>
           </div>
           <DialogFooter className="border-t border-slate-200 bg-slate-50/80 px-6 py-4 sm:items-center sm:px-7">
             <div className="text-sm text-slate-500 sm:mr-auto">
@@ -2733,7 +2267,7 @@ export function ContactServicesPanel({
               <Button
                 type="button"
                 onClick={() => void onCreate()}
-                disabled={isSaving}
+                disabled={isSaving || !enrollmentBilling}
                 className="min-w-40 bg-blue-950 text-white shadow-sm hover:bg-blue-900"
               >
                 {isSaving ? (

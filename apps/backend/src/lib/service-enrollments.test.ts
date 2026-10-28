@@ -22,7 +22,7 @@ describe("service enrollment register queries", () => {
         pageSize: "25",
         sort: "CONTACT_ASC",
         statuses: "COMPLETED, IN_PROGRESS,COMPLETED",
-        withoutTemplate: "false",
+        serviceGroupId: "service-group-1",
         unassigned: "true",
       }),
       {
@@ -30,7 +30,7 @@ describe("service enrollment register queries", () => {
         pageSize: 25,
         sort: "CONTACT_ASC",
         statuses: ["COMPLETED", "IN_PROGRESS"],
-        withoutTemplate: false,
+        serviceGroupId: "service-group-1",
         unassigned: true,
       },
     )

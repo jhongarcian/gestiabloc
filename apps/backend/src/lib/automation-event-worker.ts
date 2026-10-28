@@ -1,3 +1,4 @@
+import { AUTOMATION_EXECUTION_BUDGET, claimAutomationExecutionJobs, releaseAutomationExecutionLease } from "./automation-execution-budget.js"
 import { randomUUID } from "node:crypto"
 
 import { prisma } from "./prisma.js"
@@ -5,7 +6,7 @@ import {
   processClaimedAutomationEvent,
 } from "./automation-event-queue.js"
 import { emitStoredNotifications } from "./task-notifications.js"
-import { deleteAutomationContactFileObjects } from "./opportunity-automations.js"
+import { deleteAutomationContactFileObjects, kickAutomationRunWorker } from "./opportunity-automations.js"
 import { emitAutomationEventCompleted } from "./realtime.js"
 
 function positiveInteger(name: string, fallback: number, maximum: number) {
@@ -30,10 +31,10 @@ function percentage(name: string, fallback: number) {
 
 export const AUTOMATION_EVENT_WORKER_CONFIG = {
   pollMs: positiveInteger("AUTOMATION_EVENT_POLL_MS", 1_000, 60_000),
-  concurrency: positiveInteger("AUTOMATION_EVENT_CONCURRENCY", 8, 64),
-  perTenantConcurrency: positiveInteger("AUTOMATION_EVENT_TENANT_CONCURRENCY", 4, 32),
+  concurrency: AUTOMATION_EXECUTION_BUDGET.global,
+  perTenantConcurrency: AUTOMATION_EXECUTION_BUDGET.tenant,
   claimSize: positiveInteger("AUTOMATION_EVENT_CLAIM_SIZE", 16, 100),
-  leaseMs: positiveInteger("AUTOMATION_EVENT_LEASE_MS", 120_000, 900_000),
+  leaseMs: 120_000,
   metricsMs: positiveInteger("AUTOMATION_EVENT_METRICS_MS", 60_000, 900_000),
   failureAlertPercent: percentage("AUTOMATION_EVENT_FAILURE_ALERT_PERCENT", 10),
 }
@@ -62,56 +63,8 @@ async function recoverExpiredLeases() {
   }
 }
 
-async function claimEvents(): Promise<ClaimedEvent[]> {
-  const config = AUTOMATION_EVENT_WORKER_CONFIG
-  const leaseToken = randomUUID()
-  const leaseExpiresAt = new Date(Date.now() + config.leaseMs)
-  const limit = config.claimSize
-  return prisma.$queryRawUnsafe<ClaimedEvent[]>(`
-    WITH running AS (
-      SELECT "tenantId", COUNT(*)::int AS count
-      FROM "AutomationEvent"
-      WHERE status = 'PROCESSING'
-        AND "leaseExpiresAt" > NOW()
-      GROUP BY "tenantId"
-    ), ranked AS (
-      SELECT e.id,
-             ROW_NUMBER() OVER (PARTITION BY e."tenantId" ORDER BY e."availableAt", e."createdAt") AS tenant_rank,
-             ROW_NUMBER() OVER (PARTITION BY e."tenantId", e."contactId" ORDER BY e."availableAt", e."createdAt") AS contact_rank,
-             GREATEST($1::int - COALESCE(r.count, 0), 0) AS tenant_capacity
-      FROM "AutomationEvent" e
-      LEFT JOIN running r ON r."tenantId" = e."tenantId"
-      WHERE e.status = 'QUEUED'
-        AND e."availableAt" <= NOW()
-        AND NOT EXISTS (
-          SELECT 1
-          FROM "AutomationEvent" active
-          WHERE active.status = 'PROCESSING'
-            AND active."leaseExpiresAt" > NOW()
-            AND active."tenantId" = e."tenantId"
-            AND active."contactId" IS NOT DISTINCT FROM e."contactId"
-        )
-    ), candidates AS (
-      SELECT e.id
-      FROM "AutomationEvent" e
-      JOIN ranked ON ranked.id = e.id
-      WHERE ranked.tenant_rank <= ranked.tenant_capacity
-        AND ranked.contact_rank = 1
-      ORDER BY e."availableAt", e."createdAt"
-      FOR UPDATE OF e SKIP LOCKED
-      LIMIT $2
-    )
-    UPDATE "AutomationEvent" e
-    SET status = 'PROCESSING',
-        "leaseToken" = $3,
-        "leaseExpiresAt" = $4,
-        "processingStartedAt" = COALESCE(e."processingStartedAt", NOW()),
-        "attemptCount" = e."attemptCount" + 1,
-        "updatedAt" = NOW()
-    FROM candidates
-    WHERE e.id = candidates.id
-    RETURNING e.id, e."tenantId", e."actorUserId", e."leaseToken"
-  `, config.perTenantConcurrency, limit, leaseToken, leaseExpiresAt)
+export async function claimAutomationEvents(prismaClient: any = prisma): Promise<ClaimedEvent[]> {
+  return claimAutomationExecutionJobs(prismaClient, "EVENT", AUTOMATION_EVENT_WORKER_CONFIG.claimSize)
 }
 
 async function processClaim(claim: ClaimedEvent) {
@@ -167,6 +120,9 @@ async function processClaim(claim: ClaimedEvent) {
         lastError: String((error as Error)?.message ?? error).slice(0, 500),
       },
     }).catch(() => undefined)
+  } finally {
+    await releaseAutomationExecutionLease(prisma, "EVENT", claim.id, claim.leaseToken)
+    kickAutomationRunWorker()
   }
 }
 
@@ -178,7 +134,7 @@ export async function runAutomationEventWorkerOnce() {
   running = true
   try {
     await recoverExpiredLeases()
-    const claims = await claimEvents()
+    const claims = await claimAutomationEvents()
     let cursor = 0
     const workers = Array.from({ length: Math.min(
       AUTOMATION_EVENT_WORKER_CONFIG.concurrency,
@@ -212,9 +168,9 @@ async function claimSideEffects() {
       SELECT id
       FROM "AutomationSideEffect"
       WHERE (
-        status = 'PENDING' AND "availableAt" <= NOW()
+        status = 'PENDING' AND "availableAt" <= (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       ) OR (
-        status = 'PROCESSING' AND "leaseExpiresAt" < NOW()
+        status = 'PROCESSING' AND "leaseExpiresAt" < (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
       )
       ORDER BY "availableAt", "createdAt"
       FOR UPDATE SKIP LOCKED
@@ -225,7 +181,7 @@ async function claimSideEffects() {
         "leaseToken" = $1,
         "leaseExpiresAt" = $2,
         "attemptCount" = effect."attemptCount" + 1,
-        "updatedAt" = NOW()
+        "updatedAt" = (CURRENT_TIMESTAMP AT TIME ZONE 'UTC')
     FROM candidates
     WHERE effect.id = candidates.id
     RETURNING effect.id, effect.type, effect.payload, effect."attemptCount"
@@ -278,7 +234,7 @@ export async function runAutomationSideEffectWorkerOnce() {
 
 export async function reportAutomationQueueMetrics() {
   const fiveMinutesAgo = new Date(Date.now() - 300_000)
-  const [queued, failed, terminal, retried] = await Promise.all([
+  const [queued, failed, retried, terminal, executionLeases, queuedRuns, runRetries] = await Promise.all([
     prisma.automationEvent.aggregate({
       where: { status: "QUEUED" },
       _count: { _all: true },
@@ -296,17 +252,26 @@ export async function reportAutomationQueueMetrics() {
         completedAt: { gte: fiveMinutesAgo },
       },
     }),
+    prisma.automationExecutionLease.groupBy({ by: ["tenantId"], where: { expiresAt: { gt: new Date() } }, _count: { _all: true } }),
+    prisma.automationRun.aggregate({ where: { status: "QUEUED" }, _count: { _all: true }, _min: { availableAt: true } }),
+    prisma.automationRun.aggregate({ where: { retryCount: { gt: 0 }, updatedAt: { gte: fiveMinutesAgo } }, _sum: { retryCount: true } }),
   ])
   const oldestAgeMs = queued._min.createdAt ? Date.now() - queued._min.createdAt.getTime() : 0
   const failureRatePercent = terminal > 0 ? (failed / terminal) * 100 : 0
   const payload = {
     metric: "automation_queue_health",
+    activeExecutions: executionLeases.reduce((sum, row) => sum + row._count._all, 0),
+    tenantUsage: executionLeases.map(row => ({ tenantId: row.tenantId, active: row._count._all })),
+    queuedContinuations: queuedRuns._count._all,
+    oldestContinuationAgeMs: queuedRuns._min.availableAt ? Math.max(0, Date.now() - queuedRuns._min.availableAt.getTime()) : 0,
     queueDepth: queued._count._all,
     oldestQueuedAgeMs: oldestAgeMs,
     permanentFailuresLast5m: failed,
     failureRatePercent,
     runsPerMinute: terminal / 5,
-    retriesLast5m: retried,
+    retriesLast5m: retried + (runRetries._sum.retryCount ?? 0),
+    resumedRunRetriesLast5m: runRetries._sum.retryCount ?? 0,
+    executionLimits: AUTOMATION_EXECUTION_BUDGET,
   }
   if (oldestAgeMs > 120_000 || failureRatePercent > AUTOMATION_EVENT_WORKER_CONFIG.failureAlertPercent) console.warn(JSON.stringify(payload))
   else console.info(JSON.stringify(payload))

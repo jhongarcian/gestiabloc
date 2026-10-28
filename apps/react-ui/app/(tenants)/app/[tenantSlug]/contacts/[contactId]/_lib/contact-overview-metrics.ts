@@ -1,20 +1,25 @@
 import { cache } from "react"
 
 import { api } from "@/lib/api"
+import type { EnrolledServiceStep } from "../../../services/enrollments/[contactServiceId]/_components/service-step-snapshot"
 
 export type ContactServiceSummaryItem = {
   id: string
   status: string
   totalPriceCents: number
   paidCents: number
+  workflowKind?: "SERVICE_STEPS" | "LEGACY_TEMPLATE" | "NONE"
+  serviceSteps?: EnrolledServiceStep[]
+  stepProgress?: { total: number; completed: number; percentage: number } | null
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   nextFollowUp?: {
     at: string
     stepId: string | null
-    source: "USER_SCHEDULED_WAIT" | "STEP_DUE" | "STEP_AVAILABLE"
+    source: "STEP_DUE" | "STEP_AVAILABLE"
     projected: boolean
   } | null
   followUpSteps: Array<{
@@ -75,6 +80,7 @@ export const getAllContactServices = cache(
           contactId,
           page: 1,
           pageSize: 25,
+          readOnly: true,
         },
       },
     )
@@ -94,6 +100,7 @@ export const getAllContactServices = cache(
               contactId,
               page: index + 2,
               pageSize: 25,
+              readOnly: true,
             },
           },
         ),

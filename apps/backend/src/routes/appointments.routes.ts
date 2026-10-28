@@ -1,3 +1,4 @@
+import { enrollableServiceWhere } from "../lib/service-hierarchy.js"
 import { type Response, Router } from "express"
 import { z } from "zod"
 
@@ -491,12 +492,13 @@ router.get("/:tenantId/meta", requireAuth, async (req, res, next) => {
       prisma.service.findMany({
         where: {
           tenantId,
-          isActive: true,
+          ...enrollableServiceWhere,
         },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
         select: {
           id: true,
           name: true,
+          parentService: { select: { id: true, name: true } },
         },
       }),
       prisma.calendarStaffGroup.findMany({
@@ -1084,6 +1086,7 @@ router.post("/:tenantId", requireAuth, async (req, res, next) => {
             where: {
               id: payload.serviceId,
               tenantId,
+              ...enrollableServiceWhere,
             },
             select: {
               id: true,
@@ -1275,6 +1278,7 @@ router.patch("/:tenantId/:appointmentId", requireAuth, async (req, res, next) =>
             where: {
               id: nextServiceId,
               tenantId,
+              ...(nextServiceId !== existingAppointment.serviceId ? enrollableServiceWhere : {}),
             },
             select: {
               id: true,

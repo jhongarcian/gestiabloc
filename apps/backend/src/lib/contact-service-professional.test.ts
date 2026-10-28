@@ -71,6 +71,15 @@ test("professionals outside this service are rejected", () => {
   }), { valid: false })
 })
 
+test("an existing archived professional can be retained but cannot be newly assigned", () => {
+  assert.deepEqual(resolveServiceProfessionalChange({
+    assignedProfessionalId: internal.id, previousProfessional: internal, professionals: [],
+  }), { valid: true, activity: null })
+  assert.deepEqual(resolveServiceProfessionalChange({
+    assignedProfessionalId: internal.id, previousProfessional: null, professionals: [],
+  }), { valid: false })
+})
+
 test("audit labels fall back to email or external contact when names are absent", () => {
   const previousProfessional = { id: "old", user: { name: " ", email: "old@example.com" } }
   const nextProfessional = { id: "new", externalContact: "new@example.com" }

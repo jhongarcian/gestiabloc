@@ -1,3 +1,6 @@
+import { lockServiceStepRuntimeTx } from "./service-step-runtime.js"
+import { settleServiceStepCompletionRunTx } from "./service-step-progression.js"
+import { automationServiceContextData, readAutomationServiceContext } from "./automation-service-context.js"
 import { Prisma } from "../generated/prisma/index.js"
 
 import {
@@ -165,6 +168,7 @@ export async function getAutomationWaitingRuns(
       id: true,
       contactId: true,
       contactName: true,
+      serviceContext: true,
       waitingNodeExecutionId: true,
       resumeAt: true,
       updatedAt: true,
@@ -201,6 +205,7 @@ export async function getAutomationWaitingRuns(
   return {
     items: sortedRuns.map((run: any) => ({
       runId: run.id,
+      serviceContext: readAutomationServiceContext(run.serviceContext),
       contact: {
         id: run.contact?.id ?? run.contactId,
         name: run.contact ? getContactDisplayName(run.contact) : run.contactName,
@@ -265,6 +270,7 @@ export async function exitAutomationWaitingRun(
       )
     }
 
+    await lockServiceStepRuntimeTx(transaction, run)
     const occurredAt = params.occurredAt ?? new Date()
     const cursorPath = run.cursorPath && typeof run.cursorPath === "object" && !Array.isArray(run.cursorPath)
       ? run.cursorPath as Record<string, unknown>
@@ -306,6 +312,8 @@ export async function exitAutomationWaitingRun(
       )
     }
 
+    if (run.eventSource === "SERVICE_STEP_COMPLETED") await settleServiceStepCompletionRunTx(transaction, run.id)
+
     const waitDetails = `Wait ended early because the contact was removed from this automation by ${params.actorDisplayName}.`
     const waitLogUpdate = await transaction.automationNodeExecution.updateMany({
       where: {
@@ -338,6 +346,7 @@ export async function exitAutomationWaitingRun(
           actorUserId: params.actorUserId,
           processId: null,
           opportunityId: run.opportunityId,
+          ...automationServiceContextData(run),
           attemptId: run.attemptId,
           eventSource: run.eventSource,
           nodeKind: "ACTION",
@@ -375,6 +384,7 @@ export async function exitAutomationWaitingRun(
       actorUserId: params.actorUserId,
       processId: null,
       opportunityId: run.opportunityId,
+      ...automationServiceContextData(run),
       attemptId: run.attemptId,
       eventSource: run.eventSource,
       nodeKind: "ACTION" as const,
@@ -399,6 +409,7 @@ export async function exitAutomationWaitingRun(
         triggerType: run.triggerType,
         status: "EXITED",
         opportunityId: run.opportunityId,
+        ...automationServiceContextData(run),
         contactId: run.contactId,
         sourceStageId: run.sourceStageId,
         targetStageId: run.targetStageId,

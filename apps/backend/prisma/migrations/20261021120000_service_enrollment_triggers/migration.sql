@@ -1,0 +1,12 @@
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'SERVICE_ENROLLED';
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'SERVICE_STATUS_CHANGED';
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'SERVICE_CHECKLIST_STATUS_CHANGED';
+ALTER TYPE "AutomationTriggerType" ADD VALUE 'SERVICE_PAYMENT_CHANGED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'SERVICE_ENROLLED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'SERVICE_STATUS_CHANGED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'SERVICE_CHECKLIST_STATUS_CHANGED';
+ALTER TYPE "AutomationNodeEventSource" ADD VALUE 'SERVICE_PAYMENT_CHANGED';
+ALTER TABLE "Automation" ADD COLUMN "serviceGroupId" TEXT, ADD COLUMN "serviceTriggerConfig" JSONB;
+ALTER TABLE "AutomationEvent" ADD COLUMN "serviceEventSnapshot" JSONB;
+ALTER TABLE "ContactService" ADD COLUMN "automationEventRevision" INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX "Automation_service_group_trigger_idx" ON "Automation"("tenantId", "serviceGroupId", "triggerType", "serviceOfferingId");

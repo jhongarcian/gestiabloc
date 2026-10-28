@@ -24,7 +24,10 @@ describe("service transaction presentation", () => {
     for (const sort of SERVICE_TRANSACTION_SORTS) {
       assert.equal(ServiceTransactionSortSchema.parse(sort), sort)
     }
-    assert.equal(ServiceTransactionSortSchema.safeParse("UNKNOWN").success, false)
+    assert.equal(
+      ServiceTransactionSortSchema.safeParse("UNKNOWN").success,
+      false,
+    )
   })
 
   test("derives payment state from the sale total and collected amount", () => {
@@ -59,14 +62,17 @@ describe("service transaction presentation", () => {
         paymentState: "PARTIAL",
       },
     )
-    assert.deepEqual(getServiceTransactionFinancials(10_000, [{ amountCents: 12_000 }]), {
-      paidCents: 12_000,
-      remainingCents: 0,
-      paymentState: "PAID",
-    })
+    assert.deepEqual(
+      getServiceTransactionFinancials(10_000, [{ amountCents: 12_000 }]),
+      {
+        paidCents: 12_000,
+        remainingCents: 0,
+        paymentState: "PAID",
+      },
+    )
   })
 
-  test("validates full and partial payments against service rules", () => {
+  test("accepts actual receipts independently of suggested payment terms", () => {
     const validate = (paymentAmountCents: number, overrides = {}) =>
       getServiceTransactionPaymentValidationError({
         totalPriceCents: 10_000,
@@ -80,10 +86,17 @@ describe("service transaction presentation", () => {
     assert.equal(validate(8_000), null)
     assert.equal(validate(0), null)
     assert.equal(validate(8_001), "PAYMENT_EXCEEDS_SERVICE_TOTAL")
-    assert.equal(validate(500), "PAYMENT_BELOW_MINIMUM")
+    assert.equal(validate(500), null)
+    assert.equal(validate(1_000, { allowPartialPayments: false }), null)
+  })
+
+  test("excludes voided receipts from settlement totals", () => {
     assert.equal(
-      validate(1_000, { allowPartialPayments: false }),
-      "SERVICE_DOES_NOT_ALLOW_PARTIAL_PAYMENTS",
+      getServiceTransactionFinancials(10000, [
+        { amountCents: 3000, voidedAt: "2026-10-22T12:00:00Z" },
+        { amountCents: 1000 },
+      ]).paidCents,
+      1000,
     )
   })
 
@@ -98,8 +111,9 @@ describe("service transaction presentation", () => {
       "O'Brien +1 (312) ada@example.com",
     )
     assert.equal(
-      sanitizeServiceTransactionSearch("a".repeat(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH + 20))
-        .length,
+      sanitizeServiceTransactionSearch(
+        "a".repeat(SERVICE_TRANSACTION_SEARCH_MAX_LENGTH + 20),
+      ).length,
       SERVICE_TRANSACTION_SEARCH_MAX_LENGTH,
     )
   })
@@ -125,15 +139,35 @@ describe("service transaction presentation", () => {
   test("requires exact numeric amounts, UUID identifiers, and real calendar dates", () => {
     assert.equal(ServiceTransactionAmountCentsSchema.parse(0), 0)
     assert.equal(ServiceTransactionPositiveAmountCentsSchema.parse(1), 1)
-    assert.equal(ServiceTransactionAmountCentsSchema.safeParse("100").success, false)
-    assert.equal(ServiceTransactionPositiveAmountCentsSchema.safeParse(0).success, false)
-    assert.equal(ServiceTransactionAmountCentsSchema.safeParse(1_000_000_001).success, false)
     assert.equal(
-      ServiceTransactionIdSchema.parse(" 550e8400-e29b-41d4-a716-446655440000 "),
+      ServiceTransactionAmountCentsSchema.safeParse("100").success,
+      false,
+    )
+    assert.equal(
+      ServiceTransactionPositiveAmountCentsSchema.safeParse(0).success,
+      false,
+    )
+    assert.equal(
+      ServiceTransactionAmountCentsSchema.safeParse(1_000_000_001).success,
+      false,
+    )
+    assert.equal(
+      ServiceTransactionIdSchema.parse(
+        " 550e8400-e29b-41d4-a716-446655440000 ",
+      ),
       "550e8400-e29b-41d4-a716-446655440000",
     )
-    assert.equal(ServiceTransactionIdSchema.safeParse("../../service").success, false)
-    assert.equal(ServiceTransactionDateOnlySchema.parse("2026-02-28"), "2026-02-28")
-    assert.equal(ServiceTransactionDateOnlySchema.safeParse("2026-02-31").success, false)
+    assert.equal(
+      ServiceTransactionIdSchema.safeParse("../../service").success,
+      false,
+    )
+    assert.equal(
+      ServiceTransactionDateOnlySchema.parse("2026-02-28"),
+      "2026-02-28",
+    )
+    assert.equal(
+      ServiceTransactionDateOnlySchema.safeParse("2026-02-31").success,
+      false,
+    )
   })
 })

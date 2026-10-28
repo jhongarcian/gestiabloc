@@ -1,3 +1,5 @@
+import { ServicePaymentSettingsSchema, resolvePaymentSettings, legacyPaymentFields } from "../lib/service-billing.js";
+import { ensureServiceStepAutomationsTx } from "../lib/service-step-automations.js";
 import { type NextFunction, type Request, type Response, Router } from "express";
 import argon2 from "argon2";
 import multer from "multer";
@@ -19,6 +21,7 @@ import {
 import { sendVerifyEmail } from "../lib/email.js";
 import { getSafeTimezone, getTimezoneDateParts } from "../lib/appointment-booking.js";
 import { prisma } from "../lib/prisma.js";
+import { TenantAccountUpdateSchema, TenantAccountError, readTenantAccount, saveTenantAccount } from "../lib/tenant-account.js";
 import { enforceSameOrigin } from "../lib/security.js";
 import { normalizeTenantTagName } from "../lib/tag-utils.js";
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js";
@@ -30,43 +33,33 @@ import {
   ensureDefaultContactStatuses,
   ensureDefaultTaskStatuses,
 } from "../lib/tenant-defaults.js";
+
 import {
-  WorkflowDefinitionV2Schema,
-  convertLegacyWorkflowDefinition,
-  validateSensitiveCustomFieldConditions,
-  validateWorkflowDefinition,
-  workflowDefinitionToLegacyCanvas,
-} from "../lib/service-followup-definition.js";
+  ServiceChecklistItemInputSchema,
+  ServiceChecklistItemUpdateSchema,
+  ServiceProfessionalInputSchema,
+  ServiceProfessionalUpdateSchema,
+  ServiceCollectionError,
+  saveServiceCollectionsTx,
+  lockServiceConfigurationTx,
+  serviceChecklistItemSelect,
+  serviceProfessionalSelect,
+} from "../lib/service-configuration-collections.js";
+
 import {
-  WorkflowDefinitionAnySchema,
-  WorkflowDefinitionV3Schema,
-  checksumWorkflowDefinitionAny,
-  getDraftWorkflowDefinitionAny,
-  validateSensitiveCustomFieldConditionsV3,
-  validateWorkflowDefinitionV3,
-  workflowDefinitionV3ToLegacyCanvas,
-  type WorkflowDefinitionAny,
-} from "../lib/service-followup-v3-definition.js";
+  ServiceKindSchema, ServiceHierarchyInputSchema, serviceHierarchySelect,
+  validateServiceParentTx, enrollableServiceWhere,
+} from "../lib/service-hierarchy.js";
+
+import {
+  serviceSectionModesSchema, serviceConfigurationSelect, resolveServiceConfiguration,
+  prepareServiceSectionsTx,
+} from "../lib/service-configuration-inheritance.js";
+
+import { serviceStepSelect, ServiceStepInputSchema, ServiceStepUpdateSchema, saveServiceStepsTx } from "../lib/service-steps.js";
 
 const router = Router();
 const prismaWithContacts = prisma as any;
-
-const getDraftWorkflowDefinition = getDraftWorkflowDefinitionAny;
-const checksumWorkflowDefinition = checksumWorkflowDefinitionAny;
-const validateAnyWorkflowDefinition = (definition: unknown) => {
-  const v3 = WorkflowDefinitionV3Schema.safeParse(definition);
-  return v3.success ? validateWorkflowDefinitionV3(v3.data) : validateWorkflowDefinition(definition);
-};
-const validateAnySensitiveConditions = (
-  definition: WorkflowDefinitionAny,
-  fields: Array<{ id: string; key: string; isEncrypted: boolean; isSensitive: boolean }>,
-) => definition.schemaVersion === 3
-  ? validateSensitiveCustomFieldConditionsV3(definition, fields)
-  : validateSensitiveCustomFieldConditions(definition, fields);
-const workflowDefinitionToCanvas = (definition: WorkflowDefinitionAny) =>
-  definition.schemaVersion === 3
-    ? workflowDefinitionV3ToLegacyCanvas(definition)
-    : workflowDefinitionToLegacyCanvas(definition);
 
 const ACCOUNT_SETTINGS_SECTIONS = [
   "users",
@@ -75,7 +68,6 @@ const ACCOUNT_SETTINGS_SECTIONS = [
   "opportunities",
   "services",
   "professionals",
-  "follow-ups",
   "status-config",
   "tags",
   "features",
@@ -97,18 +89,6 @@ const TenantStatusConfigPathSchema = TenantPathSchema.extend({
 
 const TenantRecordPathSchema = TenantPathSchema.extend({
   recordId: z.string().trim().min(1),
-});
-
-const FollowUpTemplateEnrollmentsQuerySchema = z.object({
-  search: z.string().trim().max(200).optional().default(""),
-  page: z.coerce.number().int().min(1).optional().default(1),
-  pageSize: z.coerce.number().int().min(5).max(50).optional().default(10),
-});
-
-const FollowUpTemplateExecutionLogsQuerySchema = z.object({
-  contactServiceId: z.string().trim().min(1).optional(),
-  page: z.coerce.number().int().min(1).optional().default(1),
-  pageSize: z.coerce.number().int().min(5).max(50).optional().default(20),
 });
 const TenantStatusConfigRecordPathSchema = TenantStatusConfigPathSchema.extend({
   recordId: z.string().trim().min(1),
@@ -162,72 +142,6 @@ const optionalStringField = (max: number) =>
     },
     z.string().max(max).nullable().optional(),
   );
-
-const optionalEmailField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value !== "string") return value;
-      const trimmed = value.trim();
-      return trimmed.length > 0 ? trimmed : null;
-    },
-    z.string().email().max(255).nullable().optional(),
-  );
-
-const optionalUrlField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value !== "string") return value;
-      const trimmed = value.trim();
-      if (trimmed.length === 0) return null;
-
-      // Accept domain-style input (e.g. "acme.com") and normalize to https URL.
-      if (!/^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(trimmed)) {
-        return `https://${trimmed}`;
-      }
-
-      return trimmed;
-    },
-    z.string().url().max(255).nullable().optional(),
-  );
-
-const optionalPercentageField = () =>
-  z.preprocess(
-    (value) => {
-      if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) return null;
-        return Number(trimmed);
-      }
-
-      return value;
-    },
-    z.number().min(0).max(100).nullable().optional(),
-  );
-
-const UpdateTenantInfoSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  email: optionalEmailField(),
-  phone: optionalStringField(60),
-  addressLine1: optionalStringField(255),
-  addressLine2: optionalStringField(255),
-  city: optionalStringField(120),
-  state: optionalStringField(120),
-  postalCode: optionalStringField(40),
-  country: optionalStringField(120),
-  timezone: optionalStringField(100),
-  website: optionalUrlField(),
-  taxEnabled: z.boolean().optional().default(false),
-  taxLabel: optionalStringField(60),
-  defaultTaxRatePercent: optionalPercentageField(),
-}).superRefine((value, ctx) => {
-  if (value.taxEnabled && value.defaultTaxRatePercent === null) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["defaultTaxRatePercent"],
-      message: "Tax rate is required when taxes are enabled.",
-    });
-  }
-});
 
 const TIME_INPUT_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 const CALENDAR_SLOT_DURATION_OPTIONS = [15, 30, 45, 60, 120] as const;
@@ -607,6 +521,8 @@ const UpsertOpportunityPipelineSchema = z.object({
 });
 
 const ServicesPaginationQuerySchema = z.object({
+  kind: ServiceKindSchema.optional(),
+  parentServiceId: z.string().uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z
     .coerce
@@ -645,68 +561,14 @@ const ReorderOpportunityPipelinesSchema = z.object({
   position: z.enum(["before", "after"]),
 });
 const ServiceOptionsQuerySchema = z.object({
+  kind: ServiceKindSchema.default("OFFERING"),
   includeInactive: z
     .union([z.enum(["true", "false"]), z.boolean()])
     .optional()
     .transform((value) => value === "true" || value === true),
 });
-const FollowUpTemplatesPaginationQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z
-    .coerce
-    .number()
-    .int()
-    .refine((value) => value === 10 || value === 25, {
-      message: "pageSize must be 10 or 25",
-    })
-    .default(10),
-  search: z.string().trim().max(120).optional().default(""),
-  serviceId: z.string().trim().min(1).optional(),
-});
 
-const ServiceProfessionalKindSchema = z.enum(["INTERNAL_USER", "EXTERNAL"]);
 const InstallmentFrequencySchema = z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
-
-const ServiceChecklistItemInputSchema = z.object({
-  label: z.string().trim().min(1).max(200),
-  description: optionalStringField(1000),
-  isRequired: z.boolean().default(true),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-});
-
-const ServiceFollowUpTemplateStepInputSchema = z.object({
-  title: z.string().trim().min(1).max(200),
-  notesTemplate: optionalStringField(1000),
-  templateNodeId: z.string().trim().min(1).max(120).nullable().optional(),
-  dueDaysFromStart: z.coerce.number().int().min(0).max(3650).default(0),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-});
-const ServiceFollowUpTemplateSchema = z.object({
-  name: z.string().trim().min(1).max(160),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-  isPublished: z.boolean().optional(),
-  flowNodes: z.array(z.unknown()).optional(),
-  flowEdges: z.array(z.unknown()).optional(),
-  draftDefinition: WorkflowDefinitionAnySchema.optional(),
-});
-const ServiceFollowUpTemplatePatchSchema = z.object({
-  name: z.string().trim().min(1).max(160).optional(),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-  isPublished: z.boolean().optional(),
-  flowNodes: z.array(z.unknown()).optional(),
-  flowEdges: z.array(z.unknown()).optional(),
-  draftDefinition: WorkflowDefinitionAnySchema.optional(),
-  steps: z.array(ServiceFollowUpTemplateStepInputSchema).optional(),
-});
-
-const ServiceProfessionalInputSchema = z.object({
-  kind: ServiceProfessionalKindSchema,
-  userId: optionalStringField(120),
-  externalProfessionalName: optionalStringField(160),
-  externalContact: optionalStringField(160),
-  notes: optionalStringField(500),
-  sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-});
 
 const ServiceFitRuleSourceSchema = z.enum(SERVICE_FIT_RULE_SOURCES);
 const ServiceFitValueTypeSchema = z.enum(SERVICE_FIT_VALUE_TYPES);
@@ -777,11 +639,16 @@ const ServiceFitProfileSchema = z.object({
 });
 
 const CreateServiceSchema = z.object({
+  kind: ServiceKindSchema.optional(),
+  parentServiceId: z.string().uuid().nullable().optional(),
+  ...serviceSectionModesSchema.shape,
+  steps: z.array(ServiceStepInputSchema).max(100).default([]),
   name: z.string().trim().min(1).max(120),
   description: optionalStringField(2000),
   fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000),
   currency: z.string().trim().min(3).max(3).default("USD"),
+  paymentSettings: ServicePaymentSettingsSchema.optional(),
   isTaxExempt: z.boolean().default(false),
   allowPartialPayments: z.boolean().default(false),
   minimumPartialPaymentCents: z.coerce
@@ -791,24 +658,25 @@ const CreateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
-  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentCount: z.coerce.number().int().min(1).max(120).nullable().optional(),
   installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().default(true),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
   checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).default([]),
-  followUpTemplateSteps: z
-    .array(ServiceFollowUpTemplateStepInputSchema)
-    .max(100)
-    .default([]),
-  professionals: z.array(ServiceProfessionalInputSchema).max(100).default([]),
-});
+  professionals: z.array(ServiceProfessionalInputSchema).max(100).default([])
+}).strict().and(ServiceHierarchyInputSchema);
 
 const UpdateServiceSchema = z.object({
+  ...serviceSectionModesSchema.shape,
+  steps: z.array(ServiceStepUpdateSchema).max(100).optional(),
+  kind: ServiceKindSchema.optional(),
+  parentServiceId: z.string().uuid().nullable().optional(),
   name: z.string().trim().min(1).max(120).optional(),
   description: optionalStringField(2000),
   fitProfile: ServiceFitProfileSchema.optional(),
   basePriceCents: z.coerce.number().int().min(0).max(1_000_000_000).optional(),
   currency: z.string().trim().min(3).max(3).optional(),
+  paymentSettings: ServicePaymentSettingsSchema.optional(),
   isTaxExempt: z.boolean().optional(),
   allowPartialPayments: z.boolean().optional(),
   minimumPartialPaymentCents: z.coerce
@@ -818,17 +686,13 @@ const UpdateServiceSchema = z.object({
     .max(1_000_000_000)
     .nullable()
     .optional(),
-  installmentCount: z.coerce.number().int().min(2).max(365).nullable().optional(),
+  installmentCount: z.coerce.number().int().min(1).max(120).nullable().optional(),
   installmentFrequency: InstallmentFrequencySchema.nullable().optional(),
   isActive: z.boolean().optional(),
   sortOrder: z.coerce.number().int().min(0).max(9999).optional(),
-  checklistItems: z.array(ServiceChecklistItemInputSchema).max(100).optional(),
-  followUpTemplateSteps: z
-    .array(ServiceFollowUpTemplateStepInputSchema)
-    .max(100)
-    .optional(),
-  professionals: z.array(ServiceProfessionalInputSchema).max(100).optional(),
-});
+  checklistItems: z.array(ServiceChecklistItemUpdateSchema).max(100).optional(),
+  professionals: z.array(ServiceProfessionalUpdateSchema).max(100).optional()
+}).strict();
 
 const ContactCustomFieldTypeSchema = z.enum([
   "TEXT",
@@ -1143,6 +1007,8 @@ function normalizeServicePayload(
     currency: payload.currency?.trim().toUpperCase(),
   } as typeof payload & { currency?: string };
 
+  if (normalized.paymentSettings) Object.assign(normalized, legacyPaymentFields(normalized.paymentSettings));
+
   if (normalized.allowPartialPayments === false) {
     normalized.minimumPartialPaymentCents = null;
     normalized.installmentCount = null;
@@ -1388,11 +1254,11 @@ router.get("/:tenantId/users", ...readMiddlewares, async (req, res, next) => {
       },
       seatUsage: subscription
         ? {
-            used: activeMembersCount,
-            limit: subscription.seatLimit,
-            available: Math.max(0, subscription.seatLimit - activeMembersCount),
-            planKey: subscription.planKey,
-          }
+          used: activeMembersCount,
+          limit: subscription.seatLimit,
+          available: Math.max(0, subscription.seatLimit - activeMembersCount),
+          planKey: subscription.planKey,
+        }
         : null,
       timezone: tenant?.timezone ?? null,
     });
@@ -1912,11 +1778,11 @@ router.post(
       const { tenantId, userId } = TenantUserPathSchema.parse(req.params);
       const file = (req as any).file as
         | {
-            mimetype: string;
-            size: number;
-            originalname: string;
-            buffer: Buffer;
-          }
+          mimetype: string;
+          size: number;
+          originalname: string;
+          buffer: Buffer;
+        }
         | undefined;
 
       if (!file) {
@@ -2063,111 +1929,21 @@ router.patch(
 router.get("/:tenantId/account", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        addressLine1: true,
-        addressLine2: true,
-        city: true,
-        state: true,
-        postalCode: true,
-        country: true,
-        timezone: true,
-        website: true,
-        taxEnabled: true,
-        taxLabel: true,
-        defaultTaxRateBps: true,
-        emailVerified: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    if (!tenant) {
-      return res.status(404).json({ error: "TENANT_NOT_FOUND" });
-    }
-
-    return res.json({
-      ok: true,
-      tenant: {
-        ...tenant,
-        defaultTaxRatePercent:
-          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
-            ? tenant.defaultTaxRateBps / 100
-            : null,
-      },
-    });
+    return res.json({ ok: true, tenant: await readTenantAccount(prisma, tenantId) });
   } catch (error) {
+    if (error instanceof TenantAccountError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
 
 router.patch("/:tenantId/account", ...writeMiddlewares, async (req, res, next) => {
   try {
+    enforceSameOrigin(req);
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const payload = UpdateTenantInfoSchema.parse(req.body);
-
-    const tenant = await prisma.tenant.update({
-      where: { id: tenantId },
-      data: {
-        name: payload.name,
-        email: payload.email ?? null,
-        phone: payload.phone ?? null,
-        addressLine1: payload.addressLine1 ?? null,
-        addressLine2: payload.addressLine2 ?? null,
-        city: payload.city ?? null,
-        state: payload.state ?? null,
-        postalCode: payload.postalCode ?? null,
-        country: payload.country ?? null,
-        timezone: payload.timezone ?? null,
-        website: payload.website ?? null,
-        taxEnabled: payload.taxEnabled,
-        taxLabel: payload.taxEnabled ? payload.taxLabel ?? null : null,
-        defaultTaxRateBps:
-          payload.taxEnabled &&
-          payload.defaultTaxRatePercent !== null &&
-          payload.defaultTaxRatePercent !== undefined
-            ? Math.round(payload.defaultTaxRatePercent * 100)
-            : null,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        addressLine1: true,
-        addressLine2: true,
-        city: true,
-        state: true,
-        postalCode: true,
-        country: true,
-        timezone: true,
-        website: true,
-        taxEnabled: true,
-        taxLabel: true,
-        defaultTaxRateBps: true,
-        emailVerified: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    return res.json({
-      ok: true,
-      tenant: {
-        ...tenant,
-        defaultTaxRatePercent:
-          tenant.defaultTaxRateBps !== null && tenant.defaultTaxRateBps !== undefined
-            ? tenant.defaultTaxRateBps / 100
-            : null,
-      },
-    });
+    const payload = TenantAccountUpdateSchema.parse(req.body);
+    return res.json({ ok: true, tenant: await saveTenantAccount(prisma, tenantId, payload) });
   } catch (error) {
+    if (error instanceof TenantAccountError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
@@ -2378,10 +2154,10 @@ router.patch("/:tenantId/calendar", ...writeMiddlewares, async (req, res, next) 
       }),
       ...(enabledDays.length > 0
         ? [
-            prisma.calendarAvailabilityRule.createMany({
-              data: enabledDays,
-            }),
-          ]
+          prisma.calendarAvailabilityRule.createMany({
+            data: enabledDays,
+          }),
+        ]
         : []),
     ]);
 
@@ -2435,15 +2211,15 @@ router.patch("/:tenantId/calendar/staff", ...writeMiddlewares, async (req, res, 
       ),
       ...(disabledUserIds.length > 0
         ? [
-            prisma.calendarStaffGroupMember.deleteMany({
-              where: {
-                tenantId,
-                userId: {
-                  in: disabledUserIds,
-                },
+          prisma.calendarStaffGroupMember.deleteMany({
+            where: {
+              tenantId,
+              userId: {
+                in: disabledUserIds,
               },
-            }),
-          ]
+            },
+          }),
+        ]
         : []),
     ]);
 
@@ -2865,10 +2641,10 @@ router.patch("/:tenantId/calendar/users/:userId", ...writeMiddlewares, async (re
       }),
       ...(enabledDays.length > 0
         ? [
-            prisma.calendarAvailabilityRule.createMany({
-              data: enabledDays,
-            }),
-          ]
+          prisma.calendarAvailabilityRule.createMany({
+            data: enabledDays,
+          }),
+        ]
         : []),
     ]);
 
@@ -3737,19 +3513,22 @@ router.delete(
 router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const { page, pageSize, search, isActive } = ServicesPaginationQuerySchema.parse(req.query);
+    const { page, pageSize, search, isActive, kind, parentServiceId } = ServicesPaginationQuerySchema.parse(req.query);
     const skip = (page - 1) * pageSize;
 
     const where = {
       tenantId,
+      ...(kind ? { kind } : {}),
+      ...(parentServiceId ? { parentServiceId } : {}),
       ...(typeof isActive === "boolean" ? { isActive } : {}),
       ...(search
         ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
-              { description: { contains: search, mode: "insensitive" as const } },
-            ],
-          }
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { description: { contains: search, mode: "insensitive" as const } },
+            { subServices: { some: { name: { contains: search, mode: "insensitive" as const } } } },
+          ],
+        }
         : {}),
     };
 
@@ -3761,7 +3540,8 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
         skip,
         take: pageSize,
         select: {
-          id: true,
+          ...serviceHierarchySelect,
+          ...serviceConfigurationSelect,
           name: true,
           description: true,
           basePriceCents: true,
@@ -3771,6 +3551,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
           isActive: true,
           sortOrder: true,
           checklistItems: {
+            where: { archivedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
@@ -3780,25 +3561,8 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
               sortOrder: true,
             },
           },
-          followUpTemplateSteps: {
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: {
-              id: true,
-              title: true,
-              notesTemplate: true,
-              dueDaysFromStart: true,
-              sortOrder: true,
-            },
-          },
-          followUpTemplates: {
-            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-            select: {
-              id: true,
-              name: true,
-              isPublished: true,
-            },
-          },
           professionals: {
+            where: { archivedAt: null },
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: {
               id: true,
@@ -3816,7 +3580,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
                 },
               },
             },
-          },
+          }
         },
       }),
     ]);
@@ -3825,7 +3589,7 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
 
     return res.json({
       ok: true,
-      items: services,
+      items: services.map((item: any) => resolveServiceConfiguration(item)),
       pagination: {
         page,
         pageSize,
@@ -3841,116 +3605,39 @@ router.get("/:tenantId/services", ...readMiddlewares, async (req, res, next) => 
 router.get("/:tenantId/services/options", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
-    const { includeInactive } = ServiceOptionsQuerySchema.parse(req.query);
+    const { includeInactive, kind } = ServiceOptionsQuerySchema.parse(req.query);
 
     const items = await prismaWithContacts.service.findMany({
       where: {
         tenantId,
-        ...(includeInactive ? {} : { isActive: true }),
+        ...(includeInactive ? { kind } : kind === "OFFERING" ? enrollableServiceWhere : { kind, isActive: true }),
       },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
-        id: true,
+        ...serviceHierarchySelect,
+        ...serviceConfigurationSelect,
         name: true,
         isActive: true,
         sortOrder: true,
-        checklistItems: {
-          select: { id: true },
-        },
-        followUpTemplateSteps: {
-          select: { id: true },
-        },
-        followUpTemplates: {
-          select: { id: true },
-        },
-        professionals: {
-          select: { id: true },
-        },
+        checklistItems: serviceConfigurationSelect.checklistItems,
+        professionals: serviceConfigurationSelect.professionals
       },
     });
 
     return res.json({
       ok: true,
-      items: items.map((item: any) => ({
-        id: item.id,
-        name: item.name,
-        isActive: item.isActive,
-        sortOrder: item.sortOrder,
-        checklistCount: item.checklistItems.length,
-        followUpTemplateStepsCount: item.followUpTemplateSteps.length,
-        followUpTemplatesCount: item.followUpTemplates.length,
-        professionalsCount: item.professionals.length,
-      })),
-    });
-  } catch (error) {
-    return next(error);
-  }
-});
-
-router.get("/:tenantId/follow-up-templates", ...readMiddlewares, async (req, res, next) => {
-  try {
-    const { tenantId } = TenantPathSchema.parse(req.params);
-    const { page, pageSize, search, serviceId } = FollowUpTemplatesPaginationQuerySchema.parse(req.query);
-    const skip = (page - 1) * pageSize;
-
-    const where = {
-      tenantId,
-      ...(serviceId ? { serviceId } : {}),
-      ...(search
-        ? {
-            OR: [
-              { name: { contains: search, mode: "insensitive" as const } },
-              { service: { name: { contains: search, mode: "insensitive" as const } } },
-            ],
-          }
-        : {}),
-    };
-
-    const [total, templates] = await prisma.$transaction([
-      prismaWithContacts.serviceFollowUpTemplate.count({ where }),
-      prismaWithContacts.serviceFollowUpTemplate.findMany({
-        where,
-        orderBy: [
-          { service: { sortOrder: "asc" } },
-          { service: { name: "asc" } },
-          { sortOrder: "asc" },
-          { createdAt: "asc" },
-        ],
-        skip,
-        take: pageSize,
-        select: {
-          id: true,
-          name: true,
-          isPublished: true,
-          serviceId: true,
-          service: {
-            select: {
-              name: true,
-              isActive: true,
-            },
-          },
-        },
-      }),
-    ]);
-
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
-
-    return res.json({
-      ok: true,
-      items: templates.map((template: any) => ({
-        id: template.id,
-        name: template.name,
-        isPublished: template.isPublished,
-        serviceId: template.serviceId,
-        serviceName: template.service?.name ?? "",
-        serviceIsActive: Boolean(template.service?.isActive),
-      })),
-      pagination: {
-        page,
-        pageSize,
-        total,
-        totalPages,
-      },
+      items: items.map((raw: any) => { const item = resolveServiceConfiguration(raw); return ({
+          id: item.id,
+          kind: item.kind,
+          parentServiceId: item.parentServiceId,
+          parentService: item.parentService,
+          name: item.name,
+          isActive: item.isActive,
+          sortOrder: item.sortOrder,
+          checklistCount: item.checklistItems.length,
+          stepsCount: item.steps.length,
+          professionalsCount: item.professionals.length,
+        }); }),
     });
   } catch (error) {
     return next(error);
@@ -3971,744 +3658,6 @@ router.get("/:tenantId/service-fit-fields", ...readMiddlewares, async (req, res,
   }
 });
 
-router.get(
-  "/:tenantId/services/:recordId/follow-up-templates",
-  ...readMiddlewares,
-  async (req, res, next) => {
-    try {
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-
-      const service = await prismaWithContacts.service.findUnique({
-        where: { id: recordId },
-        select: { id: true, tenantId: true },
-      });
-      if (!service || service.tenantId !== tenantId) {
-        return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
-      }
-
-      const items = await prismaWithContacts.serviceFollowUpTemplate.findMany({
-        where: { tenantId, serviceId: recordId },
-        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-        select: {
-          id: true,
-          name: true,
-          sortOrder: true,
-          isPublished: true,
-          publishedAt: true,
-          flowNodes: true,
-          flowEdges: true,
-          draftDefinition: true,
-          needsRepair: true,
-          activeVersion: {
-            select: { id: true, versionNumber: true, schemaVersion: true, checksum: true, publishedAt: true },
-          },
-          steps: {
-            select: { id: true, templateNodeId: true, sortOrder: true },
-          },
-        },
-      });
-
-      return res.json({
-        ok: true,
-        items: items.map((item: any) => {
-          const definition = getDraftWorkflowDefinition(item);
-          const canvas = workflowDefinitionToCanvas(definition);
-          return {
-          id: item.id,
-          name: item.name,
-          sortOrder: item.sortOrder,
-          isPublished: item.isPublished,
-          publishedAt: item.publishedAt,
-          flowNodes: canvas.nodes,
-          flowEdges: canvas.edges,
-          draftDefinition: definition,
-          needsRepair: item.needsRepair,
-          activeVersion: item.activeVersion,
-          stepsCount: item.steps.length,
-          };
-        }),
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.post(
-  "/:tenantId/services/:recordId/follow-up-templates",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const payload = ServiceFollowUpTemplateSchema.parse(req.body);
-
-      const service = await prismaWithContacts.service.findUnique({
-        where: { id: recordId },
-        select: { id: true, tenantId: true },
-      });
-      if (!service || service.tenantId !== tenantId) {
-        return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
-      }
-
-      const maxSortOrderRecord = await prismaWithContacts.serviceFollowUpTemplate.findFirst({
-        where: { tenantId, serviceId: recordId },
-        orderBy: { sortOrder: "desc" },
-        select: { sortOrder: true },
-      });
-      const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
-
-      const created = await prismaWithContacts.serviceFollowUpTemplate.create({
-        data: {
-          tenantId,
-          serviceId: recordId,
-          name: payload.name.trim(),
-          sortOrder: payload.sortOrder ?? nextSortOrder,
-          isPublished: false,
-          publishedAt: null,
-          flowNodes: payload.flowNodes ?? [],
-          flowEdges: payload.flowEdges ?? [],
-          draftDefinition:
-            payload.draftDefinition ??
-            convertLegacyWorkflowDefinition(payload.flowNodes ?? [], payload.flowEdges ?? []),
-        },
-        select: {
-          id: true,
-          name: true,
-          sortOrder: true,
-          isPublished: true,
-          publishedAt: true,
-          flowNodes: true,
-          flowEdges: true,
-          draftDefinition: true,
-          needsRepair: true,
-          activeVersionId: true,
-        },
-      });
-
-      const definition = getDraftWorkflowDefinition(created);
-      const canvas = workflowDefinitionToCanvas(definition);
-      return res.status(201).json({
-        ok: true,
-        template: { ...created, flowNodes: canvas.nodes, flowEdges: canvas.edges, draftDefinition: definition },
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.get(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
-  ...readMiddlewares,
-  async (req, res, next) => {
-    try {
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-
-      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: {
-          id: true,
-          tenantId: true,
-          serviceId: true,
-          name: true,
-          sortOrder: true,
-          isPublished: true,
-          publishedAt: true,
-          flowNodes: true,
-          flowEdges: true,
-          draftDefinition: true,
-          needsRepair: true,
-          activeVersion: {
-            select: {
-              id: true,
-              versionNumber: true,
-              schemaVersion: true,
-              checksum: true,
-              publishedAt: true,
-            },
-          },
-          steps: {
-            select: { templateNodeId: true, sortOrder: true },
-            orderBy: { sortOrder: "asc" },
-          },
-        },
-      });
-
-      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      const definition = getDraftWorkflowDefinition(template);
-      const canvas = workflowDefinitionToCanvas(definition);
-      return res.json({
-        ok: true,
-        template: {
-          ...template,
-          flowNodes: canvas.nodes,
-          flowEdges: canvas.edges,
-          draftDefinition: definition,
-        },
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.get(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/enrollments",
-  ...readMiddlewares,
-  async (req, res, next) => {
-    try {
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const { search, page, pageSize } = FollowUpTemplateEnrollmentsQuerySchema.parse(req.query);
-
-      const template = await prisma.serviceFollowUpTemplate.findFirst({
-        where: { id: templateId, tenantId, serviceId: recordId },
-        select: { id: true },
-      });
-
-      if (!template) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      const where: Prisma.ContactServiceWhereInput = {
-        tenantId,
-        serviceId: recordId,
-        followUpTemplateId: templateId,
-        ...(search
-          ? {
-              contact: {
-                is: {
-                  OR: [
-                    { firstName: { contains: search, mode: "insensitive" } },
-                    { middleName: { contains: search, mode: "insensitive" } },
-                    { lastName: { contains: search, mode: "insensitive" } },
-                    { email: { contains: search, mode: "insensitive" } },
-                    { phone: { contains: search, mode: "insensitive" } },
-                  ],
-                },
-              },
-            }
-          : {}),
-      };
-
-      const [totalCount, enrollments] = await Promise.all([
-        prisma.contactService.count({ where }),
-        prisma.contactService.findMany({
-          where,
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          skip: (page - 1) * pageSize,
-          take: pageSize,
-          select: {
-            id: true,
-            createdAt: true,
-            followUpRun: {
-              select: {
-                status: true,
-                failureMessage: true,
-              },
-            },
-            contact: {
-              select: {
-                id: true,
-                firstName: true,
-                middleName: true,
-                lastName: true,
-                email: true,
-                phone: true,
-              },
-            },
-          },
-        }),
-      ]);
-
-      return res.json({
-        ok: true,
-        items: enrollments.map((enrollment) => ({
-          id: enrollment.id,
-          enrolledAt: enrollment.createdAt,
-          enrollmentStatus:
-            enrollment.followUpRun?.status === "FAILED" ||
-            enrollment.followUpRun?.status === "NEEDS_REVIEW"
-              ? "ERROR"
-              : "SUCCESS",
-          errorMessage:
-            enrollment.followUpRun?.status === "FAILED" ||
-            enrollment.followUpRun?.status === "NEEDS_REVIEW"
-              ? enrollment.followUpRun.failureMessage
-              : null,
-          contact: {
-            id: enrollment.contact.id,
-            name:
-              [
-                enrollment.contact.firstName,
-                enrollment.contact.middleName,
-                enrollment.contact.lastName,
-              ]
-                .filter(Boolean)
-                .join(" ") || enrollment.contact.email || "Unnamed contact",
-            email: enrollment.contact.email ?? null,
-            phoneNumber: enrollment.contact.phone ?? null,
-          },
-        })),
-        search,
-        page,
-        pageSize,
-        totalCount,
-        totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.get(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/execution-logs",
-  ...readMiddlewares,
-  async (req, res, next) => {
-    try {
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const { contactServiceId, page, pageSize } =
-        FollowUpTemplateExecutionLogsQuerySchema.parse(req.query);
-
-      const template = await prisma.serviceFollowUpTemplate.findFirst({
-        where: { id: templateId, tenantId, serviceId: recordId },
-        select: { id: true },
-      });
-
-      if (!template) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      const [totalCount, items] = await Promise.all([
-        prisma.serviceFollowUpExecutionLog.count({
-          where: {
-            tenantId,
-            templateId,
-            ...(contactServiceId ? { contactServiceId } : {}),
-          },
-        }),
-        prisma.serviceFollowUpExecutionLog.findMany({
-          where: {
-            tenantId,
-            templateId,
-            ...(contactServiceId ? { contactServiceId } : {}),
-          },
-          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          skip: (page - 1) * pageSize,
-          take: pageSize,
-          select: {
-            id: true,
-            eventType: true,
-            title: true,
-            details: true,
-            flowNodeId: true,
-            stepId: true,
-            payload: true,
-            createdAt: true,
-            actor: {
-              select: {
-                id: true,
-                name: true,
-              },
-            },
-            contact: {
-              select: {
-                id: true,
-                firstName: true,
-                middleName: true,
-                lastName: true,
-              },
-            },
-            contactService: {
-              select: {
-                id: true,
-                service: {
-                  select: {
-                    id: true,
-                    name: true,
-                  },
-                },
-                followUpSteps: {
-                  select: {
-                    id: true,
-                    title: true,
-                  },
-                },
-              },
-            },
-          },
-        }),
-      ]);
-
-      return res.json({
-        ok: true,
-        items: items.map((item) => ({
-          id: item.id,
-          eventType: item.eventType,
-          title: item.title,
-          details: item.details,
-          flowNodeId: item.flowNodeId,
-          stepId: item.stepId,
-          payload: item.payload ?? null,
-          createdAt: item.createdAt,
-          actor: item.actor,
-          contact: {
-            id: item.contact.id,
-            name: [item.contact.firstName, item.contact.middleName, item.contact.lastName]
-              .filter(Boolean)
-              .join(" "),
-          },
-          contactService: {
-            id: item.contactService.id,
-            service: item.contactService.service,
-            steps: item.contactService.followUpSteps,
-          },
-        })),
-        page,
-        pageSize,
-        totalCount,
-        totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.patch(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const payload = ServiceFollowUpTemplatePatchSchema.parse(req.body);
-
-      if (Object.keys(payload).length === 0) {
-        return res.status(400).json({ error: "NO_CHANGES_PROVIDED" });
-      }
-
-      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: {
-          id: true,
-          tenantId: true,
-          serviceId: true,
-          flowNodes: true,
-          flowEdges: true,
-          draftDefinition: true,
-        },
-      });
-      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      if (payload.isPublished !== undefined) {
-        return res.status(400).json({ error: "USE_FOLLOW_UP_PUBLISH_ENDPOINT" });
-      }
-
-      const nextDraftDefinition =
-        payload.draftDefinition ??
-        (payload.flowNodes !== undefined || payload.flowEdges !== undefined
-          ? convertLegacyWorkflowDefinition(
-              payload.flowNodes ?? existing.flowNodes,
-              payload.flowEdges ?? existing.flowEdges,
-            )
-          : undefined);
-      const v3Draft = WorkflowDefinitionV3Schema.safeParse(nextDraftDefinition);
-      const canonicalSteps = v3Draft.success
-        ? v3Draft.data.steps.map((step, index) => ({
-            title: step.name,
-            notesTemplate: step.notesTemplate ?? null,
-            templateNodeId: step.id,
-            dueDaysFromStart: step.dueDaysFromStart,
-            sortOrder: (index + 1) * 10,
-          }))
-        : payload.steps;
-
-      const updated = await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any;
-
-        if (canonicalSteps) {
-          await prismaTx.serviceFollowUpTemplateStep.deleteMany({
-            where: { tenantId, serviceId: recordId, templateId },
-          });
-        }
-
-        return prismaTx.serviceFollowUpTemplate.update({
-          where: { id: templateId },
-          data: {
-            ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
-            ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-            ...(payload.flowNodes !== undefined ? { flowNodes: payload.flowNodes } : {}),
-            ...(payload.flowEdges !== undefined ? { flowEdges: payload.flowEdges } : {}),
-            ...(nextDraftDefinition !== undefined
-              ? { draftDefinition: nextDraftDefinition, needsRepair: false }
-              : {}),
-            ...(canonicalSteps
-              ? {
-                  steps: {
-                    create: canonicalSteps.map((step, index) => ({
-                      tenantId,
-                      serviceId: recordId,
-                      title: step.title.trim(),
-                      notesTemplate: step.notesTemplate ?? null,
-                      templateNodeId: step.templateNodeId ?? null,
-                      dueDaysFromStart: step.dueDaysFromStart,
-                      sortOrder: step.sortOrder ?? (index + 1) * 10,
-                    })),
-                  },
-                }
-              : {}),
-          },
-          select: {
-            id: true,
-            name: true,
-            sortOrder: true,
-            isPublished: true,
-            publishedAt: true,
-            flowNodes: true,
-            flowEdges: true,
-            draftDefinition: true,
-            needsRepair: true,
-            activeVersion: {
-              select: { id: true, versionNumber: true, schemaVersion: true, checksum: true, publishedAt: true },
-            },
-          },
-        });
-      });
-
-      const definition = getDraftWorkflowDefinition(updated);
-      const canvas = workflowDefinitionToCanvas(definition);
-      return res.json({
-        ok: true,
-        template: {
-          ...updated,
-          flowNodes: canvas.nodes,
-          flowEdges: canvas.edges,
-          draftDefinition: definition,
-        },
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.post(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/validate",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const suppliedDefinition = req.body?.definition;
-
-      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: {
-          id: true,
-          tenantId: true,
-          serviceId: true,
-          draftDefinition: true,
-          flowNodes: true,
-          flowEdges: true,
-          steps: { select: { templateNodeId: true, sortOrder: true }, orderBy: { sortOrder: "asc" } },
-        },
-      });
-      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      const definition =
-        suppliedDefinition === undefined
-          ? getDraftWorkflowDefinition(template)
-          : suppliedDefinition;
-      const validation = validateAnyWorkflowDefinition(definition);
-      const protectedFields = validation.definition
-        ? await prismaWithContacts.contactCustomField.findMany({
-            where: { tenantId, OR: [{ isEncrypted: true }, { isSensitive: true }] },
-            select: { id: true, key: true, isEncrypted: true, isSensitive: true },
-          })
-        : [];
-      const sensitiveIssues = validation.definition
-        ? validateAnySensitiveConditions(validation.definition, protectedFields)
-        : [];
-      const issues = [...validation.issues, ...sensitiveIssues];
-      const isValid = validation.ok && sensitiveIssues.length === 0;
-      return res.status(isValid ? 200 : 422).json({
-        ok: isValid,
-        definition: validation.definition,
-        issues,
-        ...(isValid ? {} : { error: "INVALID_FOLLOW_UP_GRAPH" }),
-      });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.post(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/publish",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-      const authed = req as AuthedRequest;
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-
-      const template = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: {
-          id: true,
-          tenantId: true,
-          serviceId: true,
-          draftDefinition: true,
-          flowNodes: true,
-          flowEdges: true,
-          steps: { select: { templateNodeId: true, sortOrder: true }, orderBy: { sortOrder: "asc" } },
-        },
-      });
-      if (!template || template.tenantId !== tenantId || template.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      const validation = validateAnyWorkflowDefinition(getDraftWorkflowDefinition(template));
-      const protectedFields = validation.definition
-        ? await prismaWithContacts.contactCustomField.findMany({
-            where: { tenantId, OR: [{ isEncrypted: true }, { isSensitive: true }] },
-            select: { id: true, key: true, isEncrypted: true, isSensitive: true },
-          })
-        : [];
-      const sensitiveIssues = validation.definition
-        ? validateAnySensitiveConditions(validation.definition, protectedFields)
-        : [];
-      if (!validation.ok || sensitiveIssues.length) {
-        await prismaWithContacts.serviceFollowUpTemplate.update({
-          where: { id: templateId },
-          data: { needsRepair: true },
-        });
-        return res.status(422).json({
-          error: "INVALID_FOLLOW_UP_GRAPH",
-          issues: [...validation.issues, ...sensitiveIssues],
-        });
-      }
-
-      const definition = validation.definition;
-      const checksum = checksumWorkflowDefinition(definition);
-      const published = await prisma.$transaction(async (tx) => {
-        const prismaTx = tx as any;
-        const existingVersion = await prismaTx.serviceFollowUpTemplateVersion.findFirst({
-          where: { templateId, checksum },
-        });
-        const latest = await prismaTx.serviceFollowUpTemplateVersion.findFirst({
-          where: { templateId },
-          orderBy: { versionNumber: "desc" },
-          select: { versionNumber: true },
-        });
-        const version =
-          existingVersion ??
-          (await prismaTx.serviceFollowUpTemplateVersion.create({
-            data: {
-              tenantId,
-              templateId,
-              versionNumber: (latest?.versionNumber ?? 0) + 1,
-              schemaVersion: definition.schemaVersion,
-              checksum,
-              definition,
-              publishedById: authed.user.id,
-            },
-          }));
-
-        const updatedTemplate = await prismaTx.serviceFollowUpTemplate.update({
-          where: { id: templateId },
-          data: {
-            draftDefinition: definition,
-            activeVersionId: version.id,
-            isPublished: true,
-            publishedAt: version.publishedAt,
-            needsRepair: false,
-          },
-          select: { id: true, isPublished: true, publishedAt: true, needsRepair: true },
-        });
-        return { template: updatedTemplate, version };
-      });
-
-      return res.json({ ok: true, ...published });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.post(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId/unpublish",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: { tenantId: true, serviceId: true },
-      });
-      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-      const template = await prismaWithContacts.serviceFollowUpTemplate.update({
-        where: { id: templateId },
-        data: { activeVersionId: null, isPublished: false, publishedAt: null },
-        select: { id: true, isPublished: true, publishedAt: true },
-      });
-      return res.json({ ok: true, template });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
-router.delete(
-  "/:tenantId/services/:recordId/follow-up-templates/:templateId",
-  ...writeMiddlewares,
-  async (req, res, next) => {
-    try {
-      enforceSameOrigin(req);
-
-      const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
-      const templateId = z.string().trim().min(1).parse(req.params.templateId);
-
-      const existing = await prismaWithContacts.serviceFollowUpTemplate.findUnique({
-        where: { id: templateId },
-        select: { id: true, tenantId: true, serviceId: true },
-      });
-      if (!existing || existing.tenantId !== tenantId || existing.serviceId !== recordId) {
-        return res.status(404).json({ error: "FOLLOW_UP_TEMPLATE_NOT_FOUND" });
-      }
-
-      await prismaWithContacts.serviceFollowUpTemplate.delete({
-        where: { id: templateId },
-      });
-
-      return res.json({ ok: true });
-    } catch (error) {
-      return next(error);
-    }
-  },
-);
-
 router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, res, next) => {
   try {
     const { tenantId } = TenantPathSchema.parse(req.params);
@@ -4720,6 +3669,7 @@ router.get("/:tenantId/service-professionals", ...readMiddlewares, async (req, r
         id: true,
         name: true,
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4764,10 +3714,11 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
   try {
     const { tenantId, recordId } = TenantRecordPathSchema.parse(req.params);
 
-    const service = await prismaWithContacts.service.findUnique({
+    let service = await prismaWithContacts.service.findUnique({
       where: { id: recordId },
       select: {
-        id: true,
+        ...serviceHierarchySelect,
+        ...serviceConfigurationSelect,
         tenantId: true,
         name: true,
         description: true,
@@ -4789,6 +3740,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
           },
         },
         checklistItems: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4798,29 +3750,8 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
             sortOrder: true,
           },
         },
-        followUpTemplateSteps: {
-          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-          select: {
-            id: true,
-            title: true,
-            notesTemplate: true,
-            dueDaysFromStart: true,
-            sortOrder: true,
-          },
-        },
-        followUpTemplates: {
-          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-          select: {
-            id: true,
-            name: true,
-            sortOrder: true,
-            isPublished: true,
-            publishedAt: true,
-            flowNodes: true,
-            flowEdges: true,
-          },
-        },
         professionals: {
+          where: { archivedAt: null },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
           select: {
             id: true,
@@ -4838,7 +3769,7 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
               },
             },
           },
-        },
+        }
       },
     });
 
@@ -4846,11 +3777,22 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
     }
 
+    service = resolveServiceConfiguration(service);
     return res.json({
       ok: true,
       service: {
+        billingMode: service.billingMode,
+        checklistMode: service.checklistMode,
+        professionalsMode: service.professionalsMode,
+        stepsMode: service.stepsMode,
+        steps: service.steps,
+        inheritance: service.inheritance,
         id: service.id,
         tenantId: service.tenantId,
+        kind: service.kind,
+        parentServiceId: service.parentServiceId,
+        parentService: service.parentService,
+        subServiceCount: service._count.subServices,
         name: service.name,
         description: service.description,
         fitProfile: normalizeServiceFitProfile(service.fitProfile),
@@ -4861,18 +3803,17 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
         minimumPartialPaymentCents: service.minimumPartialPaymentCents,
         installmentCount: service.installmentCount,
         installmentFrequency: service.installmentFrequency,
+        paymentSettings: resolvePaymentSettings(service),
         isActive: service.isActive,
         sortOrder: service.sortOrder,
         checklistItems: service.checklistItems,
-        followUpTemplateSteps: service.followUpTemplateSteps,
-        followUpTemplates: service.followUpTemplates,
         professionals: service.professionals,
         tenantBilling: {
           taxEnabled: service.tenant.taxEnabled,
           taxLabel: service.tenant.taxLabel,
           defaultTaxRatePercent:
             service.tenant.defaultTaxRateBps !== null &&
-            service.tenant.defaultTaxRateBps !== undefined
+              service.tenant.defaultTaxRateBps !== undefined
               ? service.tenant.defaultTaxRateBps / 100
               : null,
         },
@@ -4881,28 +3822,20 @@ router.get("/:tenantId/services/:recordId", ...readMiddlewares, async (req, res,
             service.name.trim().length > 0 &&
             service.basePriceCents >= 0 &&
             service.currency.trim().length === 3 &&
-            (!service.allowPartialPayments ||
-              (service.minimumPartialPaymentCents !== null &&
-                service.installmentCount !== null &&
-                service.installmentFrequency !== null)),
+            ServicePaymentSettingsSchema.safeParse(resolvePaymentSettings(service)).success,
           checklistComplete: service.checklistItems.length > 0,
           followUpsComplete:
-            service.followUpTemplates.length > 0 ||
-            service.followUpTemplateSteps.length > 0,
+            service.kind === "GROUP" || service.steps.length > 0,
           professionalsComplete: service.professionals.length > 0,
           isComplete:
             service.name.trim().length > 0 &&
             service.basePriceCents >= 0 &&
             service.currency.trim().length === 3 &&
-            (!service.allowPartialPayments ||
-              (service.minimumPartialPaymentCents !== null &&
-                service.installmentCount !== null &&
-                service.installmentFrequency !== null)) &&
+            ServicePaymentSettingsSchema.safeParse(resolvePaymentSettings(service)).success &&
             service.checklistItems.length > 0 &&
-            (service.followUpTemplates.length > 0 ||
-              service.followUpTemplateSteps.length > 0) &&
+            (service.kind === "GROUP" || service.steps.length > 0) &&
             service.professionals.length > 0,
-        },
+        }
       },
     });
   } catch (error) {
@@ -4916,14 +3849,8 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
 
     const { tenantId } = TenantPathSchema.parse(req.params);
     const payload = CreateServiceSchema.parse(req.body);
-    const normalizedPayload = {
-      ...payload,
-      currency: payload.currency.trim().toUpperCase(),
-      minimumPartialPaymentCents: payload.allowPartialPayments
-        ? payload.minimumPartialPaymentCents ?? null
-        : null,
-    };
-    const normalizedName = normalizedPayload.name.trim();
+    const normalizedPayload = { ...normalizeServicePayload(payload), currency: payload.currency.trim().toUpperCase() };
+    const normalizedName = payload.name.trim();
 
     const duplicate = await findServiceByName(tenantId, normalizedName);
     if (duplicate) {
@@ -4973,8 +3900,8 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     });
 
     if (
-      payload.allowPartialPayments &&
-      normalizedPayload.minimumPartialPaymentCents !== null &&
+      normalizedPayload.allowPartialPayments &&
+      normalizedPayload.minimumPartialPaymentCents != null &&
       normalizedPayload.minimumPartialPaymentCents > maxAllowedDepositCents
     ) {
       return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
@@ -4987,85 +3914,105 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
     });
     const nextSortOrder = (maxSortOrderRecord?.sortOrder ?? 0) + 10;
 
-    const created = await prismaWithContacts.service.create({
-      data: {
-        tenantId,
-        name: normalizedName,
-        description: normalizedPayload.description ?? null,
-        fitProfile,
-        basePriceCents: payload.basePriceCents,
-        currency: normalizedPayload.currency || "USD",
-        isTaxExempt: payload.isTaxExempt,
-        allowPartialPayments: payload.allowPartialPayments,
-        minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
-        installmentCount: normalizedPayload.installmentCount ?? null,
-        installmentFrequency: normalizedPayload.installmentFrequency ?? null,
-        isActive: payload.isActive,
-        sortOrder: payload.sortOrder ?? nextSortOrder,
-        checklistItems: {
-          create: payload.checklistItems.map((item, index) => ({
-            label: item.label.trim(),
-            description: item.description ?? null,
-            isRequired: item.isRequired,
-            sortOrder: item.sortOrder ?? (index + 1) * 10,
-            tenantId,
-          })),
+    const defaultMode = payload.kind === "OFFERING" ? "INHERIT" : "CUSTOM";
+    const modes = {
+      billingMode: payload.billingMode ?? defaultMode,
+      checklistMode: payload.checklistMode ?? defaultMode,
+      professionalsMode: payload.professionalsMode ?? defaultMode,
+      stepsMode: payload.stepsMode ?? defaultMode,
+    };
+    if (payload.kind === "GROUP" && Object.values(modes).includes("INHERIT")) {
+      return res.status(400).json({ error: "PARENT_SECTION_CANNOT_INHERIT" });
+    }
+    if ((modes.checklistMode === "INHERIT" && payload.checklistItems.length) ||
+      (modes.professionalsMode === "INHERIT" && payload.professionals.length) ||
+      (modes.stepsMode === "INHERIT" && payload.steps.length)) {
+      return res.status(400).json({ error: "INHERITED_SECTION_READ_ONLY" });
+    }
+    const created = await prisma.$transaction(async (tx) => {
+      await validateServiceParentTx(tx, tenantId, payload.kind, payload.parentServiceId);
+      const record = await tx.service.create({
+        data: {
+          tenantId,
+          ...modes,
+          steps: { create: payload.steps.map((step, index) => ({ ...step, sortOrder: (index + 1) * 10 })) },
+          kind: payload.kind,
+          parentServiceId: payload.parentServiceId ?? null,
+          name: normalizedName,
+          description: normalizedPayload.description ?? null,
+          fitProfile: fitProfile as unknown as Prisma.InputJsonValue,
+          basePriceCents: payload.basePriceCents,
+          currency: normalizedPayload.currency || "USD",
+          isTaxExempt: payload.isTaxExempt,
+          paymentSettings: resolvePaymentSettings(normalizedPayload),
+          allowPartialPayments: normalizedPayload.allowPartialPayments,
+          minimumPartialPaymentCents: normalizedPayload.minimumPartialPaymentCents,
+          installmentCount: normalizedPayload.installmentCount ?? null,
+          installmentFrequency: normalizedPayload.installmentFrequency ?? null,
+          isActive: payload.isActive,
+          sortOrder: payload.sortOrder ?? nextSortOrder,
+          checklistItems: {
+            create: payload.checklistItems.map((item, index) => ({
+              label: item.label.trim(),
+              description: item.description ?? null,
+              isRequired: item.isRequired,
+              sortOrder: item.sortOrder ?? (index + 1) * 10,
+              tenantId,
+            })),
+          },
+          professionals: {
+            create: payload.professionals.map((professional, index) => ({
+              kind: professional.kind,
+              userId:
+                professional.kind === "INTERNAL_USER"
+                  ? professional.userId ?? null
+                  : null,
+              externalProfessionalName:
+                professional.kind === "EXTERNAL"
+                  ? professional.externalProfessionalName ?? null
+                  : null,
+              externalContact:
+                professional.kind === "EXTERNAL"
+                  ? professional.externalContact ?? null
+                  : null,
+              notes: professional.notes ?? null,
+              sortOrder: professional.sortOrder ?? (index + 1) * 10,
+              tenantId,
+            })),
+          }
         },
-        followUpTemplateSteps: {
-          create: payload.followUpTemplateSteps.map((step, index) => ({
-            title: step.title.trim(),
-            notesTemplate: step.notesTemplate ?? null,
-            dueDaysFromStart: step.dueDaysFromStart,
-            sortOrder: step.sortOrder ?? (index + 1) * 10,
-            tenantId,
-          })),
+        select: {
+          ...serviceHierarchySelect,
+          ...serviceConfigurationSelect,
+          id: true,
+          name: true,
+          description: true,
+          fitProfile: true,
+          basePriceCents: true,
+          currency: true,
+          isTaxExempt: true,
+          allowPartialPayments: true,
+          minimumPartialPaymentCents: true,
+          installmentCount: true,
+          installmentFrequency: true,
+          isActive: true,
+          sortOrder: true,
         },
-        professionals: {
-          create: payload.professionals.map((professional, index) => ({
-            kind: professional.kind,
-            userId:
-              professional.kind === "INTERNAL_USER"
-                ? professional.userId ?? null
-                : null,
-            externalProfessionalName:
-              professional.kind === "EXTERNAL"
-                ? professional.externalProfessionalName ?? null
-                : null,
-            externalContact:
-              professional.kind === "EXTERNAL"
-                ? professional.externalContact ?? null
-                : null,
-            notes: professional.notes ?? null,
-            sortOrder: professional.sortOrder ?? (index + 1) * 10,
-            tenantId,
-          })),
-        },
-      },
-      select: {
-        id: true,
-        name: true,
-        description: true,
-        fitProfile: true,
-        basePriceCents: true,
-        currency: true,
-        isTaxExempt: true,
-        allowPartialPayments: true,
-        minimumPartialPaymentCents: true,
-        installmentCount: true,
-        installmentFrequency: true,
-        isActive: true,
-        sortOrder: true,
-      },
+      });
+      await ensureServiceStepAutomationsTx(tx, tenantId, record.id);
+      const steps = await tx.serviceStep.findMany({ where: { tenantId, serviceId: record.id, archivedAt: null }, orderBy: { sortOrder: "asc" }, select: serviceStepSelect });
+      return { ...record, steps };
     });
 
     return res.status(201).json({
       ok: true,
       service: {
-        ...created,
+        ...resolveServiceConfiguration(created),
         fitProfile: normalizeServiceFitProfile(created.fitProfile),
       },
     });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
@@ -5086,9 +4033,15 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       select: {
         id: true,
         tenantId: true,
+        kind: true,
+        parentServiceId: true,
         basePriceCents: true,
         isTaxExempt: true,
         allowPartialPayments: true,
+        minimumPartialPaymentCents: true,
+        installmentCount: true,
+        installmentFrequency: true,
+        paymentSettings: true,
         tenant: {
           select: {
             taxEnabled: true,
@@ -5100,6 +4053,13 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
 
     if (!existing || existing.tenantId !== tenantId) {
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
+    }
+
+    if (payload.kind !== undefined && payload.kind !== existing.kind) {
+      return res.status(400).json({ error: "SERVICE_KIND_CANNOT_CHANGE" });
+    }
+    if (payload.parentServiceId !== undefined && payload.parentServiceId !== existing.parentServiceId) {
+      return res.status(400).json({ error: "SERVICE_PARENT_CANNOT_CHANGE" });
     }
 
     if (payload.name) {
@@ -5134,71 +4094,24 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
       nextFitProfile = validation.profile;
     }
 
-    const nextBasePriceCents = payload.basePriceCents ?? existing.basePriceCents;
-    const nextIsTaxExempt = payload.isTaxExempt ?? existing.isTaxExempt;
+    const legacyBillingChanged = ["allowPartialPayments", "minimumPartialPaymentCents", "installmentCount", "installmentFrequency"].some(key => payload[key as keyof typeof payload] !== undefined);
+    if (!payload.paymentSettings && legacyBillingChanged) {
+      payload.paymentSettings = resolvePaymentSettings({ ...existing, ...payload, paymentSettings: undefined });
+      Object.assign(payload, legacyPaymentFields(payload.paymentSettings));
+    }
     const nextAllowPartialPayments = payload.allowPartialPayments ?? existing.allowPartialPayments;
-    const nextMinimumPartial =
-      payload.minimumPartialPaymentCents === undefined
-        ? undefined
-        : payload.minimumPartialPaymentCents;
-    const maxAllowedDepositCents = getServiceTotalWithTaxCents({
-      basePriceCents: nextBasePriceCents,
-      isTaxExempt: nextIsTaxExempt,
-      taxEnabled: existing.tenant.taxEnabled,
-      defaultTaxRateBps: existing.tenant.defaultTaxRateBps,
-    });
-
-    if (
-      nextAllowPartialPayments &&
-      nextMinimumPartial !== undefined &&
-      nextMinimumPartial !== null &&
-      nextMinimumPartial > maxAllowedDepositCents
-    ) {
-      return res.status(400).json({ error: "MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE" });
-    }
-
-    if (
-      nextAllowPartialPayments &&
-      payload.installmentCount !== undefined &&
-      payload.installmentCount !== null &&
-      payload.installmentCount < 2
-    ) {
-      return res.status(400).json({ error: "INVALID_INSTALLMENT_COUNT" });
-    }
-
     const updated = await prisma.$transaction(async (tx) => {
       const prismaTx = tx as any;
 
-      if (payload.checklistItems) {
-        await prismaTx.serviceChecklistItem.deleteMany({
-          where: {
-            tenantId,
-            serviceId: recordId,
-          },
-        });
-      }
+      const sectionChanges = await prepareServiceSectionsTx(tx, tenantId, recordId, payload);
+      await saveServiceCollectionsTx(tx, tenantId, recordId, payload);
+      if (payload.steps !== undefined) await saveServiceStepsTx(tx, tenantId, recordId, payload.steps);
 
-      if (payload.followUpTemplateSteps) {
-        await prismaTx.serviceFollowUpTemplateStep.deleteMany({
-          where: {
-            tenantId,
-            serviceId: recordId,
-          },
-        });
-      }
-
-      if (payload.professionals) {
-        await prismaTx.serviceProfessional.deleteMany({
-          where: {
-            tenantId,
-            serviceId: recordId,
-          },
-        });
-      }
-
-      return prismaTx.service.update({
+      const saved = await prismaTx.service.update({
         where: { id: recordId },
         data: {
+          ...sectionChanges,
+          ...(payload.paymentSettings !== undefined ? { paymentSettings: payload.paymentSettings } : {}),
           ...(payload.name !== undefined ? { name: payload.name.trim() } : {}),
           ...(payload.description !== undefined ? { description: payload.description ?? null } : {}),
           ...(payload.fitProfile !== undefined ? { fitProfile: nextFitProfile } : {}),
@@ -5214,79 +4127,31 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
             : {}),
           ...(payload.minimumPartialPaymentCents !== undefined
             ? {
-                minimumPartialPaymentCents: nextAllowPartialPayments
-                  ? payload.minimumPartialPaymentCents
-                  : null,
-              }
+              minimumPartialPaymentCents: nextAllowPartialPayments
+                ? payload.minimumPartialPaymentCents
+                : null,
+            }
             : {}),
           ...(payload.installmentCount !== undefined
             ? {
-                installmentCount: nextAllowPartialPayments
-                  ? payload.installmentCount
-                  : null,
-              }
+              installmentCount: nextAllowPartialPayments
+                ? payload.installmentCount
+                : null,
+            }
             : {}),
           ...(payload.installmentFrequency !== undefined
             ? {
-                installmentFrequency: nextAllowPartialPayments
-                  ? payload.installmentFrequency
-                  : null,
-              }
+              installmentFrequency: nextAllowPartialPayments
+                ? payload.installmentFrequency
+                : null,
+            }
             : {}),
           ...(payload.isActive !== undefined ? { isActive: payload.isActive } : {}),
           ...(payload.sortOrder !== undefined ? { sortOrder: payload.sortOrder } : {}),
-          ...(payload.checklistItems
-            ? {
-                checklistItems: {
-                  create: payload.checklistItems.map((item, index) => ({
-                    label: item.label.trim(),
-                    description: item.description ?? null,
-                    isRequired: item.isRequired,
-                    sortOrder: item.sortOrder ?? (index + 1) * 10,
-                    tenantId,
-                  })),
-                },
-              }
-            : {}),
-          ...(payload.followUpTemplateSteps
-            ? {
-                followUpTemplateSteps: {
-                  create: payload.followUpTemplateSteps.map((step, index) => ({
-                    title: step.title.trim(),
-                    notesTemplate: step.notesTemplate ?? null,
-                    dueDaysFromStart: step.dueDaysFromStart,
-                    sortOrder: step.sortOrder ?? (index + 1) * 10,
-                    tenantId,
-                  })),
-                },
-              }
-            : {}),
-          ...(payload.professionals
-            ? {
-                professionals: {
-                  create: payload.professionals.map((professional, index) => ({
-                    kind: professional.kind,
-                    userId:
-                      professional.kind === "INTERNAL_USER"
-                        ? professional.userId ?? null
-                        : null,
-                    externalProfessionalName:
-                      professional.kind === "EXTERNAL"
-                        ? professional.externalProfessionalName ?? null
-                        : null,
-                    externalContact:
-                      professional.kind === "EXTERNAL"
-                        ? professional.externalContact ?? null
-                        : null,
-                    notes: professional.notes ?? null,
-                    sortOrder: professional.sortOrder ?? (index + 1) * 10,
-                    tenantId,
-                  })),
-                },
-              }
-            : {}),
         },
         select: {
+          ...serviceHierarchySelect,
+          ...serviceConfigurationSelect,
           id: true,
           name: true,
           description: true,
@@ -5300,18 +4165,39 @@ router.patch("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, r
           installmentFrequency: true,
           isActive: true,
           sortOrder: true,
+          checklistItems: {
+            where: { archivedAt: null },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: serviceChecklistItemSelect,
+          },
+          professionals: {
+            where: { archivedAt: null },
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+            select: serviceProfessionalSelect,
+          },
         },
       });
+      const effective = resolveServiceConfiguration(saved);
+      const maxDeposit = getServiceTotalWithTaxCents({ ...effective,
+        taxEnabled: existing.tenant.taxEnabled, defaultTaxRateBps: existing.tenant.defaultTaxRateBps });
+      if (effective.allowPartialPayments && effective.minimumPartialPaymentCents !== null &&
+        effective.minimumPartialPaymentCents > maxDeposit) {
+        throw new ServiceCollectionError("MINIMUM_PARTIAL_EXCEEDS_TOTAL_PRICE");
+      }
+      return saved;
     });
 
     return res.json({
       ok: true,
       service: {
-        ...updated,
+        ...resolveServiceConfiguration(updated),
         fitProfile: normalizeServiceFitProfile(updated.fitProfile),
       },
     });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) {
+      return res.status(error.status).json({ error: error.code });
+    }
     return next(error);
   }
 });
@@ -5334,12 +4220,17 @@ router.delete("/:tenantId/services/:recordId", ...writeMiddlewares, async (req, 
       return res.status(404).json({ error: "SERVICE_NOT_FOUND" });
     }
 
-    await prismaWithContacts.service.delete({
-      where: { id: recordId },
+    await prisma.$transaction(async (tx) => {
+      await lockServiceConfigurationTx(tx, tenantId, recordId);
+      if (await tx.service.count({ where: { tenantId, parentServiceId: recordId } })) {
+        throw new ServiceCollectionError("SERVICE_HAS_SUB_SERVICES", 409);
+      }
+      await tx.service.delete({ where: { id: recordId, tenantId } });
     });
 
     return res.json({ ok: true });
   } catch (error) {
+    if (error instanceof ServiceCollectionError) return res.status(error.status).json({ error: error.code });
     return next(error);
   }
 });
@@ -5819,7 +4710,7 @@ router.patch("/:tenantId/opportunities/:recordId", ...writeMiddlewares, async (r
         });
       }
 
-        return tx.opportunityPipeline.findUnique({
+      return tx.opportunityPipeline.findUnique({
         where: {
           tenantId_id: {
             tenantId,
@@ -6033,7 +4924,7 @@ router.patch(
         (payload.fieldType !== undefined && payload.fieldType !== existing.fieldType) ||
         (payload.options !== undefined &&
           JSON.stringify(payload.options) !==
-            JSON.stringify(Array.isArray(existing.options) ? existing.options : []))
+          JSON.stringify(Array.isArray(existing.options) ? existing.options : []))
       ) {
         const referencedAutomation = await findEnabledAutomationReference(
           prismaWithContacts,

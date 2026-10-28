@@ -1,3 +1,5 @@
+import { isEnrollmentServiceTrigger, ENROLLMENT_SERVICE_TRIGGER_LABELS } from "@/lib/service-automation-trigger"
+import { isServiceAutomationAction, terminalServiceAction } from "@/lib/service-automation-action"
 import type { Edge, Node } from "@xyflow/react"
 
 import { formatDateTimeForDisplay } from "@/lib/date-time"
@@ -10,7 +12,7 @@ export type AutomationFlowNodeData = {
   subtitle?: string
   configured?: boolean
   actionType?: AutomationAction["type"]
-  actionGroup?: "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
+  actionGroup?: "SERVICE" | "INTERNAL" | "OPPORTUNITY" | "CONTACT" | "COMMUNICATION"
   index?: number
   insertionIndex?: number
   actionNodeKey?: string
@@ -37,6 +39,8 @@ export type AutomationGraphBranchPath = Array<{ routingNodeKey: string; branchKe
 export type AutomationWaitNodeBadge = NonNullable<AutomationFlowNodeData["waitBadge"]>
 
 export type AutomationFlowDraft = {
+  serviceGroupId?: string
+  serviceOfferingId?: string | null
   triggerType: AutomationTriggerType | null
   pipelineId: string
   changeType?: "" | "STAGE_ENTERED" | "RESULT_WON" | "RESULT_LOST"
@@ -74,6 +78,7 @@ const OPPORTUNITY_ACTION_TYPES = new Set<AutomationAction["type"]>([
 ])
 
 function actionVisualGroup(type: AutomationAction["type"]): NonNullable<AutomationFlowNodeData["actionGroup"]> {
+  if (isServiceAutomationAction(type)) return "SERVICE"
   if (CONTACT_ACTION_TYPES.has(type)) return "CONTACT"
   if (OPPORTUNITY_ACTION_TYPES.has(type)) return "OPPORTUNITY"
   return "INTERNAL"
@@ -190,6 +195,12 @@ export function buildAutomationFlowGraph(
       ? "Click to choose what starts this automation"
       : draft.triggerType === "CONTACT_CREATED"
         ? "Starts when a new contact is added"
+      : isEnrollmentServiceTrigger(draft.triggerType)
+        ? `${catalog?.serviceStepServices?.find(group => group.id === draft.serviceGroupId)?.name ?? "Select a service"} / ${draft.serviceOfferingId === null ? "All sub-services" : catalog?.serviceActionOfferings?.find(offering => offering.id === draft.serviceOfferingId)?.name ?? "Select a sub-service"}`
+      : draft.triggerType === "SERVICE_STEP_COMPLETED"
+        ? "Starts when its saved service step is completed"
+      : draft.triggerType === "SERVICE_STEP_ENTERED"
+        ? "Starts when an enrollment enters its saved service step"
       : draft.triggerType === "CONTACT_NOTE_ADDED"
         ? "Starts when a note is added to a contact"
       : draft.triggerType === "TASK_ADDED"
@@ -227,6 +238,12 @@ export function buildAutomationFlowGraph(
             ? "Select a trigger"
             : draft.triggerType === "CONTACT_CREATED"
               ? "Contact created"
+            : isEnrollmentServiceTrigger(draft.triggerType)
+              ? ENROLLMENT_SERVICE_TRIGGER_LABELS[draft.triggerType]
+            : draft.triggerType === "SERVICE_STEP_COMPLETED"
+              ? "Step completed"
+            : draft.triggerType === "SERVICE_STEP_ENTERED"
+              ? "Step entered"
             : draft.triggerType === "CONTACT_NOTE_ADDED"
               ? "Note added"
             : draft.triggerType === "TASK_ADDED"
@@ -376,7 +393,7 @@ export function buildAutomationFlowGraph(
     let previousNodeY = startY
     let previousNodeKind: "add" | "action" = "add"
     let y = startY
-    const endsWithTerminal = actions.at(-1)?.type === "DELETE_CONTACT" ||
+    const endsWithTerminal = (actions.at(-1) && terminalServiceAction(actions.at(-1)!)) || actions.at(-1)?.type === "DELETE_CONTACT" ||
       actions.at(-1)?.type === "IF_ELSE" ||
       actions.at(-1)?.type === "SPLIT" ||
       actions.at(-1)?.type === "GO_TO"
@@ -477,7 +494,7 @@ export function buildAutomationFlowGraph(
       data: {
         kind: "complete",
         label: "Complete",
-        subtitle: actions.at(-1)?.type === "DELETE_CONTACT"
+        subtitle: actions.at(-1) && terminalServiceAction(actions.at(-1)!) ? "Workflow ended by service action" : actions.at(-1)?.type === "DELETE_CONTACT"
           ? "Contact deleted"
           : "All actions completed",
       },

@@ -1,5 +1,4 @@
 export type NextFollowUpSource =
-  | "USER_SCHEDULED_WAIT"
   | "STEP_DUE"
   | "STEP_AVAILABLE"
 
@@ -64,11 +63,6 @@ export function selectFollowUpListStep(params: {
   return terminalSteps[terminalSteps.length - 1] ?? null
 }
 
-type FollowUpRunLike = {
-  status?: string | null
-  resumeAt?: Date | string | null
-}
-
 function validDate(value: Date | string | null | undefined) {
   if (!value) return null
   const parsed = value instanceof Date ? value : new Date(value)
@@ -81,24 +75,8 @@ function firstStepWithStatus(steps: FollowUpStepLike[], status: string) {
 
 export function resolveEffectiveNextFollowUp(params: {
   steps: FollowUpStepLike[]
-  run?: FollowUpRunLike | null
-  isUserScheduledWait?: boolean
-  isWorkflowWait?: boolean
 }): EffectiveNextFollowUp | null {
-  const { steps, run, isUserScheduledWait = false } = params
-  const isWorkflowWait = params.isWorkflowWait ?? isUserScheduledWait
-  const scheduledAt = validDate(run?.resumeAt)
-
-  if (run?.status === "WAITING" && isWorkflowWait && scheduledAt) {
-    const projectedStep = firstStepWithStatus(steps, "PENDING")
-    return {
-      at: scheduledAt,
-      stepId: projectedStep?.id ?? null,
-      source: isUserScheduledWait ? "USER_SCHEDULED_WAIT" : "STEP_AVAILABLE",
-      projected: true,
-    }
-  }
-
+  const { steps } = params
   const currentStep =
     firstStepWithStatus(steps, "ACTIVE") ??
     firstStepWithStatus(steps, "POSTPONED") ??
@@ -137,17 +115,7 @@ export function serializeEffectiveNextFollowUp(value: EffectiveNextFollowUp | nu
 export function canCompleteFollowUpStepNow(params: {
   step: { id: string; status?: string | null }
   firstUnresolvedStepId: string | null
-  run?: { status?: string | null } | null
-  effectiveNextFollowUp: EffectiveNextFollowUp | null
-  canContinueWaitingRun: boolean
-}) {
-  const { step, run, firstUnresolvedStepId, effectiveNextFollowUp, canContinueWaitingRun } = params
-  if (step.status === "ACTIVE") return true
-  if (step.status !== "PENDING") return false
-  if (!run) return firstUnresolvedStepId === step.id
-  return (
-    run.status === "WAITING" &&
-    canContinueWaitingRun &&
-    effectiveNextFollowUp?.stepId === step.id
-  )
+}): boolean {
+  const { step, firstUnresolvedStepId } = params
+  return ["ACTIVE", "PENDING", "POSTPONED"].includes(step.status ?? "") && firstUnresolvedStepId === step.id
 }

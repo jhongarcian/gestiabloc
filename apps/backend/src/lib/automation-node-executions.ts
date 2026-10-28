@@ -1,5 +1,10 @@
+import type { AutomationServiceContext } from "./automation-service-context.js"
+
 export type AutomationNodeLogStatus = "QUEUED" | "EXECUTED" | "SKIPPED" | "FAILED" | "WAITING"
 export type AutomationNodeEventSource =
+  | "SERVICE_ENROLLED" | "SERVICE_STATUS_CHANGED" | "SERVICE_CHECKLIST_STATUS_CHANGED" | "SERVICE_PAYMENT_CHANGED"
+  | "SERVICE_STEP_ENTERED"
+  | "SERVICE_STEP_COMPLETED"
   | "MANUAL_ENROLLMENT"
   | "CONTACT_CREATED"
   | "CONTACT_CHANGED"
@@ -16,6 +21,7 @@ export type AutomationNodeEventSource =
   | "AUTOMATION_ACTION"
 
 export type AutomationNodeLogData = {
+  serviceContext?: AutomationServiceContext
   id?: string
   tenantId: string
   automationId: string | null
@@ -66,6 +72,11 @@ const ACTION_LABELS: Record<string, string> = {
   REMOVE_FROM_WORKFLOW: "Remove from workflow",
   WAIT: "Wait",
   DELETE_CONTACT: "Delete contact",
+  MOVE_SERVICE_STEP: "Move service step", COMPLETE_SERVICE_STEP: "Complete service step",
+  SKIP_SERVICE_STEP: "Skip service step", SCHEDULE_SERVICE_STEP: "Schedule service step",
+  SET_SERVICE_STEP_OWNER: "Assign step owner", SET_SERVICE_COORDINATOR: "Assign coordinator",
+  SET_SERVICE_PROFESSIONAL: "Assign professional", SET_SERVICE_CHECKLIST_STATUS: "Update service checklist",
+  SET_SERVICE_STATUS: "Change service status",
 }
 
 export function getAutomationActionLabel(actionType: string) {
@@ -167,6 +178,10 @@ export function getAutomationActionNodeLabel(action: {
 }
 
 export function getAutomationTriggerLabel(triggerType: string) {
+  const serviceLabels: Record<string, string> = { SERVICE_ENROLLED: "Enrollment created", SERVICE_STATUS_CHANGED: "Service status changed", SERVICE_CHECKLIST_STATUS_CHANGED: "Checklist status changed", SERVICE_PAYMENT_CHANGED: "Payment changed" }
+  if (serviceLabels[triggerType]) return serviceLabels[triggerType]
+  if (triggerType === "SERVICE_STEP_COMPLETED") return "Step completed"
+  if (triggerType === "SERVICE_STEP_ENTERED") return "Step entered"
   if (triggerType === "CONTACT_CREATED") return "Contact created"
   if (triggerType === "CONTACT_CHANGED") return "Contact changed"
   if (triggerType === "CONTACT_TAG") return "Contact tag"

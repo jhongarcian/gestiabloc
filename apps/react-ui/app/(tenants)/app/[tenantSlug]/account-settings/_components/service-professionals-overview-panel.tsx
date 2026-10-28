@@ -80,7 +80,7 @@ export function ServiceProfessionalsOverviewPanel({
                 View professionals and their associated services.
               </h2>
               <p className="max-w-2xl text-sm leading-6 text-slate-600">
-                Open the related service to configure checklist, professionals, and follow-up template steps.
+                Open the related service to configure checklist, professionals, steps, and automations.
               </p>
             </div>
 
@@ -106,7 +106,7 @@ export function ServiceProfessionalsOverviewPanel({
             <div className="space-y-3">
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-200/90">How to configure</p>
               <p className="text-sm leading-6 text-slate-300">
-                This tab is read-only. Open a service to edit professionals and follow-up templates.
+                This tab is read-only. Open a service to edit professionals and steps.
               </p>
             </div>
             <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-3 text-sm text-slate-300">

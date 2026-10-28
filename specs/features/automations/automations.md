@@ -546,6 +546,22 @@ If a node fails:
 
 Configuration errors are not retried. The asynchronous event queue may retry transient database or connection failures according to its worker policy.
 
+### Service enrollment context
+
+Events and runs optionally carry `serviceContext`: the enrollment (`contactServiceId`), sub-service
+(`serviceId`), saved enrollment step (`contactServiceStepId`), source configuration step
+(`serviceStepId`), and entry occurrence (`serviceStepOccurrenceId`). Step/occurrence fields are null
+for enrollment-only context. The queue and every execution segment validate ownership in the same
+tenant, contact, and enrollment before actions run. The engine never guesses an enrollment from a
+contact, and invalid or deleted targets fail with `INVALID_SERVICE_CONTEXT`.
+
+The context is pinned across waits, branches, chained workflows, and same-contact generated events.
+Create contact does not copy it onto a different contact. Ordinary events and older runs remain
+unscoped. Node logs and aggregate history preserve the context even when source records are deleted.
+The execution-log, waiting-run, and event-progress APIs return nullable `serviceContext`. Execution
+logs also accept `contactServiceId` and `serviceStepOccurrenceId` filters combined with AND.
+Service triggers and service actions are introduced in subsequent service transition chunks.
+
 ## 14. Monitoring Tabs
 
 ### Builder
@@ -692,3 +708,211 @@ When an expected automation does not run, verify:
 12. A Go To, Split, or opportunity update was not rejected by cycle protection.
 
 The execution log Details column is the primary source for explaining why a node was queued, skipped, waiting, executed, or failed.
+
+
+## Service step entered trigger
+
+`SERVICE_STEP_ENTERED` can be created in the automation sidebar by selecting a service,
+sub-service and step, then **Entry step**. Contact field, safe custom-field and tag filters can be
+combined. Any number of workflows may target the same step. Each workflow retains its selected
+sub-service even when several offerings inherit the same source step.
+
+Creating an entry occurrence atomically queues all matching published workflows with exact enrollment
+context and a causation key derived from the occurrence ID. Retries cannot duplicate that event, while
+revisits create distinct occurrences. Contact field, safe custom-field, and tag conditions use entry-time
+values. Disabled/empty drafts and filter mismatches produce no event or action. Action snapshots are
+pinned when queued, and existing queue/wait workers execute them with ordinary rollback and audit rules.
+There is no replay for already-entered steps when a workflow is published. Completion workflows independently gate progression as described below.
+
+## Service step completion (Chunk 11)
+
+The automation sidebar offers **Service step** with Service → Sub-service → Step selectors and
+**Entry step** / **Completed step** events. Multiple automations may select the same step and event.
+New triggers require an active sub-service and one of its effective active steps. Authors can retarget,
+change, or delete these automations. Empty drafts cannot publish. Service steps still receive disabled
+starter drafts. Existing shared drafts keep their original scope across sub-services using that source
+step until retargeted; newly created automations target the selected sub-service. Step configuration
+returns all linked automations, their sub-service scope, publication state and action counts.
+Service-step workflows cannot be generic Add to workflow targets or be started without occurrence context.
+
+`POST /api/services/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/complete`
+locks the enrollment, records completion and its actor/time, and queues every matching completion
+workflow atomically. Repeated requests return the saved result. Without enabled matching actions
+(including a filter miss), progression enters the next saved step immediately. Otherwise the saved
+`WAITING_AUTOMATION` state gates advancement until every matching root run succeeds. A dispatched event
+being complete does not release a waiting run. Independent child workflows cannot release this gate.
+
+The last successful root segment advances inside its action transaction and queues the next entry once.
+Failure rolls back that segment and saves `PAUSED` with a visible reason; stopping or removing a
+completion run also pauses. Previously committed segments remain in history. Canceled enrollments
+cannot be advanced by late workers. `ADVANCED` and `FINISHED` states retain the progression timestamp.
+The final step completes paid enrollments or leaves them pending payment; later payment changes
+reconcile this status. Enrolled step order and instructions come from the enrollment snapshot.
+
+The enrollment interface offers **Complete step**, shows pending completion work and paused reasons,
+and refreshes while a completion workflow is pending. Continue-now, rescheduling, manual movement and revisits are available on the saved enrollment steps.
+
+## Completion wait controls (Chunk 12)
+
+Duration and fixed-date Wait actions in a completion workflow gate progression until the remaining
+pinned actions finish. The enrollment shows the scheduled time and offers **Continue now** and
+**Reschedule** to tenant administrators and MEDIUM/MAX members. Continue now ends just the current
+wait and wakes the existing run worker. Rescheduling accepts a positive duration or a future absolute
+date/time (up to ten years). Dates in the interface use the tenant's time zone. Future enrollments,
+source workflow configuration and other enrollments are unchanged.
+
+The scoped `completion-wait` GET returns `waits`, an array of root run IDs, automation names, waiting node execution IDs,
+resume times and WAITING/RUNNING statuses. `wait` retains the first result or null for compatibility.
+Each pending workflow has its own Continue now and Reschedule controls. POST `completion-wait/continue` and
+`completion-wait/reschedule` require `runId`, `waitingNodeExecutionId`, and `expectedResumeAt`.
+Reschedule additionally requires `schedule: {mode: DURATION, amount, unit}` or
+`{mode: FIXED_DATE, dateTime}`. Requests for a changed/completed/canceled wait return 409; unknown
+or unrelated runs return 404. Inactive tenant members cannot read or change waits.
+
+Both the completion worker and controls lock the enrollment before the run. A claimed but unstarted
+worker can be fenced out by resetting its lease. Workers recheck their lease under the row lock before
+executing any actions. Once execution starts, controls wait for that transaction and then revalidate
+the exact wait and schedule. Late failure reporting also rechecks the lease before modifying logs.
+An old request cannot affect a later wait in the same run. Continuation preserves its cursor,
+branch decisions, variables and action snapshot. Schedule changes and their actor/time/context are
+recorded as separate execution-history entries so later worker updates cannot erase them. No schema
+migration is required for these controls.
+
+
+## Manual step movement (Chunk 13)
+
+Enrollment steps offer **Move to step** and **Skip current step**, with a required reason. Moves use
+saved enrollment steps, so later configuration edits and archival cannot change the destination.
+Forward moves mark the current active entry skipped and record intermediate bypassed steps in the
+movement history. Intermediate steps receive no fabricated entry, deadline, or trigger. Backward
+moves cancel the current active entry. Revisiting a step creates a fresh occurrence, starts its default
+timeframe on entry, and queues all matching destination entry automations once. Completed entries,
+completion timestamps, notes, payments and earlier history remain intact. Skips bypass completion
+workflows. A final skip finishes work and retains Pending payment when a balance remains.
+
+`POST /api/services/:tenantId/contact-services/:contactServiceId/step-movements` accepts `requestId`,
+`expectedOccurrenceId`, `kind` (MOVE or SKIP), and `reason` (1–1000 trimmed characters). MOVE requires
+`targetStepId`; SKIP uses the next saved step or finishes the last. A repeated identical request returns
+its saved movement; reusing a request ID with different inputs or moving from a stale entry returns
+409. Only active tenant admins and MEDIUM/MAX members may move work. Canceled and completed
+enrollments reject new moves. Pending-payment work can be revisited and returns to In progress.
+
+`stepMovements` on enrollment workspaces records source/destination IDs and titles, skipped step IDs,
+staff ID/name, reason, and timestamp. Old occurrences receive `supersededAt`; pending progression is
+marked SUPERSEDED. Queued events/dispatches and unfinished runs (including scoped child workflows)
+for old entries stop with SERVICE_STEP_MOVED. Ordinary contact workflows and other enrollments are
+unaffected. Previously committed actions are retained. Completion events and later stale workers
+cannot release obsolete progression.
+
+All service-scoped execution, failure reporting, wait controls and movement lock the enrollment before
+the dispatch/run. A claimed but unstarted worker loses its lease; an executing segment finishes first,
+and the waiting move revalidates its displayed source. Ownership and supersession are checked again
+before any later segment. History, cancellations and destination entry events commit or roll back
+together. Payment reconciliation cannot finish an enrollment while a revisited step is active.
+
+
+## Enrollment-specific step deadlines (Chunk 14)
+
+Each entered step saves `defaultDueAt` alongside its effective `dueAt`. The default is frozen from
+that enrollment's captured timeframe at entry. The migration copies existing due dates exactly;
+existing history and deadlines are not recalculated. Unentered steps have no occurrence or deadline.
+
+The enrollment offers **Change deadline** by duration (minutes, hours or days from entry) or date/time
+in the tenant's time zone, plus **Restore default** for an override. Restoring uses the frozen entry
+deadline, including when it is now overdue. A fixed date must follow entry and be within ten years;
+it may be in the past for overdue work. A duration is a positive whole number within ten years of
+entry. Invalid or nonexistent local times are rejected in the interface. The form previews the
+resulting deadline. Default and custom timeframes are labeled separately.
+
+`POST /api/services/:tenantId/contact-services/:contactServiceId/step-occurrences/:occurrenceId/deadline`
+accepts `requestId`, `expectedDeadlineRevision`, and `schedule`: `{mode: DURATION, amount, unit}`,
+`{mode: FIXED_DATE, dateTime}` with an explicit offset, or `{mode: DEFAULT}`. Responses return the
+canonical occurrence and `deadlineChanges`. The occurrence exposes `deadlineOverride` (null for the
+default) and `deadlineRevision`. Changes record the actor, timestamp, prior/new deadline and schedule.
+An identical request retry is idempotent; different inputs with the same request ID or stale revisions
+return 409. Unchanged saves do not increment the revision or add history.
+
+Only the current ACTIVE, non-superseded entry can change, with the same tenant admin or MEDIUM/MAX
+permissions as movement. Enrollment locking matches completion, movement and workers. A stale edit
+cannot update a moved, skipped, completed or revisited entry. Canceled/completed enrollments reject
+new changes. History and deadline updates commit or roll back together.
+
+Overrides affect only that occurrence. Other enrollments (including for the same contact), saved
+service/sub-service configuration, later steps and future enrollments are unchanged. Completion,
+skipping and manual movement retain earlier override history; each destination or revisit starts a
+fresh default with revision zero. Deadline edits do not fire entry/completion triggers, move steps,
+or alter any automation run, lease or resume time. Completion workflow waits continue to use their
+separate Continue now and Reschedule controls. Saved responses remain visible if workspace refresh
+fails, and edit dialogs retain their drafts after save errors.
+
+
+## Follow-up queue urgency (Chunk 15)
+
+`GET /api/services/:tenantId/follow-ups` combines service-owned step work and existing template
+follow-ups. It reads saved enrollment steps and only their latest entry, never live service definitions,
+old deadline changes or superseded occurrences. Canceled enrollments are excluded.
+
+- **Actionable:** An active entry. Its effective deadline is `dueAt`; elapsed time starts at `enteredAt`.
+- **Scheduled:** A completed step waiting on completion automations. The earliest current matching
+  root wait supplies `scheduledAt`; running/queued automation work may have no scheduled time yet.
+  Resume times are not step deadlines and cannot make the next, unentered step overdue. Entry
+  automation waits do not remove an otherwise active step from Actionable.
+- **Needs attention:** Paused progression or an enrollment missing its current entry. Shows the saved
+  progression message and no deadline urgency.
+- **Finished:** Step work is finished, including enrollments still waiting for payment. No urgency.
+
+`timing` contains `status` (NONE, ON_TRACK, DUE_SOON, OVERDUE), signed `remainingMs`, `timeframeMs`
+and `warningAt`. Only an entered, actionable step with a valid deadline has elapsed timing. The
+warning begins inclusively at `enteredAt + 0.75 * (dueAt - enteredAt)`; overdue begins at the deadline.
+Durations use elapsed milliseconds, matching Chunk 14, including daylight-saving transitions.
+Overrides and fixed dates change the effective timeframe; Restore default restores its original warning
+boundary. Future steps, completed entries, superseded entries and automation waits cannot be overdue.
+Legacy active/postponed work uses its available/start time; pending dates do not invent an entry clock.
+
+The default `sort=URGENCY` lists Actionable, Needs attention, Scheduled, then Finished, with earliest
+effective deadline/resume time first and undated rows last within each group. Other existing sort modes
+remain supported. Filtering/sorting across both workflow types precedes pagination. `queueState` can
+select one of those four groups; date presets also accept DUE_SOON. OVERDUE and DUE_SOON match
+only actionable elapsed deadlines. TODAY/NEXT_7_DAYS use the tenant's calendar for deadlines or
+scheduled resume times. NO_DUE_DATE matches work with no deadline/resume time. Summary counts
+cover unfinished work across the tenant, independent of list filters; overdue/due-today counts exclude
+scheduled work. Existing template and assignee filters remain supported; service-step owner assignment
+is part of Chunk 16.
+
+Each request reads a consistent database snapshot and computes all timing from the response's `asOf`.
+The client reloads on navigation/focus/visibility and every 30 seconds while visible, preserving filters
+and pagination. Older or canceled requests cannot overwrite a newer queue response. No stored urgency
+flags, notifications, new triggers, schema changes or background data backfill are needed.
+
+## Service actions (Chunk 16)
+
+The Service actions group is available to step-entry/completion workflows. Its nine typed actions
+operate only on the triggering enrollment's saved records. Scoped triggers use that offering's
+choices; shared triggers use common effective choices. Move, Skip, Complete and cancellation end
+the path. The editor explains this and refuses a trailing action; execution also stops a corrupt tail.
+Service mutations are checkpointed in the shared bounded queue, with terminal results, owner
+assignments and audit history retained through retries. Configuration and rollout details are in
+[the queue documentation](../../../apps/backend/docs/automation-event-queue.md#service-actions-and-shared-admission-chunk-16).
+
+
+## Enrollment service triggers (Chunk 17)
+
+The sidebar's Service triggers group offers Enrollment created, Service status changed, Checklist
+status changed and Payment changed, alongside Service step. Choose a service and one sub-service or
+All sub-services. All includes future sub-services; only SERVICE_STEPS enrollments participate.
+Status triggers support optional From/To filters. Checklist triggers select a common source item or
+Any item and optional From/To statuses. Payment triggers select Added/Edited/Removed and an optional
+resulting Unpaid/Partly paid/Paid in full balance. Initial positive payments are Added; edits to amount,
+date, method or note count, while equivalent normalized saves do not.
+
+These triggers preserve an exact enrollment with no step occurrence. They allow coordinator,
+professional, checklist and service-status actions, including branches, and cannot be generic Add to
+workflow targets or manual contact enrollment choices. Shared selections are intersections of stable
+source IDs, never labels. Existing archived checklist references still match saved enrollment items.
+
+Trigger filters and action definitions are pinned when the change commits. Immutable revision-keyed
+events retain before/after details, deleted payment data and actor/automation attribution. Events with
+no matching published workflow finish immediately. Each actual payment and resulting status change
+has its own event. Default checklist seeding and initial service status do not generate change events.
+These workflows run independently of step gates and survive step movement. Completion and payment
+statuses remain derived. Template/no-step enrollments and historical replay are excluded.

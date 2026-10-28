@@ -1,3 +1,6 @@
+import { isEnrollmentServiceTrigger, SERVICE_TRIGGER_TYPES } from "../lib/service-automation-triggers.js"
+import { serviceActionCatalog } from "../lib/service-automation-actions.js"
+import { readAutomationServiceContext } from "../lib/automation-service-context.js"
 import { Router } from "express"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
@@ -62,6 +65,8 @@ const AutomationContactsQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(10),
 })
 const AutomationExecutionLogsQuerySchema = z.object({
+  contactServiceId: z.uuid().optional(),
+  serviceStepOccurrenceId: z.uuid().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().refine(
     (value) => value === 10 || value === 25 || value === 50,
@@ -94,6 +99,8 @@ const writeMiddlewares = [
 ] as const
 
 const automationInclude = {
+  serviceOffering: { select: { id: true, name: true, parentServiceId: true } },
+  serviceStep: { select: { id: true, title: true, serviceId: true, service: { select: { name: true } } } },
   conditions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   changeRules: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
   actions: { orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] },
@@ -140,8 +147,14 @@ function serializeAutomation(record: any) {
     sortOrder: record.sortOrder,
     folderId: record.folderId,
     librarySortOrder: record.librarySortOrder,
+    serviceStep: record.serviceStep ?? null,
+    serviceOffering: record.serviceOffering ?? null,
     trigger:
-      record.triggerType === "CONTACT_CREATED"
+      isEnrollmentServiceTrigger(record.triggerType)
+        ? { type: record.triggerType, serviceGroupId: record.serviceGroupId, serviceOfferingId: record.serviceOfferingId, serviceTriggerConfig: record.serviceTriggerConfig }
+        :       (record.triggerType === "SERVICE_STEP_ENTERED" || record.triggerType === "SERVICE_STEP_COMPLETED")
+        ? { type: record.triggerType, serviceStepId: record.serviceStepId, serviceOfferingId: record.serviceOfferingId ?? null }
+        : record.triggerType === "CONTACT_CREATED"
         ? { type: "CONTACT_CREATED" as const }
         : record.triggerType === "CONTACT_NOTE_ADDED"
         ? { type: "CONTACT_NOTE_ADDED" as const }
@@ -204,6 +217,7 @@ function serializeAutomation(record: any) {
         assignedUserId: action.assignedUserId,
         tagId: action.tagId,
         value: legacyCustomFieldUpdates ? null : action.value,
+        serviceConfig: action.serviceConfig,
         waitConfig: action.waitConfig,
         noteTitle: action.noteTitle,
         noteBody: action.noteBody,
@@ -286,7 +300,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
   try {
     const { tenantId } = TenantPathSchema.parse(req.params)
     await ensureDefaultTaskStatuses(prismaWithAutomations, tenantId)
-    const [pipelines, customFields, statuses, taskStatuses, tags, memberships, services, workflowAutomations] = await Promise.all([
+    const [pipelines, customFields, statuses, taskStatuses, tags, memberships, services, workflowAutomations, serviceGroups] = await Promise.all([
       prismaWithAutomations.opportunityPipeline.findMany({
         where: { tenantId },
         orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
@@ -338,7 +352,7 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         select: { id: true, name: true },
       }),
       prismaWithAutomations.automation.findMany({
-        where: { tenantId, isEnabled: true },
+        where: { tenantId, isEnabled: true, triggerType: { notIn: [...SERVICE_TRIGGER_TYPES] } },
         orderBy: [{ name: "asc" }, { createdAt: "asc" }],
         select: {
           id: true,
@@ -347,6 +361,14 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
             select: { type: true, addToWorkflowConfig: true, ifElseConfig: true, splitConfig: true },
           },
+        },
+      }),
+      prismaWithAutomations.service.findMany({
+        where: { tenantId, kind: "GROUP", isActive: true },
+        orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+        select: { id: true, name: true,
+          steps: { where: { archivedAt: null }, orderBy: { sortOrder: "asc" }, select: { id: true, title: true } },
+          subServices: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, stepsMode: true, steps: { where: { archivedAt: null }, orderBy: { sortOrder: "asc" }, select: { id: true, title: true } } } },
         },
       }),
     ])
@@ -383,6 +405,9 @@ router.get("/:tenantId/automations/catalog", ...readMiddlewares, async (req, res
         taskStatuses,
         tags,
         services,
+        serviceActionOfferings: await serviceActionCatalog(prisma, tenantId),
+        serviceChecklistReferences: (await prisma.serviceChecklistItem.findMany({ where: { tenantId, archivedAt: { not: null } }, select: { id: true, label: true } })).map(item => ({ id: item.id, name: `${item.label} (archived)` })),
+        serviceStepServices: serviceGroups.map((group: any) => ({ id: group.id, name: group.name, subServices: group.subServices.map((offering: any) => ({ id: offering.id, name: offering.name, steps: offering.stepsMode === "INHERIT" ? group.steps : offering.steps })) })),
         workflowAutomations: workflowAutomations.map((automation: any) => ({
           id: automation.id,
           name: automation.name,
@@ -442,6 +467,12 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
     const where = {
       tenantId,
       automationId,
+      ...((query.contactServiceId || query.serviceStepOccurrenceId) ? {
+        AND: [
+          ...(query.contactServiceId ? [{ serviceContext: { path: ["contactServiceId"], equals: query.contactServiceId } }] : []),
+          ...(query.serviceStepOccurrenceId ? [{ serviceContext: { path: ["serviceStepOccurrenceId"], equals: query.serviceStepOccurrenceId } }] : []),
+        ],
+      } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.search
         ? { contactName: { contains: query.search, mode: "insensitive" } }
@@ -463,6 +494,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
           id: true,
           attemptId: true,
           eventSource: true,
+          serviceContext: true,
           contactId: true,
           contactName: true,
           contact: { select: { id: true } },
@@ -484,6 +516,7 @@ router.get("/:tenantId/automations/:automationId/execution-logs", ...readMiddlew
         id: record.id,
         attemptId: record.attemptId,
         eventSource: record.eventSource,
+        serviceContext: readAutomationServiceContext(record.serviceContext),
         contact: {
           id: record.contact?.id ?? null,
           name: record.contactName,
@@ -879,6 +912,10 @@ router.post("/:tenantId/automations", ...writeMiddlewares, async (req, res, next
         name: normalized.name,
         isEnabled: normalized.isEnabled,
         triggerType: normalized.triggerType,
+        serviceStepId: normalized.serviceStepId,
+        serviceGroupId: normalized.serviceGroupId,
+        serviceTriggerConfig: normalized.serviceTriggerConfig,
+        serviceOfferingId: normalized.serviceOfferingId,
         birthdayLocalTime: normalized.birthdayLocalTime,
         appointmentTargetStatus: normalized.appointmentTargetStatus,
         pipelineId: normalized.pipelineId,
@@ -908,7 +945,7 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
     const payload = AutomationUpsertSchema.parse(req.body)
     const existing = await prismaWithAutomations.automation.findUnique({
       where: { tenantId_id: { tenantId, id: automationId } },
-      select: { id: true },
+      select: { id: true, serviceStepId: true, triggerType: true },
     })
     if (!existing) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
     if (!payload.isEnabled) {
@@ -924,6 +961,8 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
       sourceAutomationId: automationId,
     })
     const record = await prismaWithAutomations.$transaction(async (tx: any) => {
+      await tx.$queryRaw(Prisma.sql`SELECT id FROM "Automation" WHERE "tenantId"=${tenantId} AND id=${automationId} FOR UPDATE`)
+
       await Promise.all([
         tx.automationCondition.deleteMany({ where: { tenantId, automationId } }),
         tx.automationContactChangeRule.deleteMany({ where: { tenantId, automationId } }),
@@ -935,6 +974,10 @@ router.patch("/:tenantId/automations/:automationId", ...writeMiddlewares, async 
           name: normalized.name,
           isEnabled: normalized.isEnabled,
           triggerType: normalized.triggerType,
+          serviceStepId: normalized.serviceStepId,
+        serviceGroupId: normalized.serviceGroupId,
+        serviceTriggerConfig: normalized.serviceTriggerConfig,
+          serviceOfferingId: normalized.serviceOfferingId,
           birthdayLocalTime: normalized.birthdayLocalTime,
           appointmentTargetStatus: normalized.appointmentTargetStatus,
           pipelineId: normalized.pipelineId,
@@ -961,7 +1004,7 @@ router.delete("/:tenantId/automations/:automationId", ...writeMiddlewares, async
     const { tenantId, automationId } = AutomationPathSchema.parse(req.params)
     const existing = await prismaWithAutomations.automation.findUnique({
       where: { tenantId_id: { tenantId, id: automationId } },
-      select: { id: true },
+      select: { id: true, serviceStepId: true, triggerType: true },
     })
     if (!existing) return res.status(404).json({ error: "AUTOMATION_NOT_FOUND" })
     const referencing = await findEnabledWorkflowReference(prismaWithAutomations, tenantId, automationId)

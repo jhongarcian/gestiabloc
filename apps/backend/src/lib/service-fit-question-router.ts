@@ -191,6 +191,8 @@ export async function routeServiceQuestion(
 ): Promise<ServiceFitAssistantReply> {
   const baseReply = buildServiceFitAssistantReply(input)
   const question = normalizeQuestion(input.question)
+  baseReply.outcome = !question || isFitSummaryQuestion(question)
+    ? "ANSWERED" : "NEEDS_REVIEW"
 
   if (input.scope !== "service" || !question) {
     return baseReply
@@ -211,7 +213,7 @@ export async function routeServiceQuestion(
     })
 
     if (immigrationReply) {
-      return immigrationReply
+      return { ...immigrationReply, outcome: "ANSWERED" }
     }
   }
 
@@ -234,11 +236,12 @@ export async function routeServiceQuestion(
           summary: `${knowledgeReply.summary} ${verification.summary}`.trim(),
           bullets: dedupe([...knowledgeReply.bullets, ...verification.bullets]).slice(0, 6),
           citations: verification.citations,
+          outcome: "ANSWERED",
         }
       }
     }
 
-    return knowledgeReply
+    return { ...knowledgeReply, outcome: "ANSWERED" }
   }
 
   if (shouldVerify) {
@@ -256,6 +259,7 @@ export async function routeServiceQuestion(
         summary: `${baseReply.summary} ${verification.summary}`.trim(),
         bullets: dedupe([...baseReply.bullets, ...verification.bullets]).slice(0, 6),
         citations: verification.citations,
+        outcome: "ANSWERED",
       }
     }
   }

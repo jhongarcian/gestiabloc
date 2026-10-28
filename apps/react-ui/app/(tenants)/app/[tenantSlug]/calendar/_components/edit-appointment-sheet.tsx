@@ -1,5 +1,7 @@
 "use client"
 
+import { serviceOfferingLabel } from "@/lib/service-hierarchy"
+
 import { isAxiosError } from "axios"
 import { Check, ChevronDown, LoaderCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
@@ -39,6 +41,7 @@ type EditAppointmentFormProps = {
   serviceOptions: Array<{
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }>
   assigneeOptions: Array<{
     id: string
@@ -233,7 +236,7 @@ export function EditAppointmentForm({
 
   const selectedServiceName =
     serviceId !== "__NONE__"
-      ? serviceOptions.find((option) => option.id === serviceId)?.name ?? null
+      ? (serviceOptions.find((option) => option.id === serviceId) ? serviceOfferingLabel(serviceOptions.find((option) => option.id === serviceId)!) : null)
       : null
 
   const selectedAssignee = useMemo(
@@ -381,7 +384,7 @@ export function EditAppointmentForm({
               <SelectItem value="__NONE__">No service</SelectItem>
               {serviceOptions.map((service) => (
                 <SelectItem key={service.id} value={service.id}>
-                  {service.name}
+                  {serviceOfferingLabel(service)}
                 </SelectItem>
               ))}
             </SelectContent>

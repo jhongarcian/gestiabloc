@@ -1,5 +1,12 @@
 "use client"
 
+import { RecordServicePaymentDialog } from "@/components/record-service-payment-dialog"
+import { billingDate, type BillingSummary } from "@/lib/service-billing"
+import { Label } from "@/components/ui/label"
+import { ServiceScopeFields } from "@/components/service-scope-fields"
+import { serviceOfferingLabel, type ServiceOfferingOption } from "@/lib/service-hierarchy"
+
+
 import { isAxiosError } from "axios"
 import {
   ArrowRight,
@@ -103,12 +110,14 @@ type TransactionItem = {
   service: {
     id: string
     name: string
+    parentService?: { id: string; name: string } | null
   }
   currency: string
   totalPriceCents: number
   paidCents: number
   remainingCents: number
   paymentState: PaymentState
+  billing: BillingSummary
 }
 
 type CurrencyTotals = {
@@ -120,6 +129,7 @@ type CurrencyTotals = {
 
 type TransactionsResponse = {
   ok: boolean
+  permissions: { canRecord: boolean }
   items: TransactionItem[]
   summary: {
     transactionCount: number
@@ -139,11 +149,10 @@ type TransactionsResponse = {
   }
 }
 
-type ServiceOption = {
-  id: string
-  name: string
-  isActive: boolean
-}
+type ServiceOption = ServiceOfferingOption
+
+const PAYMENT_FILTERS = { ALL: "All payments", BALANCE_DUE: "Balance due", DUE_TODAY: "Due today", OVERDUE: "Overdue", PAID: "Paid", NEEDS_REVIEW: "Schedule needs review" } as const
+type PaymentFilter = keyof typeof PAYMENT_FILTERS
 
 const PAGE_SIZE_OPTIONS = [10, 25] as const
 const ALL_SERVICES = "ALL_SERVICES"
@@ -234,7 +243,7 @@ const formatCurrency = (amountCents: number, currency: string) => {
 }
 
 const getStatusLabel = (status: TransactionStatus) =>
-  STATUS_OPTIONS.find((option) => option.value === status)?.label ?? status
+  status === "COMPLETED" || status === "PENDING_PAYMENT" ? "Work finished" : status === "CANCELED" ? "Service canceled" : "Work in progress"
 
 const getStatusClassName = (status: TransactionStatus) => {
   if (status === "COMPLETED") return "border-emerald-200 bg-emerald-50 text-emerald-700"
@@ -278,7 +287,7 @@ function TransactionMobileCard({
     <Card
       role="link"
       tabIndex={0}
-      aria-label={`Open ${transaction.contact.displayName} ${transaction.service.name} transaction`}
+      aria-label={`Open ${transaction.contact.displayName} ${serviceOfferingLabel(transaction.service)} transaction`}
       className={cn(
         "group cursor-pointer gap-0 rounded-[22px] border-slate-200 bg-white py-0 shadow-sm outline-none transition-[border-color,box-shadow,background-color,transform] hover:border-blue-200 hover:shadow-md focus-visible:border-blue-300 focus-visible:ring-2 focus-visible:ring-blue-500/40 active:scale-[0.995] motion-reduce:transform-none motion-reduce:transition-none",
         isCanceled && "bg-slate-50/80",
@@ -323,9 +332,9 @@ function TransactionMobileCard({
               "truncate text-sm font-medium text-slate-800",
               isCanceled && "text-slate-500",
             )}
-            title={transaction.service.name}
+            title={serviceOfferingLabel(transaction.service)}
           >
-            {transaction.service.name}
+            {serviceOfferingLabel(transaction.service)}
           </p>
         </div>
 
@@ -487,8 +496,12 @@ export function TransactionsRegister({
   const [draftRangePreset, setDraftRangePreset] = useState(rangePreset)
   const [draftCustomFrom, setDraftCustomFrom] = useState(customFrom)
   const [draftCustomTo, setDraftCustomTo] = useState(customTo)
+  const [groupId, setGroupId] = useState(() => searchParams.get("serviceGroupId") ?? "")
+  const [draftGroupId, setDraftGroupId] = useState(groupId)
   const [draftServiceId, setDraftServiceId] = useState(serviceId)
   const [draftStatus, setDraftStatus] = useState(status)
+  const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>(() => { const value = searchParams.get("paymentFilter"); return value && value in PAYMENT_FILTERS ? value as PaymentFilter : "ALL" })
+  const [recordPaymentId, setRecordPaymentId] = useState<string | null>(null)
   const [data, setData] = useState<TransactionsResponse | null>(null)
   const [serviceOptions, setServiceOptions] = useState<ServiceOption[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -516,7 +529,9 @@ export function TransactionsRegister({
       if (customFrom) nextParams.set("from", customFrom)
       if (customTo) nextParams.set("to", customTo)
     }
+    if (groupId) nextParams.set("serviceGroupId", groupId)
     if (serviceId !== ALL_SERVICES) nextParams.set("serviceId", serviceId)
+    if (paymentFilter !== "ALL") nextParams.set("paymentFilter", paymentFilter)
     if (status !== ALL_STATUSES) nextParams.set("status", status)
     if (page > 1) nextParams.set("page", String(page))
     if (pageSize !== 10) nextParams.set("pageSize", String(pageSize))
@@ -538,7 +553,9 @@ export function TransactionsRegister({
     router,
     searchParams,
     serviceId,
+    groupId,
     sort,
+    paymentFilter,
     status,
   ])
 
@@ -570,9 +587,11 @@ export function TransactionsRegister({
             pageSize,
             search: debouncedQuery || undefined,
             sort,
+            paymentFilter,
             rangePreset,
             from: rangePreset === "CUSTOM" ? customFrom : undefined,
             to: rangePreset === "CUSTOM" ? customTo : undefined,
+            serviceGroupId: groupId || undefined,
             serviceId: serviceId === ALL_SERVICES ? undefined : serviceId,
             status: status === ALL_STATUSES ? undefined : status,
           },
@@ -610,7 +629,9 @@ export function TransactionsRegister({
     pageSize,
     rangePreset,
     serviceId,
+    groupId,
     sort,
+    paymentFilter,
     status,
     tenantId,
   ])
@@ -628,7 +649,7 @@ export function TransactionsRegister({
     const loadServiceOptions = async () => {
       try {
         const { data: response } = await api.get<{ ok: boolean; items: ServiceOption[] }>(
-          `/api/account-settings/${encodeURIComponent(tenantId)}/services/options`,
+          `/api/services/${encodeURIComponent(tenantId)}/options`,
           { params: { includeInactive: true } },
         )
         if (!cancelled) {
@@ -680,10 +701,10 @@ export function TransactionsRegister({
     : "No transactions found"
   const activeFilterCount =
     (rangePreset !== "ALL_TIME" ? 1 : 0) +
-    (serviceId !== ALL_SERVICES ? 1 : 0) +
+    (serviceId !== ALL_SERVICES ? 1 : 0) + (groupId ? 1 : 0) +
     (status !== ALL_STATUSES ? 1 : 0)
-  const hasActiveRefinements = Boolean(query.trim()) || activeFilterCount > 0
-  const hasAppliedFilters = activeFilterCount > 0
+  const hasActiveRefinements = Boolean(query.trim()) || activeFilterCount > 0 || paymentFilter !== "ALL"
+  const hasAppliedFilters = activeFilterCount > 0 || paymentFilter !== "ALL"
   const placeholderRowCount =
     transactions.length === 0 ? pageSize - 1 : Math.max(0, pageSize - transactions.length)
   const visiblePageCount = Math.min(5, totalPages)
@@ -708,9 +729,12 @@ export function TransactionsRegister({
     SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Newest sales"
 
   const clearFilters = () => {
+    setPaymentFilter("ALL")
     setRangePreset("ALL_TIME")
     setCustomFrom("")
     setCustomTo("")
+    setGroupId("")
+    setDraftGroupId("")
     setServiceId(ALL_SERVICES)
     setStatus(ALL_STATUSES)
     setDraftRangePreset("ALL_TIME")
@@ -725,6 +749,7 @@ export function TransactionsRegister({
     setDraftRangePreset(rangePreset)
     setDraftCustomFrom(customFrom)
     setDraftCustomTo(customTo)
+    setDraftGroupId(groupId)
     setDraftServiceId(serviceId)
     setDraftStatus(status)
     setIsFilterSheetOpen(true)
@@ -743,6 +768,7 @@ export function TransactionsRegister({
     setRangePreset(nextRangePreset)
     setCustomFrom(nextRangePreset === "CUSTOM" ? sanitizeDateOnly(draftCustomFrom) : "")
     setCustomTo(nextRangePreset === "CUSTOM" ? sanitizeDateOnly(draftCustomTo) : "")
+    setGroupId(draftGroupId)
     setServiceId(nextServiceId)
     setStatus(sanitizeStatus(draftStatus))
     setPage(1)
@@ -1077,37 +1103,7 @@ export function TransactionsRegister({
 
               <Separator />
 
-              <Field>
-                <FieldLabel htmlFor="transaction-service-filter">Service</FieldLabel>
-                <Select
-                  value={draftServiceId}
-                  onValueChange={(value) =>
-                    setDraftServiceId(
-                      value === ALL_SERVICES ||
-                        serviceOptions.some((service) => service.id === value)
-                        ? value
-                        : ALL_SERVICES,
-                    )
-                  }
-                >
-                  <SelectTrigger
-                    id="transaction-service-filter"
-                    className="h-11 w-full rounded-xl border-blue-100 bg-white"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectGroup>
-                      <SelectItem value={ALL_SERVICES}>All services</SelectItem>
-                      {serviceOptions.map((service) => (
-                        <SelectItem key={service.id} value={service.id}>
-                          {service.name}{service.isActive ? "" : " (Inactive)"}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </Field>
+              <ServiceScopeFields options={serviceOptions} groupId={draftGroupId} offeringId={draftServiceId === ALL_SERVICES ? "" : draftServiceId} onChange={(group, offering) => { setDraftGroupId(group); setDraftServiceId(offering || ALL_SERVICES) }} />
 
               <Separator />
 
@@ -1166,6 +1162,12 @@ export function TransactionsRegister({
         </SheetContent>
       </Sheet>
 
+      <div className="flex flex-wrap items-center gap-3 py-3">
+        <Label htmlFor="service-payment-filter">Payments</Label>
+        <Select value={paymentFilter} onValueChange={value => { setPaymentFilter(value as PaymentFilter); setPage(1) }}><SelectTrigger id="service-payment-filter" className="w-full sm:w-64"><SelectValue /></SelectTrigger><SelectContent><SelectGroup>{Object.entries(PAYMENT_FILTERS).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectGroup></SelectContent></Select>
+      </div>
+      {recordPaymentId ? <RecordServicePaymentDialog tenantId={tenantId} contactServiceId={recordPaymentId} open onOpenChange={value => { if (!value) setRecordPaymentId(null) }} onSaved={loadTransactions} /> : null}
+
       <section
         className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white shadow-sm"
         aria-label="Service transactions"
@@ -1204,6 +1206,8 @@ export function TransactionsRegister({
                     tenantTimezone={tenantTimezone}
                     onOpen={openTransaction}
                   />
+                  <p className="px-4 pt-2 text-xs text-muted-foreground">{transaction.billing.scheduleNeedsReview ? "Schedule needs review" : transaction.billing.nextDueDate ? `Next payment: ${billingDate(transaction.billing.nextDueDate)}` : transaction.remainingCents ? "No scheduled due date" : "Paid in full"}</p>
+                  {data?.permissions.canRecord && transaction.remainingCents > 0 ? <Button type="button" variant="outline" className="my-3 w-full" onClick={() => setRecordPaymentId(transaction.id)}>Record payment</Button> : null}
                 </div>
               ))}
             </div>
@@ -1246,7 +1250,7 @@ export function TransactionsRegister({
                 <TableHead className="w-[10%] border-y bg-slate-50 px-4 text-right text-xs text-slate-600">
                   Balance
                 </TableHead>
-                <TableHead className="w-[5%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
+                <TableHead className="w-[10%] rounded-r-xl border-y border-r bg-slate-50 px-4 text-xs text-slate-600">
                   <span className="sr-only">Open</span>
                 </TableHead>
               </TableRow>
@@ -1307,9 +1311,10 @@ export function TransactionsRegister({
                       key={transaction.id}
                       role="link"
                       tabIndex={0}
-                      aria-label={`Open ${transaction.contact.displayName} ${transaction.service.name} transaction`}
+                      aria-label={`Open ${transaction.contact.displayName} ${serviceOfferingLabel(transaction.service)} transaction`}
                       onClick={() => openTransaction(transaction.id)}
                       onKeyDown={(event) => {
+                        if (event.target !== event.currentTarget) return
                         if (event.key === "Enter" || event.key === " ") {
                           event.preventDefault()
                           openTransaction(transaction.id)
@@ -1336,8 +1341,8 @@ export function TransactionsRegister({
                         </p>
                       </TableCell>
                       <TableCell className="px-4 py-0">
-                        <span className={cn("block truncate font-medium text-slate-800", isCanceled && "text-slate-500")} title={transaction.service.name}>
-                          {transaction.service.name}
+                        <span className={cn("block truncate font-medium text-slate-800", isCanceled && "text-slate-500")} title={serviceOfferingLabel(transaction.service)}>
+                          {serviceOfferingLabel(transaction.service)}
                         </span>
                       </TableCell>
                       <TableCell className="px-4 py-0">
@@ -1358,9 +1363,10 @@ export function TransactionsRegister({
                       </TableCell>
                       <TableCell className={cn("px-4 py-0 text-right font-semibold tabular-nums text-slate-950", isCanceled && "text-slate-500")}>
                         {formatCurrency(transaction.remainingCents, transaction.currency)}
+                        <p className="mt-1 text-[11px] font-normal text-muted-foreground">{transaction.billing.scheduleNeedsReview ? "Needs review" : transaction.billing.overdueCents > 0 ? "Overdue" : transaction.billing.nextDueDate ? billingDate(transaction.billing.nextDueDate) : ""}</p>
                       </TableCell>
                       <TableCell className="px-4 py-0 text-right">
-                        <ArrowRight className="ml-auto size-4 text-slate-400" aria-hidden="true" />
+                        {data?.permissions.canRecord && transaction.remainingCents > 0 ? <Button type="button" variant="outline" size="sm" onClick={event => { event.stopPropagation(); setRecordPaymentId(transaction.id) }}>Record</Button> : <ArrowRight className="ml-auto size-4 text-slate-400" aria-hidden="true" />}
                       </TableCell>
                     </TableRow>
                   )
