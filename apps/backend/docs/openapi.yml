@@ -12837,7 +12837,7 @@ components:
             automations:
               type: array
               readOnly: true
-              description: All entry and completion automations linked to this source step. Multiple workflows may target the same event, with optional sub-service scope. Starter drafts are disabled and empty.
+              description: All entry and completion automations linked to this source step. Multiple workflows may target the same event, with optional sub-service scope. Automations are created explicitly by the tenant; service creation and step saves never create drafts.
               items:
                 type: object
                 properties:

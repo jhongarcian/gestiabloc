@@ -89,10 +89,13 @@ and trigger types are added in the following transition chunks.
 
 ## Service step entry events
 
-Apply `20261020180000_service_step_entry_trigger` followed by
-`20261020180100_service_step_entry_drafts` and `20261020180200_service_step_draft_names` before deploying the generated client. The latter creates
-empty disabled drafts for existing steps and never dispatches old occurrences. New step saves ensure
-a starter draft when a step has no automation for that event, without overwriting existing definitions.
+The original `20261020180000_service_step_entry_trigger`,
+`20261020180100_service_step_entry_drafts` and `20261020180200_service_step_draft_names` migrations
+introduced the trigger and backfilled starter drafts at that time, without dispatching historical
+occurrences. Those migrations and existing workflows are retained. Runtime service creation and
+step saves no longer create drafts, including inherited-step customization and resaves after deletion.
+Tenants create entry/completion automations explicitly in the builder or from the Steps workspace.
+No new migration or automatic cleanup of existing drafts is required for this change.
 Apply `20261020220000_service_step_trigger_selection` to remove the one-workflow limit and add
 optional `serviceOfferingId` scope. Null scope preserves existing shared behavior.
 
@@ -115,8 +118,8 @@ checks claim the same due entry event under both America/Chicago and UTC session
 The automation sidebar offers **Service step** with Service → Sub-service → Step selectors and
 **Entry step** / **Completed step** events. Multiple automations may select the same step and event.
 New triggers require an active sub-service and one of its effective active steps. Authors can retarget,
-change, or delete these automations. Empty drafts cannot publish. Service steps still receive disabled
-starter drafts. Existing shared drafts keep their original scope across sub-services using that source
+change, or delete these automations. Empty drafts cannot publish. Step configuration never creates
+automations automatically. Existing shared drafts keep their original scope across sub-services using that source
 step until retargeted; newly created automations target the selected sub-service. Step configuration
 returns all linked automations, their sub-service scope, publication state and action counts.
 Service-step workflows cannot be generic Add to workflow targets or be started without occurrence context.

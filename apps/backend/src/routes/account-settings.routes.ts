@@ -1,5 +1,4 @@
 import { ServicePaymentSettingsSchema, resolvePaymentSettings, legacyPaymentFields } from "../lib/service-billing.js";
-import { ensureServiceStepAutomationsTx } from "../lib/service-step-automations.js";
 import { type NextFunction, type Request, type Response, Router } from "express";
 import argon2 from "argon2";
 import multer from "multer";
@@ -3999,7 +3998,6 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
           sortOrder: true,
         },
       });
-      await ensureServiceStepAutomationsTx(tx, tenantId, record.id);
       const steps = await tx.serviceStep.findMany({ where: { tenantId, serviceId: record.id, archivedAt: null }, orderBy: { sortOrder: "asc" }, select: serviceStepSelect });
       return { ...record, steps };
     });

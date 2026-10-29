@@ -147,16 +147,18 @@ This chunk provides the execution plumbing; service triggers, drafts, and servic
 
 ## Step entry automations (Chunk 10)
 
-Each service-owned step has one `SERVICE_STEP_ENTERED` automation. Configuration creation and saves
-ensure a disabled empty draft without replacing an existing draft or its actions. Migrated steps also
-receive empty disabled drafts, without dispatching historical entries. Reordering or editing a step
-preserves its automation ID. Inherited sub-services use the parent step's draft. Customizing the Steps
-section copies definitions into new IDs with independent disabled drafts.
+Step automations are optional and created explicitly by the tenant in Automations or through the
+Steps row's **Add entry automation** / **Add completion automation** links. Creating a service,
+adding/editing/reordering steps, or customizing inherited steps does not create automation drafts.
+Existing automations keep their IDs, actions, publication state and scope when step configuration is
+saved; deleted automations are not recreated. Historical starter drafts remain available to manage.
 
-Each Steps row links directly to the existing Automations editor and shows Draft/Published plus its
-action count. The editor locks the trigger to the step, supports normal action editing and contact
-filters, and requires an action before publishing. An empty disabled draft can still be renamed and
-saved. Linked automations cannot be deleted or used as generic Add to workflow targets.
+Each Steps row links to tenant-created automations and shows Draft/Published plus action counts.
+The editor supports service/sub-service/step trigger selection, normal actions and contact filters,
+and requires an action before publishing. Tenants can save empty disabled drafts, create multiple
+workflows for the same step event, retarget them, or delete them. Inherited sub-services use applicable
+parent-step automations; customizing creates independent step IDs without copying or creating workflows.
+Service workflows cannot be used as generic Add to workflow targets.
 
 The entry primitive locks the enrollment, creates the occurrence, and queues its published automation
 in the same transaction. The event carries the exact enrollment, offering, saved/source step, and entry
@@ -871,8 +873,8 @@ When implementation starts, the work should likely be split into:
 The automation sidebar offers **Service step** with Service → Sub-service → Step selectors and
 **Entry step** / **Completed step** events. Multiple automations may select the same step and event.
 New triggers require an active sub-service and one of its effective active steps. Authors can retarget,
-change, or delete these automations. Empty drafts cannot publish. Service steps still receive disabled
-starter drafts. Existing shared drafts keep their original scope across sub-services using that source
+change, or delete these automations. Empty drafts cannot publish. Step configuration never creates
+automations automatically. Existing shared drafts keep their original scope across sub-services using that source
 step until retargeted; newly created automations target the selected sub-service. Step configuration
 returns all linked automations, their sub-service scope, publication state and action counts.
 Service-step workflows cannot be generic Add to workflow targets or be started without occurrence context.
