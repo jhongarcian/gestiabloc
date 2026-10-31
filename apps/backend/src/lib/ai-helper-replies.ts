@@ -1,3 +1,5 @@
+import { currentAiUsage } from "./ai-provider-usage.js"
+import { requestGroq, completionJson, GroqRequestError, countGroqInput } from "./groq-request.js"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { PrismaClient } from "../generated/prisma/index.js"
@@ -431,62 +433,18 @@ export type AiChatProvider = ((
   messages: ReturnType<typeof buildAiChatMessages>,
   signal?: AbortSignal,
 ) => Promise<z.input<typeof ProviderOutputSchema>>) &
-  ExactFaqProvider
-export function getAiChatProvider(): AiChatProvider | null {
-  const config = getGroqConfiguration()
+  ExactFaqProvider & { model?: string }
+export function getAiChatProvider(config = getGroqConfiguration()): AiChatProvider | null {
   if (!config) return null
-  const { apiKey, model, baseUrl } = config
   async function requestJson<T extends z.ZodType>(
-    schema: T,
-    messages: ChatMessages,
-    signal?: AbortSignal,
-    maxTokens = 1800,
+    schema: T, messages: ChatMessages, signal?: AbortSignal, maxTokens = 1800,
+    purpose = "CHAT",
   ): Promise<z.output<T>> {
     try {
-      const response = await fetch(baseUrl, {
-        method: "POST",
-        signal: AbortSignal.any([
-          AbortSignal.timeout(30000),
-          ...(signal ? [signal] : []),
-        ]),
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          max_completion_tokens: maxTokens,
-          ...(model.startsWith("qwen/")
-            ? { reasoning_effort: "none", reasoning_format: "hidden" }
-            : {}),
-          response_format: { type: "json_object" },
-          messages,
-        }),
-      })
-      if (!response.ok)
-        throw new AiChatError(
-          response.status === 429 ? 429 : 503,
-          response.status === 429
-            ? "AI_PROVIDER_BUSY"
-            : "AI_PROVIDER_UNAVAILABLE",
-        )
-      const payload = (await response.json()) as {
-        choices?: Array<{
-          finish_reason?: string
-          message?: { content?: string }
-        }>
-      }
-      const choice = payload.choices?.[0]
-      if (choice?.finish_reason === "length" || !choice?.message?.content)
-        throw new AiChatError(502, "AI_INVALID_RESPONSE")
-      const parsed = schema.safeParse(JSON.parse(choice.message.content))
-      if (!parsed.success) throw new AiChatError(502, "AI_INVALID_RESPONSE")
-      return parsed.data
+      return await requestGroq({ ...config!, messages, signal, maxTokens, purpose },
+        payload => schema.parse(completionJson(payload)))
     } catch (error) {
-      if (error instanceof AiChatError) throw error
-      if (error instanceof SyntaxError)
-        throw new AiChatError(502, "AI_INVALID_RESPONSE")
+      if (error instanceof GroqRequestError) throw new AiChatError(error.status, error.code)
       throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
     }
   }
@@ -498,6 +456,7 @@ export function getAiChatProvider(): AiChatProvider | null {
       faqMatchMessages(question, history, faqs, language),
       signal,
       500,
+      "FAQ_MATCH",
     )
   provider.translateFaq = (answer, language, signal) =>
     requestJson(
@@ -505,7 +464,9 @@ export function getAiChatProvider(): AiChatProvider | null {
       faqTranslationMessages(answer, language),
       signal,
       3000,
+      "FAQ_TRANSLATION",
     )
+  provider.model = config.model
   return provider
 }
 
@@ -562,13 +523,20 @@ export async function replyToAiHelper(
       result = { answer, sourceIds: [`faq:${faq.id}`], outcome: "ANSWERED" }
     }
   }
-  if (!result)
-    result = ProviderOutputSchema.parse(
-      await provider(
-        buildAiChatMessages(snapshot, input, context.sources, surface, contactContext),
-        deadline,
-      ),
-    )
+  if (!result) {
+    let boundedInput = { ...input, history: [...input.history] }
+    let messages = buildAiChatMessages(snapshot, boundedInput, context.sources, surface, contactContext)
+    if (provider.model?.startsWith("openai/gpt-oss-")) {
+      while (countGroqInput(messages) + (currentAiUsage()?.input ?? 0) > 6000) {
+        if (boundedInput.history.length) boundedInput.history = boundedInput.history.slice(2)
+        else if (context.sources.length) context.sources.pop()
+        else throw new AiChatError(413, "AI_CONTEXT_TOO_LARGE")
+        context.limited = true
+        messages = buildAiChatMessages(snapshot, boundedInput, context.sources, surface, contactContext)
+      }
+    }
+    result = ProviderOutputSchema.parse(await provider(messages, deadline))
+  }
   const ids = new Set(result.sourceIds)
   if (
     [...ids].some((id) => !context.sources.some((source) => source.id === id))

@@ -1,3 +1,6 @@
+import { aiUsageContext } from "../lib/ai-provider-usage.js"
+import { createAiReplyExecutor } from "../lib/ai-credit-execution.js"
+import { AiCreditError } from "../lib/ai-credit-wallet.js"
 import { Router, type ErrorRequestHandler } from "express"
 import { z } from "zod"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
@@ -19,6 +22,7 @@ type Dependencies = {
   getProvider: typeof getAiChatProvider
   now: () => number
   recordActivity: typeof recordAiInteraction
+  execute: typeof createAiReplyExecutor
 }
 export function createAiTestChatRouter(
   dependencies: Partial<Dependencies> = {},
@@ -28,6 +32,7 @@ export function createAiTestChatRouter(
     getProvider = getAiChatProvider,
     now = Date.now,
     recordActivity = recordAiInteraction,
+    execute = createAiReplyExecutor,
   } = dependencies
   const router = Router()
   const limit = new AiReplyLimit()
@@ -36,6 +41,7 @@ export function createAiTestChatRouter(
   router.use(
     path,
     requireAuth,
+    aiUsageContext("TEST"),
     requireTenantAdmin({
       tenantIdLookups: [{ source: "params", key: "tenantId" }],
     }),
@@ -52,11 +58,6 @@ export function createAiTestChatRouter(
     const provider = getProvider()
     if (!provider) throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
     const key = `${tenantId}:${(req as unknown as AuthedRequest).user.id}`
-    const release = limit.acquire(key, now())
-    if (!release) {
-      res.setHeader("Retry-After", "60")
-      throw new AiChatError(429, "AI_CHAT_RATE_LIMITED")
-    }
     const controller = new AbortController()
     const disconnected = () => {
       if (!res.writableEnded) controller.abort()
@@ -64,12 +65,16 @@ export function createAiTestChatRouter(
     res.once("close", disconnected)
     try {
       const snapshot = await load(prisma, tenantId, input)
-      const reply = await replyToAiTestChat(
-        snapshot,
-        input,
-        provider,
-        controller.signal,
-      )
+      const run = execute(prisma, { tenantId, actorId: (req as unknown as AuthedRequest).user.id, channel: "TEST", requestId: input.requestId, conversationId: input.conversationId }, { signal: controller.signal })
+      const reply = await run({ snapshot, input }, async () => {
+        const release = limit.acquire(key, now())
+        if (!release) {
+          res.setHeader("Retry-After", "60")
+          throw new AiChatError(429, "AI_CHAT_RATE_LIMITED")
+        }
+        try { return await replyToAiTestChat(snapshot, input, provider, controller.signal) }
+        finally { release() }
+      }, provider.model)
       if (controller.signal.aborted) return
       await recordActivity(prisma, {
         tenantId,
@@ -83,12 +88,12 @@ export function createAiTestChatRouter(
       res.setHeader("Cache-Control", "no-store")
       res.json({ ok: true, reply })
     } finally {
-      release()
       res.removeListener("close", disconnected)
     }
   })
   const handleError: ErrorRequestHandler = (error, _req, res, next) => {
-    if (!(error instanceof AiChatError)) return next(error)
+    if (!(error instanceof AiChatError) && !(error instanceof AiCreditError)) return next(error)
+    if (error.code === "AI_REQUEST_IN_PROGRESS") res.setHeader("Retry-After", "2")
     res.setHeader("Cache-Control", "no-store")
     res.status(error.status).json({ error: error.code })
   }

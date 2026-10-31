@@ -16,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { api } from "@/lib/api"
+import { aiCreditErrorMessage, releaseTerminalAiAttempt } from "@/lib/ai-credit-errors"
 import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
@@ -305,8 +306,8 @@ export function ContactAiQualificationPanel({
     if (activeRequest.current) return
     const controller = new AbortController()
     activeRequest.current = controller
+    const activity = tracking.current.forRequest(JSON.stringify([contactId, options, history.current, caseHistory]))
     try {
-      const activity = tracking.current.forRequest(JSON.stringify([contactId, options]))
       const { data } = await api.post<ServiceFitAssistantResponse>(
         `/api/services/${encodeURIComponent(tenantId)}/fit-scan/assistant`,
         {
@@ -345,6 +346,9 @@ export function ContactAiQualificationPanel({
       if (data.selectedCase) setCaseHistory({ paymentsPage: data.selectedCase.history.paymentsPage, notesPage: data.selectedCase.history.notesPage, q: data.selectedCase.history.search })
       else setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
       appendMessage(buildAssistantReplyMessage(data))
+    } catch (error) {
+      releaseTerminalAiAttempt(tracking.current, activity.requestId, error)
+      throw error
     } finally {
       if (activeRequest.current === controller) activeRequest.current = null
     }
@@ -355,7 +359,7 @@ export function ContactAiQualificationPanel({
     setIsSending(true)
     appendMessage(createMessage({ role: "user", body: `Review ${contactCaseLabel(item, bookingContext.tenantTimezone)}.` }))
     try { await requestAssistant({ scope: "case", serviceId: item.serviceId, contactServiceId: item.contactServiceId }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not review that purchase.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not review that purchase.") }
     finally { setIsSending(false) }
   }
 
@@ -363,7 +367,7 @@ export function ContactAiQualificationPanel({
     if (!selectedServiceId || activeRequest.current) return
     setIsSending(true)
     try { await requestAssistant({ scope: "case", serviceId: selectedServiceId }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not load purchases for this service.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not load purchases for this service.") }
     finally { setIsSending(false) }
   }
 
@@ -372,7 +376,7 @@ export function ContactAiQualificationPanel({
     setIsSending(true)
     appendMessage(createMessage({ role: "user", body: "Compare the selected purchases." }))
     try { await requestAssistant({ scope: "case", compareContactServiceIds: ids, question: "Compare the selected purchases." }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not compare those purchases.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not compare those purchases.") }
     finally { setIsSending(false) }
   }
 
@@ -404,7 +408,7 @@ export function ContactAiQualificationPanel({
         serviceId,
       })
     } catch (error) {
-      if (!isCancel(error)) toast.error("Could not analyze that service.")
+      if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not analyze that service.")
     } finally {
       setIsSending(false)
     }
@@ -437,7 +441,7 @@ export function ContactAiQualificationPanel({
       })
       setDraft("")
     } catch (error) {
-      if (!isCancel(error)) toast.error("Could not send that question.")
+      if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not send that question.")
     } finally {
       setIsSending(false)
     }

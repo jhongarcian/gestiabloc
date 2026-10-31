@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react"
 import { isAxiosError } from "axios"
 import { api } from "@/lib/api"
+import { aiCreditErrorMessage, releaseTerminalAiAttempt } from "@/lib/ai-credit-errors"
 import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import {
   chatHistory,
@@ -10,6 +11,8 @@ import {
 } from "../_lib/test-chat"
 
 function errorMessage(error: unknown) {
+  const creditMessage = aiCreditErrorMessage(error)
+  if (creditMessage) return creditMessage
   if (isAxiosError(error)) {
     if (error.response?.status === 401)
       return "Your session has expired. Sign in again to continue."
@@ -93,6 +96,7 @@ export function useTestChat(tenantId: string) {
       if (turns.length >= 20) setTruncated(true)
       setQuestion("")
     } catch (cause) {
+      releaseTerminalAiAttempt(tracking.current, activity.requestId, cause)
       if (!controller.signal.aborted) setError(errorMessage(cause))
     } finally {
       if (request.current === controller) {

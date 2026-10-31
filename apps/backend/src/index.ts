@@ -1,4 +1,6 @@
 import "dotenv/config"
+import { getBillingConfiguration } from "./lib/billing-config.js"
+import { createBillingRouter, createStripeWebhookRouter } from "./routes/billing.routes.js"
 import http from "http"
 import express from "express"
 import cors, { type CorsOptions } from "cors"
@@ -57,6 +59,8 @@ const env = {
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
 }
 const allowedWebOrigins = getAllowedWebOrigins()
+// Reject unsafe rollout configuration before serving any requests.
+getBillingConfiguration()
 
 const app = express()
 
@@ -95,7 +99,10 @@ const corsOptions: CorsOptions = {
 app.use(cors(corsOptions))
 app.options("/*splat", cors(corsOptions))
 app.use(cookieParser())
+// Signature verification requires the original bytes, before express.json().
+app.use("/api/billing", createStripeWebhookRouter())
 app.use(express.json())
+app.use("/api/billing", createBillingRouter())
 
 app.get("/api/heartbeat", (_req, res) => {
   res.status(200).json({ ok: true })

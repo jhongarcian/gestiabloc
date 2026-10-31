@@ -15,17 +15,26 @@ import {
   Sparkles,
   Users,
 } from "lucide-react"
+import { CreditPurchaseControls } from "./credit-purchase-controls"
+import { SubscriptionBillingControls } from "./subscription-billing-controls"
 import { subscriptionPlans, type PlanKey } from "@/lib/subscription-plans"
 
 type SubscriptionData = {
   planKey: PlanKey
   seatLimit: number
   status: string
+  billingEnabled?: boolean
+  stripeCustomerId?: string | null
+  stripeSubscriptionId?: string | null
+  paidThrough?: string | null
+  scheduledPlanKey?: PlanKey | null
+  scheduledChangeAt?: string | null
+  cancelAtPeriodEnd?: boolean
   currentPeriodEnd: string | null
   seatUsage: { used: number; limit: number; available: number }
   storageUsedBytes: number
   storageLimitBytes: number
-  aiActionsPerMonth: number
+  aiCreditsPerMonth: number
   memberCount: number
   activeMemberCount: number
 }
@@ -57,7 +66,7 @@ function formatDate(dateStr: string | null): string {
 function StatusBadge({ status }: { status: string }) {
   const variants: Record<string, { label: string; className: string }> = {
     ACTIVE: { label: "Active", className: "bg-emerald-100 text-emerald-700 border-emerald-200" },
-    TRIALING: { label: "Trial", className: "bg-amber-100 text-amber-700 border-amber-200" },
+    TRIALING: { label: "Payment required", className: "bg-amber-100 text-amber-700 border-amber-200" },
     PAST_DUE: { label: "Past Due", className: "bg-red-100 text-red-700 border-red-200" },
     CANCELED: { label: "Canceled", className: "bg-slate-100 text-slate-600 border-slate-200" },
     NONE: { label: "No Plan", className: "bg-slate-100 text-slate-600 border-slate-200" },
@@ -71,10 +80,10 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export function SubscriptionDashboard({
-  tenantId: _tenantId,
+  tenantId,
   tenantSlug,
   subscription,
-  userRole: _userRole,
+  userRole,
 }: SubscriptionDashboardProps) {
   const currentPlan = useMemo(() => {
     if (!subscription) return null
@@ -187,6 +196,9 @@ export function SubscriptionDashboard({
         )}
       </div>
 
+      <SubscriptionBillingControls tenantId={tenantId} subscription={subscription} userRole={userRole} />
+      <CreditPurchaseControls tenantId={tenantId} userRole={userRole} />
+
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -238,13 +250,13 @@ export function SubscriptionDashboard({
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-slate-500" />
-              <CardDescription>AI Actions</CardDescription>
+              <CardDescription>AI Credits</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
             <div className="flex items-baseline justify-between">
               <span className="text-2xl font-semibold">
-                {subscription.aiActionsPerMonth.toLocaleString()}
+                {subscription.aiCreditsPerMonth.toLocaleString()}
               </span>
               <span className="text-sm text-slate-500">/month</span>
             </div>

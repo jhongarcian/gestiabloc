@@ -102,7 +102,6 @@ function SignUpContent() {
       adminPassword,
       tenantName: String(formData.get("tenantName") || "").trim(),
       planKey,
-      paidNow: false,
     }
 
     const clientErrors: Record<string, string> = {}
@@ -218,7 +217,7 @@ function SignUpContent() {
               Create your workspace
             </h1>
             <p className="mt-2 text-sm leading-6 text-blue-100/75">
-              Start your 7-day free trial. No card required.
+              Create your account, then activate a paid plan.
             </p>
           </header>
 
@@ -506,7 +505,7 @@ function SignUpContent() {
                 Choose your plan
               </FieldLegend>
               <FieldDescription className="!mt-0 text-xs text-blue-100/65">
-                You can change plans later. Billing starts after your trial.
+                No free trial. Your plan activates after payment is confirmed.
               </FieldDescription>
               <ToggleGroup
                 type="single"

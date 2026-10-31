@@ -1,11 +1,8 @@
+import { unpaidSubscription } from "../src/lib/subscription-signup.js"
 import "dotenv/config"
 
 import argon2 from "argon2"
 
-import {
-  getSeatLimitForPlan,
-  trialPeriodDays,
-} from "../src/lib/subscription-plans.js"
 import { prisma } from "../src/lib/prisma.js"
 import { ensureTenantOperationalDefaults } from "../src/lib/tenant-defaults.js"
 
@@ -56,11 +53,6 @@ function parsePlanKey(value: string | undefined): PlanKey {
   )
 }
 
-function parseBoolean(value: string | undefined, fallback = false) {
-  if (!value) return fallback
-  return ["1", "true", "yes", "y"].includes(value.toLowerCase())
-}
-
 async function main() {
   const tenantName = requireValue({
     env: "SEED_TENANT_NAME",
@@ -93,12 +85,9 @@ async function main() {
       fallback: "STARTER",
     }),
   )
-  const paidNow = parseBoolean(
-    readValue({
-      env: "SEED_PAID_NOW",
-      flag: "--paid-now",
-    }),
-  )
+  if (process.env.SEED_PAID_NOW !== undefined || process.argv.includes("--paid-now")) {
+    throw new Error("Paid seed overrides are retired. Only verified Stripe payments activate subscriptions.")
+  }
 
   if (!tenantSlug) {
     throw new Error("Tenant slug resolved to an empty value.")
@@ -158,22 +147,10 @@ async function main() {
 
       const subscription = await tx.tenantSubscription.upsert({
         where: { tenantId: existingTenantBySlug.id },
-        update: {
-          planKey,
-          seatLimit: getSeatLimitForPlan(planKey),
-          status: paidNow ? "ACTIVE" : "TRIALING",
-          currentPeriodEnd: paidNow
-            ? null
-            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
-        },
+        update: {}, // Preserve existing payment state and plan entitlements.
         create: {
           tenantId: existingTenantBySlug.id,
-          planKey,
-          seatLimit: getSeatLimitForPlan(planKey),
-          status: paidNow ? "ACTIVE" : "TRIALING",
-          currentPeriodEnd: paidNow
-            ? null
-            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
+          ...unpaidSubscription(planKey),
         },
       })
 
@@ -235,12 +212,7 @@ async function main() {
     const subscription = await tx.tenantSubscription.create({
       data: {
         tenantId: tenant.id,
-        planKey,
-        seatLimit: getSeatLimitForPlan(planKey),
-        status: paidNow ? "ACTIVE" : "TRIALING",
-        currentPeriodEnd: paidNow
-          ? null
-          : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
+        ...unpaidSubscription(planKey),
       },
       select: { id: true },
     })

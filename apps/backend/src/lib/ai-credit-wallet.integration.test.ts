@@ -1,0 +1,189 @@
+import assert from "node:assert/strict"
+import { randomUUID } from "node:crypto"
+import { readFile } from "node:fs/promises"
+import { resolve } from "node:path"
+import { test } from "node:test"
+import { Pool } from "pg"
+import { PrismaPg } from "@prisma/adapter-pg"
+import { PrismaClient } from "../generated/prisma/index.js"
+import { grantMonthlyAiCredits, grantPurchasedAiCredits, reserveAiCredit, settleAiCredit, recoverExpiredAiCredits, readAiCreditUsage, type AiCreditRequestKey } from "./ai-credit-wallet.js"
+
+// Uses a disposable schema, never application tables. Prefer a temporary local
+// PostgreSQL instance: AI_CREDIT_TEST_DATABASE_URL=postgresql://... npm test
+const connectionString = process.env.AI_CREDIT_TEST_DATABASE_URL
+const now = new Date("2026-10-29T12:00:00Z")
+const startsAt = new Date("2026-10-01T00:00:00Z"), endsAt = new Date("2026-11-01T00:00:00Z")
+test("credit wallet serializes real PostgreSQL grants, reservations, settlement and rollover", { skip: !connectionString }, async t => {
+  const schema = `credit_test_${randomUUID().replaceAll("-", "")}`
+  const admin = new Pool({ connectionString })
+  await admin.query(`CREATE SCHEMA "${schema}"`)
+  const pool = new Pool({ connectionString, options: `-c search_path=${schema}`, max: 15 })
+  const db = new PrismaClient({ adapter: new PrismaPg(pool, { schema, disposeExternalPool: false }) })
+  t.after(async () => {
+    await db.$disconnect()
+    await pool.end()
+    await admin.query(`DROP SCHEMA "${schema}" CASCADE`)
+    await admin.end()
+  })
+  await pool.query('CREATE TABLE "Tenant" ("id" TEXT PRIMARY KEY)')
+  await pool.query('CREATE TABLE "TenantSubscription" ("id" TEXT PRIMARY KEY, "tenantId" TEXT UNIQUE NOT NULL, "status" TEXT NOT NULL, "paidThrough" TIMESTAMP(3))')
+  await pool.query(await readFile(resolve(__dirname, "../../prisma/migrations/20261029120000_ai_credit_wallet/migration.sql"), "utf8"))
+  await pool.query(await readFile(resolve(__dirname, "../../prisma/migrations/20261029130000_ai_credit_replay/migration.sql"), "utf8"))
+  await pool.query(await readFile(resolve(__dirname, "../../prisma/migrations/20261029150000_credit_purchase_review/migration.sql"), "utf8"))
+  async function tenant() {
+    const tenantId = randomUUID()
+    await pool.query('INSERT INTO "Tenant" ("id") VALUES ($1)', [tenantId])
+    await pool.query('INSERT INTO "TenantSubscription" ("id", "tenantId", "status", "paidThrough") VALUES ($1, $1, $2, $3)', [tenantId, "ACTIVE", endsAt])
+    return tenantId
+  }
+  const key = (tenantId: string): AiCreditRequestKey => ({ tenantId, actorId: randomUUID(), requestId: randomUUID(), channel: "TEST", requestHash: "a".repeat(64) })
+  const grant = (tenantId: string, sourceKey = randomUUID(), planKey: "STARTER" | "PRO" | "BUSINESS" = "STARTER") => grantMonthlyAiCredits(db, { tenantId, sourceKey, planKey, startsAt, endsAt })
+
+  await t.test("paid grants are idempotent, upgrades add only the difference and out-of-order events never shrink grants", async () => {
+    const tenantId = await tenant(), sourceKey = randomUUID()
+    const grants = await Promise.all(Array.from({ length: 8 }, () => grant(tenantId, sourceKey)))
+    assert.equal(grants.filter(g => !g.duplicate).length, 1)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).available, 1200)
+    const request = key(tenantId)
+    await reserveAiCredit(db, request, now); await settleAiCredit(db, request, "COMMIT", now)
+    assert.equal((await grant(tenantId, randomUUID(), "PRO")).granted, 1200)
+    assert.equal((await grant(tenantId, randomUUID(), "STARTER")).granted, 0)
+    assert.deepEqual((await readAiCreditUsage(db, tenantId, now)).monthly, { granted: 2400, used: 1, reserved: 0, remaining: 2399 })
+    await assert.rejects(grant(tenantId, sourceKey, "BUSINESS"), /AI_REQUEST_CONFLICT/)
+    const other = await tenant()
+    await assert.rejects(grant(other, sourceKey), /AI_REQUEST_CONFLICT/)
+    await assert.rejects(grantMonthlyAiCredits(db, { tenantId, sourceKey: randomUUID(), planKey: "STARTER", startsAt: new Date("2026-10-15"), endsAt }), /AI_REQUEST_CONFLICT/)
+  })
+  await t.test("concurrent teammates cannot spend the last credit twice and failed transactions leave no request", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    await db.aiCreditPeriod.updateMany({ where: { tenantId }, data: { used: 1199 } })
+    const attempts = await Promise.allSettled(Array.from({ length: 12 }, () => reserveAiCredit(db, key(tenantId), now)))
+    assert.equal(attempts.filter(a => a.status === "fulfilled").length, 1)
+    for (const failure of attempts.filter(a => a.status === "rejected")) assert.match(failure.reason.message, /AI_CREDITS_EXHAUSTED/)
+    assert.equal(await db.aiCreditRequest.count({ where: { tenantId } }), 1)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).available, 0)
+  })
+  await t.test("the final purchased credit is also protected against concurrent spending", async () => {
+    const tenantId = await tenant()
+    await grantPurchasedAiCredits(db, { tenantId, sourceKey: randomUUID(), packKey: "AI_1000" })
+    await db.aiCreditWallet.update({ where: { tenantId }, data: { purchasedBalance: 1 } })
+    const keys = Array.from({ length: 8 }, () => key(tenantId))
+    const attempts = await Promise.allSettled(keys.map(k => reserveAiCredit(db, k, now)))
+    const winner = attempts.findIndex(a => a.status === "fulfilled")
+    assert.equal(attempts.filter(a => a.status === "fulfilled").length, 1)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).purchased.reserved, 1)
+    await settleAiCredit(db, keys[winner]!, "COMMIT", now)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).purchased.balance, 0)
+  })
+  await t.test("same request is reserved and committed once; final success is never refunded", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    const request = key(tenantId)
+    const holds = await Promise.all(Array.from({ length: 8 }, () => reserveAiCredit(db, request, now)))
+    assert.equal(holds.filter(h => !h.duplicate).length, 1)
+    assert.equal(new Set(holds.map(h => h.request.id)).size, 1)
+    await Promise.all(Array.from({ length: 8 }, () => settleAiCredit(db, request, "COMMIT", now)))
+    await settleAiCredit(db, request, "RELEASE", now)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).monthly.used, 1)
+    assert.equal(await db.aiCreditLedger.count({ where: { tenantId, kind: "COMMIT" } }), 1)
+    await assert.rejects(reserveAiCredit(db, { ...request, requestHash: "b".repeat(64) }, now), /AI_REQUEST_CONFLICT/)
+    await assert.rejects(settleAiCredit(db, { ...request, actorId: randomUUID() }, "COMMIT", now), /AI_REQUEST_CONFLICT/)
+    const foreign = await tenant()
+    await assert.rejects(settleAiCredit(db, { ...request, tenantId: foreign }, "COMMIT", now), /AI_REQUEST_CONFLICT/)
+    const period = await db.aiCreditPeriod.findFirstOrThrow({ where: { tenantId } })
+    const grantSum = await db.aiCreditLedger.aggregate({ where: { tenantId, periodId: period.id, kind: "MONTHLY_GRANT" }, _sum: { monthlyUnits: true } })
+    const spendSum = await db.aiCreditLedger.aggregate({ where: { tenantId, periodId: period.id, kind: "COMMIT" }, _sum: { monthlyUnits: true } })
+    assert.equal(grantSum._sum.monthlyUnits, period.granted)
+    assert.equal(spendSum._sum.monthlyUnits, period.used)
+  })
+  await t.test("failed and abandoned requests return holds exactly once; stale workers cannot debit them", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    const failed = key(tenantId)
+    await reserveAiCredit(db, failed, now)
+    await Promise.all([settleAiCredit(db, failed, "RELEASE", now), settleAiCredit(db, failed, "RELEASE", now)])
+    const abandoned = key(tenantId)
+    await reserveAiCredit(db, abandoned, now)
+    const later = new Date(now.getTime() + 5 * 60000)
+    await assert.rejects(settleAiCredit(db, abandoned, "COMMIT", later), /AI_RESPONSE_EXPIRED/)
+    assert.equal(await recoverExpiredAiCredits(db, tenantId, later), 1)
+    assert.equal(await recoverExpiredAiCredits(db, tenantId, later), 0)
+    assert.equal((await readAiCreditUsage(db, tenantId, later)).available, 1200)
+    await assert.rejects(reserveAiCredit(db, abandoned, later), /AI_RESPONSE_EXPIRED/)
+    await assert.rejects(settleAiCredit(db, abandoned, "COMMIT", later), /AI_RESPONSE_EXPIRED/)
+  })
+  await t.test("monthly credits are used first and purchases survive renewal without regranting", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    const sourceKey = randomUUID()
+    const purchases = await Promise.all(Array.from({ length: 6 }, () => grantPurchasedAiCredits(db, { tenantId, sourceKey, packKey: "AI_1000" })))
+    assert.equal(purchases.filter(p => !p.duplicate).length, 1)
+    const first = key(tenantId); await reserveAiCredit(db, first, now)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).purchased.reserved, 0)
+    await settleAiCredit(db, first, "COMMIT", now)
+    // Move to a period with no monthly grant: only purchased credits are available.
+    const next = new Date(endsAt.getTime() + 60000)
+    await pool.query('UPDATE "TenantSubscription" SET "paidThrough" = $2 WHERE "tenantId" = $1', [tenantId, new Date("2026-12-01")])
+    const second = key(tenantId); await reserveAiCredit(db, second, next)
+    assert.deepEqual((await readAiCreditUsage(db, tenantId, next)).purchased, { balance: 1000, reserved: 1, available: 999 })
+    await settleAiCredit(db, second, "COMMIT", next)
+    await grantMonthlyAiCredits(db, { tenantId, sourceKey: randomUUID(), planKey: "STARTER", startsAt: endsAt, endsAt: new Date("2026-12-01") })
+    const usage = await readAiCreditUsage(db, tenantId, next)
+    assert.equal(usage.monthly.remaining, 1200); assert.equal(usage.purchased.balance, 999)
+    assert.equal((await readAiCreditUsage(db, tenantId, endsAt)).monthly.used, 0)
+    await assert.rejects(grantPurchasedAiCredits(db, { tenantId, sourceKey, packKey: "AI_5000" }), /AI_REQUEST_CONFLICT/)
+  })
+  await t.test("old-period holds settle into their original bucket without reducing the new allowance", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    const nearEnd = new Date(endsAt.getTime() - 60000), afterEnd = new Date(endsAt.getTime() + 60000)
+    await pool.query('UPDATE "TenantSubscription" SET "paidThrough" = $2 WHERE "tenantId" = $1', [tenantId, new Date("2026-12-01")])
+    const request = key(tenantId); await reserveAiCredit(db, request, nearEnd)
+    await grantMonthlyAiCredits(db, { tenantId, sourceKey: randomUUID(), planKey: "PRO", startsAt: endsAt, endsAt: new Date("2026-12-01") })
+    await settleAiCredit(db, request, "COMMIT", afterEnd)
+    assert.equal((await readAiCreditUsage(db, tenantId, afterEnd)).monthly.remaining, 2400)
+    assert.equal((await db.aiCreditPeriod.findUniqueOrThrow({ where: { tenantId_startsAt: { tenantId, startsAt } } })).used, 1)
+  })
+  await t.test("trial, past due, canceled and expired subscriptions cannot consume purchased credits", async () => {
+    const tenantId = await tenant()
+    await grantPurchasedAiCredits(db, { tenantId, sourceKey: randomUUID(), packKey: "AI_1000" })
+    for (const status of ["NONE", "TRIALING", "PAST_DUE", "CANCELED"]) {
+      await pool.query('UPDATE "TenantSubscription" SET "status" = $2 WHERE "tenantId" = $1', [tenantId, status])
+      await assert.rejects(reserveAiCredit(db, key(tenantId), now), /BILLING_REQUIRED/)
+    }
+    await pool.query('UPDATE "TenantSubscription" SET "status" = $2, "paidThrough" = $3 WHERE "tenantId" = $1', [tenantId, "ACTIVE", now])
+    await assert.rejects(reserveAiCredit(db, key(tenantId), now), /BILLING_REQUIRED/)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).purchased.balance, 1000)
+  })
+  await t.test("an account without a verified grant gets no automatic credits or balance writes on read", async () => {
+    const tenantId = await tenant()
+    assert.deepEqual(await readAiCreditUsage(db, tenantId, now), {
+      revision: 0, purchaseReviewRequired: false, period: null, monthly: { granted: 0, used: 0, reserved: 0, remaining: 0 },
+      purchased: { balance: 0, reserved: 0, available: 0 }, available: 0,
+    })
+    assert.equal(await db.aiCreditWallet.count({ where: { tenantId } }), 0)
+    await assert.rejects(reserveAiCredit(db, key(tenantId), now), /AI_CREDITS_EXHAUSTED/)
+    assert.equal(await db.aiCreditWallet.count({ where: { tenantId } }), 0)
+  })
+  await t.test("grants compose with a caller transaction and roll back with payment handling", async () => {
+    const tenantId = await tenant(), sourceKey = randomUUID()
+    await assert.rejects(db.$transaction(async tx => {
+      await grantPurchasedAiCredits(tx, { tenantId, sourceKey, packKey: "AI_1000" })
+      throw new Error("Payment processing rolled back")
+    }), /Payment processing rolled back/)
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).available, 0)
+    assert.equal(await db.aiCreditLedger.count({ where: { sourceKey } }), 0)
+    await db.$transaction(async tx => {
+      await grantPurchasedAiCredits(tx, { tenantId, sourceKey, packKey: "AI_1000" })
+      await grantMonthlyAiCredits(tx, { tenantId, sourceKey: randomUUID(), planKey: "STARTER", startsAt, endsAt })
+    })
+    assert.equal((await readAiCreditUsage(db, tenantId, now)).available, 2200)
+  })
+  await t.test("database constraints prevent negative balances and cross-tenant period references", async () => {
+    const tenantId = await tenant(); await grant(tenantId)
+    const foreignId = await tenant(); await grant(foreignId)
+    const request = await reserveAiCredit(db, key(tenantId), now)
+    const foreignPeriod = await db.aiCreditPeriod.findFirstOrThrow({ where: { tenantId: foreignId } })
+    await assert.rejects(db.aiCreditRequest.update({ where: { id: request.request.id }, data: { periodId: foreignPeriod.id } }))
+    await assert.rejects(db.aiCreditWallet.update({ where: { tenantId }, data: { purchasedBalance: -1 } }))
+    await assert.rejects(db.aiCreditPeriod.updateMany({ where: { tenantId }, data: { used: 1201 } }))
+    await pool.query('DELETE FROM "Tenant" WHERE "id" = $1', [tenantId])
+    assert.equal(await db.aiCreditRequest.count({ where: { tenantId } }), 0)
+  })
+})

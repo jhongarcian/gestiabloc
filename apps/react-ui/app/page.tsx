@@ -58,7 +58,7 @@ const compactFeatureGroups: Record<string, string[]> = {
     "Mobile-friendly workspace with AI assistance",
   ],
   PRO: [
-    "Everything in Basic, plus advanced task control",
+    "Everything in Starter, plus advanced task control",
     "Department organization, live updates, and audit history",
     "Advanced reporting with exports and stronger AI capacity",
   ],
@@ -123,7 +123,7 @@ export default function HomePage() {
                 asChild
                 className="rounded-full bg-stone-900 px-5 text-stone-50 hover:bg-stone-800"
               >
-                <Link href="/signup">Start free trial</Link>
+                <Link href="/signup">Get started</Link>
               </Button>
             </div>
           </header>
@@ -151,7 +151,7 @@ export default function HomePage() {
                   className="h-12 rounded-full bg-stone-900 px-6 text-base text-stone-50 hover:bg-stone-800"
                 >
                   <Link href="/signup">
-                    Start free trial
+                    Get started
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </Link>
                 </Button>

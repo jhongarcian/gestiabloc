@@ -1,3 +1,4 @@
+import { requestGroq, completionJson } from "./groq-request.js"
 import { z } from "zod"
 import { getGroqConfiguration } from "./groq-config.js"
 
@@ -249,47 +250,13 @@ class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider
   ) {}
 
   async explainQualification(input: ServiceFitExplanationInput): Promise<ServiceFitExplanationOutput> {
-    const response = await fetch(this.baseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You produce short, accurate qualification explanations for services. Return only JSON.",
-          },
-          {
-            role: "user",
-            content: buildServiceFitExplanationPrompt(input),
-          },
-        ],
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`GROQ_REQUEST_FAILED:${response.status}`)
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } | null }>
-    }
-    const content = payload.choices?.[0]?.message?.content
-    if (typeof content !== "string" || !content.trim()) {
-      throw new Error("GROQ_EMPTY_RESPONSE")
-    }
-
-    const rawJson = extractJsonObject(content)
-    if (!rawJson) {
-      throw new Error("GROQ_INVALID_JSON")
-    }
-
-    const parsed = PROVIDER_OUTPUT_SCHEMA.parse(JSON.parse(rawJson))
+    const parsed = await requestGroq({ apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl,
+      purpose: "QUALIFICATION_EXPLANATION", maxTokens: 1800,
+      messages: [
+        { role: "system", content: "You produce short, accurate qualification explanations for services. Return only JSON." },
+        { role: "user", content: buildServiceFitExplanationPrompt(input) },
+      ],
+    }, payload => PROVIDER_OUTPUT_SCHEMA.parse(completionJson(payload)))
     return {
       reasonSummary: parsed.reasonSummary,
       configurationGapNotes: dedupeStrings(parsed.configurationGapNotes),

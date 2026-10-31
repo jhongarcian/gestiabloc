@@ -7524,7 +7524,7 @@ paths:
     post:
       tags: [AI]
       summary: Ask the existing contact qualification assistant
-      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Case-only questions do not run qualification or increment qualification runs. An explicit qualification question about a selected purchase runs the existing rules engine and records that actual run. Multiple matching purchases require selection unless comparison is explicitly requested; comparisons are limited to five validated purchases. Case history is read-only and refreshed for each question. Tracking IDs deduplicate metadata only; replies are not persisted or replayed. Active tenant membership and trusted origin required.
+      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Case-only questions do not run qualification or increment qualification runs. An explicit qualification question about a selected purchase runs the existing rules engine and records that actual run. Multiple matching purchases require selection unless comparison is explicitly requested; comparisons are limited to five validated purchases. Case history is read-only and refreshed for each question. With credit enforcement off, tracking IDs deduplicate metadata only. With enforcement enabled, generated replies require conversationId/requestId, reserve one credit and save an encrypted reply for 15-minute replay. Retries recheck current access and source context; changed context conflicts. Rules-only replies and provider/validation fallbacks are free. Billing errors are returned rather than hidden by fallback. Active tenant membership and trusted origin required.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7615,10 +7615,13 @@ paths:
                             sourceId: { type: string }
                             excerpt: { type: string, maxLength: 320 }
                             page: { type: integer }
-        "400": { description: Invalid request }
+        "400": { description: Invalid request or AI_REQUEST_ID_REQUIRED }
         "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED or AI_CREDITS_EXHAUSTED; no provider call is dispatched }
+        "409": { description: AI_REQUEST_IN_PROGRESS (retry same ID), AI_REQUEST_CONFLICT or AI_RESPONSE_EXPIRED (new explicit request required) }
         "403": { description: Active tenant membership required or untrusted origin }
         "404": { description: Contact or service not found in the selected tenant }
+        "503": { description: AI_BILLING_UNAVAILABLE; credit reservation or replay persistence unavailable }
   /api/account-settings/{tenantId}/ai/test-chat:
     get:
       tags: [AI]
@@ -7642,7 +7645,7 @@ paths:
     post:
       tags: [AI]
       summary: Ask the saved account helper a read-only test question
-      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching, actions, business-data writes, or transcript persistence. Completed replies record metadata for Analytics. Optional conversationId and requestId UUIDs group chats and deduplicate retries per tenant, actor and channel; clients without IDs remain supported as separate interactions. Deduplication affects counts, not provider execution or reply replay. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
+      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching or actions. Completed replies record metadata for Analytics. With enforcement off, optional tracking IDs deduplicate counts only and no reply is persisted. With enforcement on, conversationId and requestId are required; one credit is charged atomically with an encrypted 15-minute replay copy after a valid answer. Repeated IDs never regenerate or debit twice; changed context conflicts. Current authorization and fresh context are checked before replay. Expired replies return AI_RESPONSE_EXPIRED. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7679,13 +7682,198 @@ paths:
                   ok: { type: boolean, enum: [true] }
                   reply:
                     $ref: "#/components/schemas/AiTestReply"
-        "400": { description: Invalid question/history or client-supplied configuration overrides }
+        "400": { description: Invalid question/history, client-supplied configuration overrides, or AI_REQUEST_ID_REQUIRED }
         "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED or AI_CREDITS_EXHAUSTED; no provider call is dispatched }
+        "409": { description: AI_REQUEST_IN_PROGRESS (retry same ID), AI_REQUEST_CONFLICT or AI_RESPONSE_EXPIRED (new explicit request required) }
         "403": { description: Active tenant administrator access required or untrusted origin }
         "404": { description: Account no longer available }
+        "413": { description: AI_CONTEXT_TOO_LARGE; candidate model context or shared reply budget exceeded }
         "429": { description: AI_CHAT_RATE_LIMITED or AI_PROVIDER_BUSY. One concurrent reply and ten requests per minute per administrator/account per server instance }
         "502": { description: AI_INVALID_RESPONSE; incomplete output or invalid citations }
-        "503": { description: AI_PROVIDER_UNAVAILABLE; provider absent, inaccessible, timed out, or disconnected }
+        "503": { description: AI_BILLING_UNAVAILABLE, AI_PROVIDER_UNAVAILABLE or AI_METERING_UNAVAILABLE; provider or enabled usage recording unavailable }
+  /api/billing/webhook:
+    post:
+      tags: [Billing]
+      summary: Receive signed Stripe subscription/payment notifications
+      description: Raw body is verified before JSON parsing. Only matching Stripe mode/platform events are processed. Current Stripe state is retrieved, validated and reconciled; payment state, monthly credit grant and event receipt commit atomically. Unknown events are ignored. Busy/failed handlers return non-2xx for Stripe retry. Checkout redirects alone never activate access.
+      security: []
+      parameters:
+        - in: header
+          name: stripe-signature
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Processed, already processed or unrelated event }
+        "400": { description: STRIPE_SIGNATURE_INVALID or incompatible mode/account }
+        "409": { description: Tenant reconciliation busy or unsupported billing configuration; retry or operator review required }
+        "503": { description: BILLING_UNAVAILABLE or provider/database temporarily unavailable }
+  /api/billing/{tenantId}/checkout:
+    post:
+      tags: [Billing]
+      summary: Start no-trial subscription Checkout
+      security:
+        - cookieAuth: []
+      description: Active tenant administrator and trusted origin required. Server configuration selects prices, customer, cadence and return URL. A request UUID deduplicates retries; changed input with the same ID conflicts. Billing must be enabled. No customer/price identifiers, payment claims or trial options are accepted from clients.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId, planKey]
+              properties:
+                requestId: { type: string, format: uuid }
+                planKey: { type: string, enum: [STARTER, PRO, BUSINESS] }
+      responses:
+        "200":
+          description: Checkout/portal URL or saved plan-change result. Upgrade may require payment confirmation; downgrades are effective at renewal. Selecting the current plan removes an owned scheduled downgrade.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  checkoutId: { type: string }
+                  url: { type: string, nullable: true }
+                  paymentPending: { type: boolean }
+                  effectiveAt: { type: string, format: date-time }
+        "400": { description: Invalid or client-overridden billing input }
+        "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED before changing an unpaid plan }
+        "403": { description: Active tenant administrator or trusted origin required }
+        "409": { description: Existing/pending subscription, request conflict, unsupported price/configuration, seat-capacity conflict or reconciliation required }
+        "503": { description: Billing disabled or provider/database unavailable }
+  /api/billing/{tenantId}/portal:
+    post:
+      tags: [Billing]
+      summary: Open payment methods, invoices and cancellation
+      security:
+        - cookieAuth: []
+      description: Active tenant administrator and trusted origin required. Server configuration selects prices, customer, cadence and return URL. A request UUID deduplicates retries; changed input with the same ID conflicts. Billing must be enabled. No customer/price identifiers, payment claims or trial options are accepted from clients.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId]
+              properties:
+                requestId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Checkout/portal URL or saved plan-change result. Upgrade may require payment confirmation; downgrades are effective at renewal. Selecting the current plan removes an owned scheduled downgrade.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  checkoutId: { type: string }
+                  url: { type: string, nullable: true }
+                  paymentPending: { type: boolean }
+                  effectiveAt: { type: string, format: date-time }
+        "400": { description: Invalid or client-overridden billing input }
+        "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED before changing an unpaid plan }
+        "403": { description: Active tenant administrator or trusted origin required }
+        "409": { description: Existing/pending subscription, request conflict, unsupported price/configuration, seat-capacity conflict or reconciliation required }
+        "503": { description: Billing disabled or provider/database unavailable }
+  /api/billing/{tenantId}/plan:
+    post:
+      tags: [Billing]
+      summary: Upgrade after payment or schedule a downgrade for renewal
+      security:
+        - cookieAuth: []
+      description: Active tenant administrator and trusted origin required. Server configuration selects prices, customer, cadence and return URL. A request UUID deduplicates retries; changed input with the same ID conflicts. Billing must be enabled. No customer/price identifiers, payment claims or trial options are accepted from clients.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [requestId, planKey]
+              properties:
+                requestId: { type: string, format: uuid }
+                planKey: { type: string, enum: [STARTER, PRO, BUSINESS] }
+      responses:
+        "200":
+          description: Checkout/portal URL or saved plan-change result. Upgrade may require payment confirmation; downgrades are effective at renewal. Selecting the current plan removes an owned scheduled downgrade.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  checkoutId: { type: string }
+                  url: { type: string, nullable: true }
+                  paymentPending: { type: boolean }
+                  effectiveAt: { type: string, format: date-time }
+        "400": { description: Invalid or client-overridden billing input }
+        "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED before changing an unpaid plan }
+        "403": { description: Active tenant administrator or trusted origin required }
+        "409": { description: Existing/pending subscription, request conflict, unsupported price/configuration, seat-capacity conflict or reconciliation required }
+        "503": { description: Billing disabled or provider/database unavailable }
+  /api/account-settings/{tenantId}/subscription:
+    get:
+      tags: [Account Settings]
+      security:
+        - cookieAuth: []
+      summary: Read the current tenant subscription and configured allowances
+      description: |
+        Cookie-authenticated tenant administrator access is required.
+        aiCreditsPerMonth replaces aiActionsPerMonth. This is the configured
+        allowance, not a live balance. billingEnabled controls whether online
+        billing is available. access reports PAID, GRACE or BLOCKED; paidThrough
+        and graceEndsAt describe paid access/payment recovery. Scheduled plan
+        changes and cancellation-at-period-end are returned. Plans have no trials.
+      parameters:
+        - in: path
+          name: tenantId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Current subscription with seat, storage, and AI credit allowances
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, subscription]
+                properties:
+                  ok: { type: boolean }
+                  subscription:
+                    type: object
+                    required: [planKey, seatLimit, status, aiCreditsPerMonth]
+                    properties:
+                      planKey: { type: string, enum: [STARTER, PRO, BUSINESS] }
+                      seatLimit: { type: integer }
+                      status: { type: string, enum: [NONE, TRIALING, ACTIVE, PAST_DUE, CANCELED] }
+                      currentPeriodEnd: { type: string, format: date-time, nullable: true }
+                      aiCreditsPerMonth:
+                        type: integer
+                        description: Monthly allowance; Starter 1200, Pro 2400, Business 4800
+                        enum: [1200, 2400, 4800]
+                      storageUsedBytes: { type: integer }
+                      storageLimitBytes: { type: integer }
+        "401": { description: Authentication required }
+        "403": { description: Tenant administrator access required }
+        "404": { description: SUBSCRIPTION_NOT_FOUND }
 components:
   responses:
     AiSourceSaved:
@@ -10321,6 +10509,8 @@ components:
           type: string
     TenantSignupRequest:
       type: object
+      additionalProperties: false
+      description: Creates an unpaid account; no trials or client-declared payment status. Only verified Stripe payments activate a plan.
       required: [tenantName, planKey, adminName, adminEmail, adminPassword]
       properties:
         tenantName:
@@ -10328,9 +10518,6 @@ components:
         planKey:
           type: string
           enum: [STARTER, PRO, BUSINESS]
-        paidNow:
-          type: boolean
-          default: false
         adminName:
           type: string
         adminEmail:

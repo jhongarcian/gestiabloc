@@ -23,9 +23,9 @@ Gestiabloc is a multi-tenant SaaS CRM for agencies and service-driven businesses
 
 The app uses three subscription tiers with increasing seat capacity, AI usage, storage, and operational controls.
 
-### Basic
+### Starter
 
-- Price: $29/month
+- Price: $49/month
 - Seats: up to 3 team members
 - Positioning: entry plan for small businesses, startups, and small teams managing daily operations
 - Includes:
@@ -38,16 +38,16 @@ The app uses three subscription tiers with increasing seat capacity, AI usage, s
   - Basic dashboard and reporting
   - Mobile-friendly interface
   - AI assistant features
-- AI allowance: 100 AI actions per month
+- AI allowance: 1,200 AI credits per month
 - Storage: 5 GB
 - Support: email support
 
 ### Pro
 
-- Price: $59/month
+- Price: $99/month
 - Seats: up to 10 team members
 - Positioning: growth plan for agencies and operations teams with multiple workflows and staff
-- Includes everything in Basic, plus:
+- Includes everything in Starter, plus:
   - Advanced task management
   - Team and department organization
   - Advanced scheduling and calendar management
@@ -57,13 +57,13 @@ The app uses three subscription tiers with increasing seat capacity, AI usage, s
   - Advanced dashboard and reporting
   - Exportable reports
   - Expanded AI operational assistant features
-- AI allowance: 750 AI actions per month
+- AI allowance: 2,400 AI credits per month
 - Storage: 25 GB
 - Support: priority email support
 
 ### Business
 
-- Price: $119/month
+- Price: $199/month
 - Seats: up to 25 team members
 - Positioning: advanced plan for larger organizations and operations-focused businesses
 - Includes everything in Pro, plus:
@@ -78,7 +78,7 @@ The app uses three subscription tiers with increasing seat capacity, AI usage, s
   - Dedicated onboarding assistance
   - Advanced AI operational tools
   - Custom workflow support
-- AI allowance: 3,000 AI actions per month
+- AI allowance: 4,800 AI credits per month
 - Storage: 100 GB
 - Support: priority support and dedicated onboarding assistance
 
@@ -87,12 +87,12 @@ The app uses three subscription tiers with increasing seat capacity, AI usage, s
 - Use the public homepage as the top-of-funnel entry point
 - Push most users toward Pro as the default recommended plan
 - Let customers self-select by team size and operational complexity
-- Convert signups through a simple trial-first registration flow
-- Add checkout and billing automation next so selected plans become paid subscriptions immediately after onboarding
+- Require subscription payment for Starter, Pro, and Business; no plan offers trials or trial credits
+- Subscription Checkout, billing portal and payment-event handling are implemented behind disabled rollout flags; activate only after Stripe test-mode verification and the final rollout review
 
 ## Expansion Opportunities
 
-- Stripe subscription checkout and billing portal
+- Activate the prepared Stripe subscription checkout and billing portal
 - AI usage metering and overage billing
 - Seat-based upsells
 - Annual billing discounts

@@ -642,6 +642,9 @@ model PasswordResetToken {
 }
 
 model Tenant {
+  aiCreditPurchases AiCreditPurchase[]
+  billingCommands BillingCommand[]
+  aiCreditWallet AiCreditWallet?
   aiSettings TenantAiSettings?
   serviceActionResults ServiceAutomationActionResult[]
   automationExecutionLeases AutomationExecutionLease[]
@@ -739,6 +742,82 @@ model Tenant {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Balances are updated only while holding this tenant's wallet row lock.
+model AiCreditWallet {
+  purchaseReviewRequired Boolean @default(false)
+  tenantId          String @id
+  revision          Int @default(0)
+  purchasedBalance  Int @default(0)
+  purchasedReserved Int @default(0)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  periods AiCreditPeriod[]
+  requests AiCreditRequest[]
+  ledger AiCreditLedger[]
+}
+
+model AiCreditPeriod {
+  id        String @id @default(uuid())
+  tenantId  String
+  startsAt  DateTime
+  endsAt    DateTime
+  granted   Int @default(0)
+  used      Int @default(0)
+  reserved  Int @default(0)
+  wallet AiCreditWallet @relation(fields: [tenantId], references: [tenantId], onDelete: Cascade)
+  requests AiCreditRequest[]
+  ledger AiCreditLedger[]
+  @@unique([tenantId, id])
+  @@unique([tenantId, startsAt])
+  @@index([tenantId, endsAt])
+}
+
+model AiCreditRequest {
+  id             String @id @default(uuid())
+  tenantId       String
+  actorId        String
+  channel        String
+  requestId      String
+  requestHash    String
+  status         String
+  periodId       String?
+  monthlyUnits   Int
+  purchasedUnits Int
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+  finishedAt     DateTime?
+  responseCiphertext String?
+  responseIv         String?
+  responseAuthTag    String?
+  responseKeyVersion Int?
+  responseExpiresAt  DateTime?
+  wallet AiCreditWallet @relation(fields: [tenantId], references: [tenantId], onDelete: Cascade)
+  period AiCreditPeriod? @relation(fields: [tenantId, periodId], references: [tenantId, id], onDelete: NoAction)
+  ledger AiCreditLedger[]
+  @@unique([tenantId, id])
+  @@unique([tenantId, actorId, channel, requestId])
+  @@index([tenantId, status, expiresAt])
+  @@index([responseExpiresAt])
+  @@index([status, expiresAt])
+}
+
+model AiCreditLedger {
+  id             String @id @default(uuid())
+  tenantId       String
+  kind           String
+  monthlyUnits   Int
+  purchasedUnits Int
+  periodId       String?
+  requestId      String?
+  sourceKey      String? @unique
+  sourceHash     String?
+  createdAt      DateTime @default(now())
+  wallet AiCreditWallet @relation(fields: [tenantId], references: [tenantId], onDelete: Cascade)
+  request AiCreditRequest? @relation(fields: [tenantId, requestId], references: [tenantId, id], onDelete: NoAction)
+  period AiCreditPeriod? @relation(fields: [tenantId, periodId], references: [tenantId, id], onDelete: NoAction)
+  @@unique([requestId, kind])
+  @@index([tenantId, createdAt])
 }
 
 enum AiActivityChannel {
@@ -1549,10 +1628,23 @@ model TenantSubscription {
   seatLimit Int                @default(3)
   status    SubscriptionStatus @default(NONE)
 
-  stripeCustomerId     String?
-  stripeSubscriptionId String?
+  stripeCustomerId     String? @unique
+  stripeSubscriptionId String? @unique
   stripePriceId        String?
   currentPeriodEnd     DateTime?
+  currentPeriodStart   DateTime?
+  paidThrough         DateTime?
+  graceEndsAt         DateTime?
+  scheduledPlanKey    PlanKey?
+  scheduledChangeAt   DateTime?
+  cancelAtPeriodEnd   Boolean @default(false)
+  billingRevision     Int @default(0)
+  billingLeaseToken     String?
+  billingLeaseExpiresAt DateTime?
+  pendingCheckoutId    String?
+  pendingCheckoutExpiresAt DateTime?
+  stripeScheduleId     String?
+  billingSyncedAt      DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1560,6 +1652,57 @@ model TenantSubscription {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([status])
+  @@index([billingSyncedAt])
+}
+
+model BillingCommand {
+  creditPurchase AiCreditPurchase?
+  id           String @id @default(uuid())
+  tenantId     String
+  actorId      String
+  requestId    String
+  kind         String
+  requestHash  String
+  status       String @default("PENDING")
+  result       Json?
+  context      Json?
+  createdAt    DateTime @default(now())
+  completedAt  DateTime?
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  @@unique([tenantId, actorId, requestId])
+  @@unique([tenantId, id])
+  @@index([tenantId, createdAt])
+}
+
+model AiCreditPurchase {
+  id              String @id
+  tenantId        String
+  packKey         String
+  credits         Int
+  amountCents     Int
+  currency        String @default("usd")
+  stripePriceId   String
+  sessionId       String? @unique
+  paymentIntentId String? @unique
+  status          String @default("PENDING")
+  reviewReason    String?
+  checkedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  command BillingCommand @relation(fields: [tenantId, id], references: [tenantId, id], onDelete: Cascade)
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([status, checkedAt])
+}
+
+model StripeBillingEvent {
+  id          String @id
+  type        String
+  tenantId    String?
+  eventCreatedAt DateTime
+  processedAt DateTime @default(now())
+  @@index([tenantId, processedAt])
 }
 
 model ContactStatusConfig {
@@ -2860,4 +3003,31 @@ model AutomationExecutionTenant {
   tenantId String @id
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   lastAdmittedAt DateTime
+}
+
+// Provider attempts only: never prompts, answers, contact IDs, or source text.
+model AiProviderUsage {
+  id String @id
+  logicalRequestId String
+  tenantId String?
+  actorId String?
+  channel String
+  purpose String
+  provider String
+  requestedModel String
+  model String?
+  status String
+  httpStatus Int?
+  durationMs Int
+  inputTokens Int?
+  outputTokens Int?
+  cachedTokens Int?
+  reasoningTokens Int?
+  estimatedCostUsd Decimal? @db.Decimal(20, 9)
+  upperBoundCostUsd Decimal? @db.Decimal(20, 9)
+  rateVersion String
+  createdAt DateTime @default(now())
+  @@index([tenantId, createdAt])
+  @@index([logicalRequestId])
+  @@index([status, createdAt])
 }

@@ -68,7 +68,7 @@ type TenantShellProps = {
     seatUsage: { used: number; limit: number; available: number }
     storageUsedBytes: number
     storageLimitBytes: number
-    aiActionsPerMonth: number
+    aiCreditsPerMonth: number
     memberCount: number
     activeMemberCount: number
   } | null

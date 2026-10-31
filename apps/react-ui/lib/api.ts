@@ -13,7 +13,6 @@ export const api = axios.create({
 export type TenantSignupPayload = {
   tenantName: string
   planKey: PlanKey
-  paidNow?: boolean
   adminName: string
   adminEmail: string
   adminPassword: string
@@ -259,6 +258,13 @@ export type SubscriptionResponse = {
     planKey: PlanKey
     seatLimit: number
     status: "NONE" | "TRIALING" | "ACTIVE" | "PAST_DUE" | "CANCELED"
+    billingEnabled: boolean
+    paidThrough: string | null
+    graceEndsAt: string | null
+    scheduledPlanKey: "STARTER" | "PRO" | "BUSINESS" | null
+    scheduledChangeAt: string | null
+    cancelAtPeriodEnd: boolean
+    access: { crmAllowed: boolean; aiAllowed: boolean; state: string; graceEndsAt: string | null }
     currentPeriodEnd: string | null
     stripeCustomerId: string | null
     stripeSubscriptionId: string | null
@@ -269,7 +275,7 @@ export type SubscriptionResponse = {
     }
     storageUsedBytes: number
     storageLimitBytes: number
-    aiActionsPerMonth: number
+    aiCreditsPerMonth: number
     memberCount: number
     activeMemberCount: number
   }

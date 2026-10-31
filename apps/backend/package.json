@@ -11,7 +11,14 @@
     "worker:ai-sources:dev": "node --import tsx src/workers/ai-source-worker.ts",
     "build": "tsc && node scripts/copy-prisma-client.cjs",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "db:seed": "node --import tsx prisma/seed.ts"
+    "db:seed": "node --import tsx prisma/seed.ts",
+    "ai:evaluate": "node --import tsx scripts/ai-provider-evaluate.ts",
+    "worker:ai-credits": "node dist/workers/ai-credit-worker.js",
+    "worker:ai-credits:dev": "node --import tsx src/workers/ai-credit-worker.ts",
+    "worker:billing": "node dist/workers/billing-worker.js",
+    "worker:billing:dev": "node --import tsx src/workers/billing-worker.ts",
+    "worker:credit-purchases": "node dist/workers/credit-purchase-worker.js",
+    "worker:credit-purchases:dev": "node --import tsx src/workers/credit-purchase-worker.ts"
   },
   "prisma": {
     "seed": "node --import tsx prisma/seed.ts"
@@ -30,6 +37,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.2.4",
     "express": "^5.2.1",
+    "gpt-tokenizer": "^4.1.0",
     "html-to-text": "^9.0.5",
     "ipaddr.js": "^1.9.1",
     "libphonenumber-js": "^1.12.36",
@@ -39,6 +47,7 @@
     "pg": "^8.18.0",
     "resend": "^6.9.1",
     "socket.io": "^4.8.3",
+    "stripe": "^23.0.1",
     "swagger-ui-express": "^5.0.1",
     "yaml": "^2.8.2",
     "yauzl": "^3.4.0",
