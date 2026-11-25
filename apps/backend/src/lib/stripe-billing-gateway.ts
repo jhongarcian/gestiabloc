@@ -14,7 +14,8 @@ function normalizeInvoice(i: Stripe.Invoice) {
   return { id: i.id, customerId: id(i.customer), subscriptionId: id(i.parent?.subscription_details?.subscription), status: i.status, currency: i.currency,
     amountPaid: i.amount_paid, amountDue: i.amount_due, total: i.total, created: i.created, billingReason: i.billing_reason, url: i.hosted_invoice_url ?? null, hasMore: i.lines.has_more,
     lines: i.lines.data.map(l => ({ priceId: id(l.pricing?.price_details?.price), quantity: l.quantity, amount: l.amount,
-      subscriptionId: id(l.subscription), startsAt: l.period.start, endsAt: l.period.end, proration: Boolean(l.parent?.subscription_item_details?.proration) })) }
+      subscriptionId: id(l.parent?.subscription_item_details?.subscription ?? l.parent?.invoice_item_details?.subscription ?? l.subscription),
+      startsAt: l.period.start, endsAt: l.period.end, proration: Boolean(l.parent?.subscription_item_details?.proration ?? l.parent?.invoice_item_details?.proration) })) }
 }
 export class StripeBillingGateway {
   readonly client: Stripe

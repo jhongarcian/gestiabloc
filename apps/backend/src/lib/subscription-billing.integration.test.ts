@@ -67,6 +67,41 @@ test("Stripe subscription state and grants reconcile transactionally in isolated
     const foreign = await fixture("STARTER", false); foreign.sub.metadata.billingCommandId = randomUUID()
     await assert.rejects(processSubscriptionEvent(db, foreign.gateway, foreign.event, env), /BILLING_CUSTOMER_MISMATCH/)
   })
+  await t.test("a missed initial webhook is recovered from the owned completed Checkout without duplicate grants", async () => {
+    const f = await fixture("PRO", false)
+    assert.equal((await db.tenantSubscription.findUniqueOrThrow({ where: { tenantId: f.tenantId } })).stripeSubscriptionId, null)
+    await reconcileSubscription(db, f.gateway, f.tenantId, env)
+    const paid = await db.tenantSubscription.findUniqueOrThrow({ where: { tenantId: f.tenantId } })
+    assert.equal(paid.status, "ACTIVE"); assert.equal(paid.planKey, "PRO")
+    assert.equal(paid.pendingCheckoutId, null); assert.equal(paid.pendingCheckoutExpiresAt, null)
+    assert.equal(subscriptionAccess(paid).crmAllowed, true)
+    assert.equal((await readAiCreditUsage(db, f.tenantId)).monthly.granted, 2400)
+    await reconcileSubscription(db, f.gateway, f.tenantId, env)
+    await processSubscriptionEvent(db, f.gateway, f.event, env)
+    assert.equal(await db.aiCreditLedger.count({ where: { tenantId: f.tenantId, kind: "MONTHLY_GRANT" } }), 1)
+    assert.equal(f.gateway.checkoutCreates, 1)
+  })
+  await t.test("Checkout recovery verifies completion, customer ownership, command provenance and invoice payment", async () => {
+    const f = await fixture("PRO", false), session = f.gateway.sessions.get(f.result.checkoutId)!
+    session.status = "open"
+    await reconcileSubscription(db, f.gateway, f.tenantId, env)
+    assert.equal((await readAiCreditUsage(db, f.tenantId)).available, 0)
+    session.status = "complete"; session.customerId = "cus_foreign"
+    await assert.rejects(reconcileSubscription(db, f.gateway, f.tenantId, env), /BILLING_CUSTOMER_MISMATCH/)
+    session.customerId = f.sub.customerId
+    f.gateway.subs.get(f.sub.id)!.metadata.billingCommandId = randomUUID()
+    await assert.rejects(reconcileSubscription(db, f.gateway, f.tenantId, env), /BILLING_CUSTOMER_MISMATCH/)
+    f.gateway.subs.get(f.sub.id)!.metadata.billingCommandId = f.command.id
+    const invoice = f.gateway.invoices.get(f.sub.latestInvoiceId!)!
+    invoice.status = "open"; invoice.amountPaid = 0
+    await reconcileSubscription(db, f.gateway, f.tenantId, env)
+    const unpaid = await db.tenantSubscription.findUniqueOrThrow({ where: { tenantId: f.tenantId } })
+    assert.equal(subscriptionAccess(unpaid).crmAllowed, false)
+    assert.equal((await readAiCreditUsage(db, f.tenantId)).available, 0)
+    invoice.status = "paid"; invoice.amountPaid = invoice.amountDue
+    await reconcileSubscription(db, f.gateway, f.tenantId, env)
+    assert.equal((await readAiCreditUsage(db, f.tenantId)).available, 2400)
+  })
   await t.test("paid upgrades add only the monthly allowance difference, preserve usage and execute once", async () => {
     const f = await fixture()
     const request = { tenantId: f.tenantId, actorId: f.actorId, channel: "TEST" as const, requestId: randomUUID(), requestHash: "a".repeat(64) }

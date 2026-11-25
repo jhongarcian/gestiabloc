@@ -7,7 +7,7 @@ import { requireTenantAdmin } from "../middleware/requireTenantAdmin.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { getBillingConfiguration } from "../lib/billing-config.js"
 import { StripeBillingGateway, type BillingGateway } from "../lib/stripe-billing-gateway.js"
-import { BillingCommandSchema, BillingError, processSubscriptionEvent, runSubscriptionCommand, type BillingDatabase } from "../lib/subscription-billing.js"
+import { BillingCommandSchema, BillingError, processSubscriptionEvent, reconcileSubscription, runSubscriptionCommand, type BillingDatabase } from "../lib/subscription-billing.js"
 import { StripeCreditGateway, type CreditGateway } from "../lib/stripe-credit-gateway.js"
 import { CreditCheckoutSchema, startCreditCheckout, processCreditEvent, cancelCreditCheckout, type PurchaseDatabase } from "../lib/ai-credit-purchases.js"
 import { readAiCreditUsage } from "../lib/ai-credit-wallet.js"
@@ -69,6 +69,16 @@ export function createBillingRouter(deps: Dependencies = {}) {
     const gateway = deps.creditGateway ?? new StripeCreditGateway(env.STRIPE_SECRET_KEY!)
     const result = await startCreditCheckout(db as PurchaseDatabase, gateway, tenantId, (req as unknown as AuthedRequest).user.id, input, env)
     res.setHeader("Cache-Control", "no-store"); res.json({ ok: true, ...result as object })
+  })
+  router.post("/:tenantId/sync", requireAuth, admin, async (req, res) => {
+    enforceSameOrigin(req)
+    z.object({}).strict().parse(req.body)
+    const { tenantId } = z.object({ tenantId: z.uuid() }).parse(req.params)
+    const { db, gateway, env } = context(deps)
+    res.setHeader("Cache-Control", "no-store")
+    const result = await reconcileSubscription(db, gateway, tenantId, env)
+    const subscription = await db.tenantSubscription.findUnique({ where: { tenantId } })
+    res.json({ ok: true, ...result, access: subscriptionAccess(subscription) })
   })
   router.post("/:tenantId/:action", requireAuth, requireTenantAdmin({ tenantIdLookups: [{ source: "params", key: "tenantId" }] }), async (req, res) => {
     enforceSameOrigin(req)

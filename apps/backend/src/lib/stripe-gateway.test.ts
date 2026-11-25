@@ -1,6 +1,34 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { StripeBillingGateway } from "./stripe-billing-gateway.js"
+import type Stripe from "stripe"
+
+test("paid invoice lines use Stripe's nested subscription parent without relying on the retired flat field", async () => {
+  const gateway = new StripeBillingGateway("sk_test_fixture")
+  const invoice = {
+    id: "in_paid", customer: "cus_fixture", parent: { subscription_details: { subscription: "sub_fixture" } },
+    status: "paid", currency: "usd", amount_paid: 9900, amount_due: 9900, total: 9900,
+    created: 1795585949, billing_reason: "subscription_create", hosted_invoice_url: null,
+    lines: { has_more: false, data: [{
+      pricing: { price_details: { price: "price_PRO" } }, quantity: 1, amount: 9900,
+      period: { start: 1795585947, end: 1798177947 },
+      parent: { type: "subscription_item_details", subscription_item_details: { subscription: "sub_fixture", proration: false } },
+    }] },
+  } as unknown as Stripe.Invoice
+  gateway.client.invoices.retrieve = (async () => invoice) as unknown as typeof gateway.client.invoices.retrieve
+  const normalized = await gateway.invoice("in_paid")
+  assert.equal(normalized.subscriptionId, "sub_fixture")
+  assert.equal(normalized.lines[0]!.subscriptionId, "sub_fixture")
+  assert.equal(normalized.lines[0]!.proration, false)
+  assert.equal(normalized.lines[0]!.priceId, "price_PRO")
+
+  invoice.lines.data[0]!.parent = { type: "invoice_item_details", invoice_item_details: { subscription: "sub_fixture", proration: true } } as Stripe.InvoiceLineItem.Parent
+  assert.equal((await gateway.invoice("in_paid")).lines[0]!.subscriptionId, "sub_fixture")
+  assert.equal((await gateway.invoice("in_paid")).lines[0]!.proration, true)
+
+  invoice.lines.data[0]!.parent = null
+  assert.equal((await gateway.invoice("in_paid")).lines[0]!.subscriptionId, null, "an unrelated line must not inherit the invoice's subscription")
+})
 
 test("Stripe Checkout sends only server-selected monthly pricing, no trials, stable request parameters and card filtering", async () => {
   const gateway = new StripeBillingGateway("sk_test_fixture"), bodies: unknown[] = [], options: unknown[] = []

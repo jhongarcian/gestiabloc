@@ -84,3 +84,36 @@ test("credit overview returns real balances, plan/access metadata and no fabrica
   assert.equal(off.usage, null); assert.equal(transactions, 1)
   admin = false; assert.equal((await fetch(`${root}/api/billing/${tenantId}/credits`, { headers })).status, 403)
 })
+
+test("payment refresh is an admin-only same-origin POST with no client payment claims or charges", async t => {
+  const { prisma } = await import("./prisma.js")
+  const originals = { session: prisma.session.findUnique, membership: prisma.membership.findUnique }
+  const tenantId = randomUUID(), actorId = randomUUID(); let admin = true, lookups = 0
+  prisma.session.findUnique = (async () => ({ expiresAt: new Date(Date.now() + 60000), user: { id: actorId, name: "Fixture", email: "fixture@example.test", platformRole: "NONE" } })) as unknown as typeof originals.session
+  prisma.membership.findUnique = (async () => ({ status: "ACTIVE", role: admin ? "TENANT_ADMIN" : "TENANT_USER" })) as unknown as typeof originals.membership
+  t.after(() => { prisma.session.findUnique = originals.session; prisma.membership.findUnique = originals.membership })
+  const gateway = new FakeBillingGateway(), sub = { tenantId, stripeSubscriptionId: null, pendingCheckoutId: null, status: "NONE", paidThrough: null, graceEndsAt: null }
+  const db = { tenantSubscription: {
+    updateMany: async () => ({ count: 1 }),
+    findUniqueOrThrow: async () => { lookups++; return sub },
+    findUnique: async () => sub,
+  } } as unknown as BillingDatabase
+  const app = express(); app.use(cookieParser(), express.json())
+  app.use("/api/billing", createBillingRouter({ db, gateway, env }))
+  app.use("/off", createBillingRouter({ db, gateway, env: {} }))
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); s.once("error", reject) })
+  t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections() }))
+  const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}`, url = `${root}/api/billing/${tenantId}/sync`
+  const headers = { cookie: "sid=test", origin: process.env.WEB_ORIGIN ?? "http://localhost:3000", "content-type": "application/json" }
+  const post = (body = {}, h = headers, target = url) => fetch(target, { method: "POST", headers: h, body: JSON.stringify(body) })
+  assert.equal((await post({}, { ...headers, cookie: "" })).status, 401)
+  admin = false; assert.equal((await post()).status, 403); admin = true
+  assert.equal((await post({}, { ...headers, origin: "https://untrusted.example" })).status, 403)
+  assert.equal((await post({ checkoutId: "cs_claim", paid: true })).status, 400)
+  assert.equal((await post({}, headers, `${root}/off/${tenantId}/sync`)).status, 503)
+  assert.equal(lookups, 0)
+  const response = await post(), data = await response.json()
+  assert.equal(response.status, 200); assert.equal(response.headers.get("cache-control"), "no-store")
+  assert.equal(data.access.crmAllowed, false); assert.equal(data.ignored, true)
+  assert.equal(lookups, 1); assert.equal(gateway.checkoutCreates, 0); assert.equal(gateway.upgradeCreates, 0)
+})

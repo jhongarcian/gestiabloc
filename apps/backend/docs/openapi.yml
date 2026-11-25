@@ -7843,6 +7843,27 @@ paths:
         "400": { description: STRIPE_SIGNATURE_INVALID or incompatible mode/account }
         "409": { description: Tenant reconciliation busy or unsupported billing configuration; retry or operator review required }
         "503": { description: BILLING_UNAVAILABLE or provider/database temporarily unavailable }
+  /api/billing/{tenantId}/sync:
+    post:
+      tags: [Billing]
+      summary: Refresh verified subscription payment status from Stripe
+      description: Active tenant administrator and trusted origin required. Reads the server-owned subscription or pending Checkout and verifies the current subscription, invoice, price, customer and command provenance. Client payment claims never activate access. Recovers missed initial notifications without creating a Checkout or charge. Repeated calls use the existing per-invoice credit grant key. Cache-Control no-store.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { description: Refreshed access state and ignored flag if no completed subscription is available yet }
+        "400": { description: Invalid request or client-supplied payment claims }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator and trusted origin required }
+        "409": { description: Reconciliation busy or Stripe ownership/price mismatch; no access granted }
+        "503": { description: Billing disabled or Stripe/database unavailable }
   /api/billing/{tenantId}/checkout:
     post:
       tags: [Billing]

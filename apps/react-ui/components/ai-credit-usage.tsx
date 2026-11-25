@@ -1,4 +1,5 @@
 "use client"
+import type { ReactNode } from "react"
 import Link from "next/link"
 import { AlertCircle, RefreshCw } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -12,7 +13,7 @@ import { creditDisplay, formatCreditDate } from "@/lib/ai-credit-usage"
 import { useAiCreditOverview, type AiCreditOverviewController } from "@/lib/use-ai-credit-overview"
 const count = (value: number) => value.toLocaleString("en-US")
 const labels = { ready: "Available", low: "Running low", exhausted: "No credits available", reserved: "Replies in progress", review: "Billing review", paused: "AI paused", unavailable: "Not available yet", invalid: "Usage unavailable" }
-export function AiCreditUsageCard({ controller, manageHref, userRole = "TENANT_ADMIN" }: { controller: AiCreditOverviewController; manageHref: string; userRole?: string }) {
+export function AiCreditUsageCard({ controller, manageHref, userRole = "TENANT_ADMIN", footer }: { controller: AiCreditOverviewController; manageHref: string; userRole?: string; footer?: ReactNode }) {
   const { data, loading, error, refresh } = controller
   const admin = userRole === "TENANT_ADMIN", display = data ? creditDisplay(data) : null
   const valid = display && !["unavailable", "invalid"].includes(display.state) && data?.usage ? data.usage : null
@@ -27,7 +28,7 @@ export function AiCreditUsageCard({ controller, manageHref, userRole = "TENANT_A
       {!admin ? <p className="text-sm text-muted-foreground">Your account administrator can view credit usage and manage purchases.</p>
         : error ? <Alert variant="destructive"><AlertCircle /><AlertTitle>Credit usage unavailable</AlertTitle><AlertDescription>{error} No balance is shown until it can be verified.<Button type="button" variant="outline" size="sm" onClick={refresh}>Try again</Button></AlertDescription></Alert>
         : !data ? <div aria-label="Loading credit usage" className="grid gap-3"><Skeleton className="h-9 w-44" /><Skeleton className="h-7 w-full" /><Skeleton className="h-14 w-full" /></div>
-        : !valid || !display || !("available" in display) ? <div className="grid gap-2"><Badge variant="outline">{display?.state === "invalid" ? "Usage unavailable" : "Not available yet"}</Badge><p className="text-sm text-muted-foreground">{display?.state === "invalid" ? "The latest balance could not be verified. Refresh to try again." : "Your balances will appear here when AI credits are available."}</p></div>
+        : !valid || !display || !("available" in display) ? <div className="grid justify-items-start gap-3"><Badge variant="outline">{display?.state === "invalid" ? "Usage unavailable" : "Usage tracking coming soon"}</Badge><p className="text-sm leading-relaxed text-muted-foreground">{display?.state === "invalid" ? "The latest balance could not be verified. Refresh to try again." : data.plan ? `Your ${data.plan.name} plan includes ${count(data.plan.monthlyAllowance)} AI credits each month. Detailed usage will appear here when available.` : "Your balances will appear here when AI credits are available."}</p></div>
         : <>
           <div className="flex flex-wrap items-end justify-between gap-3"><div className="grid gap-1"><p className="text-sm text-muted-foreground">{paused ? "Credits in balance" : "Credits available to spend"}</p><p className="text-3xl font-semibold tracking-tight tabular-nums">{count(display.available)}</p></div><Badge variant={display.state === "exhausted" || display.state === "review" ? "destructive" : "secondary"}>{labels[display.state]}</Badge></div>
           {display.state === "review" ? <Alert variant="destructive"><AlertTitle>A purchase needs billing review</AlertTitle><AlertDescription>New AI spending and purchases are paused. Your balances are retained while the payment is reviewed.</AlertDescription></Alert>
@@ -43,7 +44,7 @@ export function AiCreditUsageCard({ controller, manageHref, userRole = "TENANT_A
           <Separator /><div className="grid gap-1"><div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm font-medium">Purchased credits available</p><p className="text-xl font-semibold tabular-nums">{count(valid.purchased.available)}</p></div><p className="text-xs text-muted-foreground">{count(valid.purchased.balance)} in balance · {count(valid.purchased.reserved)} reserved. Purchased credits carry over and are used after monthly credits.</p></div>
           <p className="text-xs text-muted-foreground">Updated {formatCreditDate(data.asOf, data.timeZone) ?? "on the last successful refresh"}. Reserved credits are held for replies in progress and are excluded from available credits.</p>
         </>}
-      {admin ? <div className="flex flex-wrap gap-2"><Button asChild variant={valid && !paused && data?.purchasesEnabled ? "default" : "outline"}><Link href={manageHref}>{valid && !paused && data?.purchasesEnabled ? "Buy AI credits" : "Manage billing"}</Link></Button><p className="self-center text-xs text-muted-foreground">No trials. Payment must be confirmed before credits are added.</p></div> : null}
+      {footer !== undefined ? footer : admin ? <div className="flex flex-wrap gap-2"><Button asChild variant={valid && !paused && data?.purchasesEnabled ? "default" : "outline"}><Link href={manageHref}>{valid && !paused && data?.purchasesEnabled ? "Buy AI credits" : "Manage billing"}</Link></Button><p className="self-center text-xs text-muted-foreground">No trials. Payment must be confirmed before credits are added.</p></div> : null}
     </CardContent>
   </Card>
 }

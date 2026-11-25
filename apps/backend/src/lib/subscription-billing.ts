@@ -105,6 +105,7 @@ async function syncLocked(db: BillingDatabase, gateway: BillingGateway, value: L
       stripeSubscriptionId: s.id, stripePriceId: verifiedPaid ? item.priceId : local.stripePriceId, status, paidThrough,
       ...(verifiedPaid ? { planKey: plan, seatLimit: subscriptionPlans[plan].seatLimit } : {}),
       currentPeriodStart: startsAt, currentPeriodEnd: endsAt, graceEndsAt: status === "PAST_DUE" && paidThrough ? new Date(paidThrough.getTime() + BILLING_GRACE_MS) : null,
+      ...(verifiedPaid ? { pendingCheckoutId: null, pendingCheckoutExpiresAt: null } : {}),
       scheduledPlanKey, scheduledChangeAt, cancelAtPeriodEnd: s.cancelAtPeriodEnd, stripeScheduleId: s.scheduleId, billingSyncedAt: new Date(),
     } })
     if (verifiedPaid) await grantMonthlyAiCredits(tx, { tenantId: value.tenantId, sourceKey: `stripe:invoice:${invoice!.id}:monthly`, planKey: plan, startsAt, endsAt })
@@ -116,8 +117,20 @@ export async function reconcileSubscription(db: BillingDatabase, gateway: Billin
   configured(env)
   return lease(db, tenantId, async value => {
     const local = await db.tenantSubscription.findUniqueOrThrow({ where: { tenantId } })
-    if (!local.stripeSubscriptionId) return { ignored: true }
-    return syncLocked(db, gateway, value, await gateway.subscription(local.stripeSubscriptionId), env)
+    let subscriptionId = local.stripeSubscriptionId
+    if (!subscriptionId && local.pendingCheckoutId) {
+      // The initial webhook may have failed before saving a subscription ID.
+      // Recover only the server-owned Checkout; a browser redirect is not proof.
+      const session = await gateway.session(local.pendingCheckoutId)
+      if (session.id !== local.pendingCheckoutId || session.customerId !== local.stripeCustomerId) throw new BillingError(409, "BILLING_CUSTOMER_MISMATCH")
+      if (session.status !== "complete" || !session.subscriptionId) {
+        await update(db, value, { billingSyncedAt: new Date() })
+        return { ignored: true }
+      }
+      subscriptionId = session.subscriptionId
+    }
+    if (!subscriptionId) return { ignored: true }
+    return syncLocked(db, gateway, value, await gateway.subscription(subscriptionId), env)
   })
 }
 export async function processSubscriptionEvent(db: BillingDatabase, gateway: BillingGateway, event: { id: string; type: string; objectId: string; created: number }, env: Environment = process.env) {

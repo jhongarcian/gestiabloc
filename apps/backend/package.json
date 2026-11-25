@@ -13,6 +13,7 @@
     "test": "node --import tsx --test src/**/*.test.ts",
     "db:seed": "node --import tsx prisma/seed.ts",
     "ai:evaluate": "node --import tsx scripts/ai-provider-evaluate.ts",
+    "stripe:listen": "node scripts/stripe-listen.cjs",
     "worker:ai-credits": "node dist/workers/ai-credit-worker.js",
     "worker:ai-credits:dev": "node --import tsx src/workers/ai-credit-worker.ts",
     "worker:billing": "node dist/workers/billing-worker.js",

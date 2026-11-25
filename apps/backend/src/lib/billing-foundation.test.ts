@@ -51,4 +51,16 @@ test("enabling purchases requires Stripe setup, enforcement, and a passed model 
   assert.equal("STRIPE_SECRET_KEY" in config, false)
   assert.throws(() => getBillingConfiguration({ ...env, AI_CREDIT_MODEL_GATE_PASSED: "false" }))
   assert.throws(() => getBillingConfiguration({ ...env, STRIPE_PRICE_AI_5000: undefined }))
+  for (const name of Object.keys(env).filter(name => name.startsWith("STRIPE_"))) {
+    for (const value of ["", " \t "]) assert.throws(() => getBillingConfiguration({ ...env, [name]: value }))
+  }
+})
+
+test("empty Stripe placeholders allow local development while rollout is disabled", () => {
+  const settings = ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_PORTAL_CONFIGURATION_ID", "STRIPE_PRICE_STARTER_MONTHLY", "STRIPE_PRICE_PRO_MONTHLY", "STRIPE_PRICE_BUSINESS_MONTHLY", "STRIPE_PRICE_AI_1000", "STRIPE_PRICE_AI_5000", "STRIPE_PRICE_AI_10000"]
+  for (const value of ["", " \t "]) {
+    const env = Object.fromEntries(settings.map(name => [name, value]))
+    assert.deepEqual(getBillingConfiguration(env), { enabled: false, creditEnforcementEnabled: false, creditPurchasesEnabled: false, modelGatePassed: false })
+    assert.throws(() => getBillingConfiguration({ ...env, BILLING_ENABLED: "true" }))
+  }
 })

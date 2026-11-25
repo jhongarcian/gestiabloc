@@ -9,7 +9,10 @@ async function main() {
   const gateway = new StripeBillingGateway(process.env.STRIPE_SECRET_KEY!), controller = new AbortController()
   process.once("SIGINT", () => controller.abort()); process.once("SIGTERM", () => controller.abort())
   do {
-    const subscriptions = await prisma.tenantSubscription.findMany({ where: { stripeSubscriptionId: { not: null }, OR: [{ billingSyncedAt: null }, { billingSyncedAt: { lt: new Date(Date.now() - 5 * 60000) } }] }, orderBy: { billingSyncedAt: { sort: "asc", nulls: "first" } }, take: 25, select: { tenantId: true } })
+    const subscriptions = await prisma.tenantSubscription.findMany({ where: { AND: [
+      { OR: [{ stripeSubscriptionId: { not: null } }, { pendingCheckoutId: { not: null } }] },
+      { OR: [{ billingSyncedAt: null }, { billingSyncedAt: { lt: new Date(Date.now() - 5 * 60000) } }] },
+    ] }, orderBy: { billingSyncedAt: { sort: "asc", nulls: "first" } }, take: 25, select: { tenantId: true } })
     for (const sub of subscriptions) {
       if (controller.signal.aborted) break
       try { await reconcileSubscription(prisma, gateway, sub.tenantId) }

@@ -49,6 +49,16 @@ npm run worker:ai-credits -w backend
 
 The billing worker exits without provider calls when billing is disabled. Failures log no payloads/secrets; monitor failed webhook responses and worker failures. Bounded requests reject unsupported large/multi-item/custom-price/trial configurations rather than guessing entitlements. These controls govern HTTP CRM access and AI spending; background business automations are not rewritten by this chunk.
 
+## Payment confirmation recovery
+
+The Stripe adapter reads invoice-line subscription ownership from `parent.subscription_item_details.subscription` or `parent.invoice_item_details.subscription`, with a fallback for the older flat field. Missing line ownership remains invalid; it is never inferred from the invoice's subscription. This fixes paid invoices being rejected when Stripe supplies only the nested parent.
+
+`POST /api/billing/:tenantId/sync` verifies current Stripe payment state using the existing administrator, same-origin, fenced-lease and invoice checks. It accepts only an empty body and cannot create a payment. If the initial webhook was missed before the subscription ID was saved, it checks the pending Checkout already recorded by the server, including its customer and command provenance. A completed Checkout still needs a verified paid invoice before granting access. Verified activation clears the old pending Checkout, and grant retries retain the unique invoice source key.
+
+The subscription screen invokes this verification after returning from Checkout and when an administrator chooses **Refresh payment status**. The background billing worker also scans pending initial Checkouts. Incomplete sessions record their last check so abandoned Checkouts cannot monopolize the reconciliation queue. Webhooks and the reconciliation worker remain required for ongoing renewal and cancellation changes; the browser refresh provides an additional recovery path.
+
+Recovery verification: **561 backend tests passed, 9 opt-in integrations skipped, zero failures** with a disposable local PostgreSQL cluster. Regressions cover the actual nested invoice-line shape, missing line ownership, recovery without a saved subscription ID, unpaid invoices, foreign customers/commands, repeated grants, and refresh-route authentication/origin/input checks. Backend and frontend production builds, frontend TypeScript validation, OpenAPI parsing and `git diff --check` passed. Frontend lint retains four existing date-input warnings. An existing paid Pro sandbox invoice was reprocessed through the corrected handler; paid CRM access and exactly one 2,400-credit monthly grant were verified without creating another payment.
+
 ## Deployment and verification
 
 `20261029140000_stripe_subscriptions` adds command/receipt storage, unique customer/subscription mappings, leases, pending Checkout state, schedule ID and reconciliation indexes. Apply all prepared migrations in order before deploying/activating dependent code. Preflight duplicate non-null Stripe mappings; never reset the application database. No application migration was applied here.

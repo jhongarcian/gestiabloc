@@ -1,16 +1,19 @@
 import { z } from "zod"
 
 const flag = z.enum(["true", "false"]).default("false").transform(value => value === "true")
+// Local templates leave provider settings empty. Required checks below still
+// prevent enabling billing or purchases before those values are configured.
+const optionalStripeSetting = z.string().trim().optional()
 const schema = z.object({
-  STRIPE_SECRET_KEY: z.string().trim().min(1).optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().trim().min(1).optional(),
-  STRIPE_PORTAL_CONFIGURATION_ID: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_STARTER_MONTHLY: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_PRO_MONTHLY: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_BUSINESS_MONTHLY: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_AI_1000: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_AI_5000: z.string().trim().min(1).optional(),
-  STRIPE_PRICE_AI_10000: z.string().trim().min(1).optional(),
+  STRIPE_SECRET_KEY: optionalStripeSetting,
+  STRIPE_WEBHOOK_SECRET: optionalStripeSetting,
+  STRIPE_PORTAL_CONFIGURATION_ID: optionalStripeSetting,
+  STRIPE_PRICE_STARTER_MONTHLY: optionalStripeSetting,
+  STRIPE_PRICE_PRO_MONTHLY: optionalStripeSetting,
+  STRIPE_PRICE_BUSINESS_MONTHLY: optionalStripeSetting,
+  STRIPE_PRICE_AI_1000: optionalStripeSetting,
+  STRIPE_PRICE_AI_5000: optionalStripeSetting,
+  STRIPE_PRICE_AI_10000: optionalStripeSetting,
   BILLING_ENABLED: flag,
   AI_CREDIT_ENFORCEMENT_ENABLED: flag,
   AI_CREDIT_PURCHASES_ENABLED: flag,
