@@ -7692,11 +7692,141 @@ paths:
         "429": { description: AI_CHAT_RATE_LIMITED or AI_PROVIDER_BUSY. One concurrent reply and ten requests per minute per administrator/account per server instance }
         "502": { description: AI_INVALID_RESPONSE; incomplete output or invalid citations }
         "503": { description: AI_BILLING_UNAVAILABLE, AI_PROVIDER_UNAVAILABLE or AI_METERING_UNAVAILABLE; provider or enabled usage recording unavailable }
+  /api/billing/{tenantId}/credits:
+    get:
+      tags: [Billing]
+      summary: Read monthly AI credit usage, purchased balance and purchase availability
+      description: Active tenant administrator required. Read-only, no-store response; never creates a wallet. Returns server time, tenant timezone, configured plan allowance and paid access alongside the wallet snapshot. Available credits exclude reservations. A plan allowance is not a wallet grant. Usage is null when billing or enforcement is disabled; clients must show an unavailable state rather than zero usage. canResume rechecks paid access and review holds. pendingCheckout allows an administrator to resume or cancel an unpaid payment. Clients should refresh after generation and Checkout return, and at period/access deadlines even if the wallet revision is unchanged.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      responses:
+        "200":
+          description: Pack catalog, rollout/eligibility flags, optional wallet snapshot and pending Checkout
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, enabled, enforcementEnabled, asOf, timeZone, plan, access, purchasesEnabled, eligible, canResume, usage, pendingCheckout, packs]
+                properties:
+                  ok: { type: boolean, enum: [true] }
+                  enabled: { type: boolean, description: Billing rollout enabled }
+                  enforcementEnabled: { type: boolean }
+                  asOf: { type: string, format: date-time }
+                  timeZone: { type: string, nullable: true, description: Tenant IANA timezone }
+                  plan:
+                    type: object
+                    nullable: true
+                    properties:
+                      key: { type: string, enum: [STARTER, PRO, BUSINESS] }
+                      name: { type: string }
+                      monthlyAllowance: { type: integer, minimum: 0, description: Configured allowance; not a granted balance }
+                  access:
+                    type: object
+                    nullable: true
+                    properties:
+                      state: { type: string, enum: [PAID, GRACE, BLOCKED] }
+                      crmAllowed: { type: boolean }
+                      aiAllowed: { type: boolean }
+                      graceEndsAt: { type: string, format: date-time, nullable: true }
+                  paidThrough: { type: string, format: date-time, nullable: true }
+                  cancelAtPeriodEnd: { type: boolean }
+                  purchasesEnabled: { type: boolean }
+                  eligible: { type: boolean }
+                  canResume: { type: boolean }
+                  usage:
+                    type: object
+                    nullable: true
+                    properties:
+                      revision: { type: integer, minimum: 0, description: Does not necessarily change when a period expires }
+                      purchaseReviewRequired: { type: boolean }
+                      period:
+                        type: object
+                        nullable: true
+                        properties:
+                          startsAt: { type: string, format: date-time }
+                          endsAt: { type: string, format: date-time }
+                      monthly:
+                        type: object
+                        properties:
+                          granted: { type: integer, minimum: 0 }
+                          used: { type: integer, minimum: 0 }
+                          reserved: { type: integer, minimum: 0 }
+                          remaining: { type: integer, minimum: 0, description: Granted minus used minus reserved }
+                      purchased:
+                        type: object
+                        properties:
+                          balance: { type: integer, minimum: 0 }
+                          reserved: { type: integer, minimum: 0 }
+                          available: { type: integer, minimum: 0, description: Balance minus reserved }
+                      available: { type: integer, minimum: 0, description: Monthly remaining plus purchased available; spending also requires paid access and no review hold }
+                  pendingCheckout:
+                    type: object
+                    nullable: true
+                    properties:
+                      id: { type: string, format: uuid }
+                      packKey: { type: string, enum: [AI_1000, AI_5000, AI_10000] }
+                      url: { type: string, format: uri, nullable: true }
+                  packs: { type: object, additionalProperties: true, description: Server credit-pack catalog }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator required }
+  /api/billing/{tenantId}/credits/checkout:
+    post:
+      tags: [Billing]
+      summary: Start one-time Checkout for an AI credit pack
+      description: Active paid subscription, tenant administrator, trusted origin, purchase/enforcement flags and approved model gate required. The server selects a fixed one-time USD price and quantity one. Redirects do not grant credits. requestId retries reuse the existing Checkout; changed packs under the same ID conflict. No client amount, quantity, customer, credit count or redirect is accepted.
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [packKey, requestId]
+              properties:
+                packKey: { type: string, enum: [AI_1000, AI_5000, AI_10000] }
+                requestId: { type: string, format: uuid }
+      responses:
+        "200": { description: Checkout ID and hosted URL; no credits granted until captured payment is verified }
+        "400": { description: Invalid or client-overridden input }
+        "401": { description: Authentication required }
+        "402": { description: BILLING_REQUIRED or AI_PURCHASE_REVIEW_REQUIRED }
+        "403": { description: Active tenant administrator or trusted origin required }
+        "409": { description: Pending/conflicting/expired Checkout, price mismatch or reconciliation required }
+        "503": { description: CREDIT_PURCHASES_UNAVAILABLE or provider/database unavailable }
+  /api/billing/{tenantId}/credits/{purchaseId}/cancel:
+    post:
+      tags: [Billing]
+      summary: Expire an owned unpaid Checkout without refunding or removing credits
+      security:
+        - cookieAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - in: path
+          name: purchaseId
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        "200": { description: Unpaid Checkout expired; repeated cancellation is safe }
+        "403": { description: Active tenant administrator or trusted origin required }
+        "404": { description: CREDIT_PURCHASE_NOT_FOUND in this tenant }
+        "409": { description: Payment already completed or reconciliation required; no refund is initiated }
+        "503": { description: Provider or database unavailable }
   /api/billing/webhook:
     post:
       tags: [Billing]
       summary: Receive signed Stripe subscription/payment notifications
-      description: Raw body is verified before JSON parsing. Only matching Stripe mode/platform events are processed. Current Stripe state is retrieved, validated and reconciled; payment state, monthly credit grant and event receipt commit atomically. Unknown events are ignored. Busy/failed handlers return non-2xx for Stripe retry. Checkout redirects alone never activate access.
+      description: Raw body is verified before JSON parsing. Only matching Stripe mode/platform events are processed. Current Stripe state is retrieved, validated and reconciled; subscription grants and one-time credit purchases use separate validated flows and stable invoice/payment-intent source keys. Credit refunds/disputes set a review hold. Payment/grant/event state commits atomically. Unknown events are ignored. Busy/failed handlers return non-2xx for Stripe retry. Checkout redirects alone never activate access.
       security: []
       parameters:
         - in: header
@@ -12047,10 +12177,14 @@ components:
           type: string
           nullable: true
           maxLength: 60
+          description: Whole-number imperial height, using feet (0–9) and inches (0–11), greater than zero. Saved as "5 ft 2 in"; equivalent ft/feet/f and in/inches spellings are accepted. Omit to preserve the current value; send null or an empty string to clear it.
+          example: 5 ft 2 in
         weight:
           type: string
           nullable: true
           maxLength: 60
+          description: Whole-number pounds from 1 to 9999, with an optional lb/lbs/pounds suffix. Saved as "260 lb". Decimals, signs, other units, and scientific notation are rejected. Omit to preserve the current value; send null or an empty string to clear it.
+          example: "260"
         deceasedAt:
           type: string
           format: date-time

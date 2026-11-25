@@ -284,6 +284,7 @@ export default function HomePage() {
           </p>
         </div>
 
+        <p className="mb-6 text-sm text-stone-600">Billed monthly. No free trials. AI credits are added after payment confirmation; rules-only qualification checks are free.</p>
         <div className="grid gap-6 lg:grid-cols-3">
           {subscriptionPlans.map((plan) => (
             <article
@@ -385,7 +386,7 @@ export default function HomePage() {
               <div className={`mt-8 border-t ${plan.featured ? "border-white/10" : "border-stone-900/10"} pt-6`}>
                 <div className="space-y-3 text-sm">
                   <p className={plan.featured ? "text-stone-300" : "text-stone-600"}>
-                    <span className="font-semibold text-current">AI Usage:</span>{" "}
+                    <span className="font-semibold text-current">AI credits:</span>{" "}
                     {plan.aiUsage}
                   </p>
                   <p className={plan.featured ? "text-stone-300" : "text-stone-600"}>

@@ -63,6 +63,18 @@ test("credit purchases fulfill verified payments once and isolate refunds/disput
     assert.equal((await readAiCreditUsage(db, f.tenantId)).purchaseReviewRequired, false)
     assert.equal((await readAiCreditUsage(db, f.tenantId)).purchased.balance, 0)
   })
+  await t.test("all pack sizes grant the catalog quantity after capture, and uncaptured payments remain pending", async () => {
+    for (const [packKey, credits] of [["AI_1000", 1000], ["AI_5000", 5000], ["AI_10000", 10000]] as const) {
+      const f = await fixture(), checkout = await startCreditCheckout(db, f.gateway, f.tenantId, f.actorId, { ...f.input, packKey }, env) as { checkoutId: string }
+      const payment = f.gateway.complete(checkout.checkoutId)
+      payment.charge!.captured = false
+      await processCreditEvent(db, f.gateway, event("payment_intent.succeeded", payment.id))
+      assert.equal((await readAiCreditUsage(db, f.tenantId)).purchased.balance, 0)
+      payment.charge!.captured = true
+      await processCreditEvent(db, f.gateway, event("payment_intent.succeeded", payment.id))
+      assert.equal((await readAiCreditUsage(db, f.tenantId)).purchased.balance, credits)
+    }
+  })
   await t.test("a missed webhook or lost Checkout result is repaired and lapsed subscriptions keep paid credits", async () => {
     const f = await fixture(), checkout = await startCreditCheckout(db, f.gateway, f.tenantId, f.actorId, f.input, env) as { checkoutId: string }
     const row = await db.aiCreditPurchase.findFirstOrThrow({ where: { tenantId: f.tenantId } })

@@ -13,7 +13,7 @@ export default async function TenantLayout({
   params: Promise<{ tenantSlug: string }>
 }>) {
   const { tenantSlug: slug } = await params
-  const { cookie, user, membership, tenantId } =
+  const { cookie, user, membership, tenantId, tenantTimezone } =
     await getTenantMembershipContext(slug)
   const role = membership?.role ?? null
 
@@ -31,6 +31,7 @@ export default async function TenantLayout({
     <TenantShell
       tenantSlug={slug}
       tenantName={membership.tenant.name?.trim() || slug}
+      tenantTimezone={tenantTimezone}
       user={{
         id: user.id,
         name: user.name,

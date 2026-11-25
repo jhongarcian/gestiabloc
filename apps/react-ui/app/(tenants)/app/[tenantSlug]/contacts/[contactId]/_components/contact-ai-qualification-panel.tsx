@@ -350,6 +350,7 @@ export function ContactAiQualificationPanel({
       releaseTerminalAiAttempt(tracking.current, activity.requestId, error)
       throw error
     } finally {
+      window.dispatchEvent(new Event("ai-credits-changed"))
       if (activeRequest.current === controller) activeRequest.current = null
     }
   }

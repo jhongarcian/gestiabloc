@@ -82,4 +82,19 @@ describe("contact import field matching", () => {
     assert.equal(result.ok, false)
     if (!result.ok) assert.equal(result.code, "MISSING_REQUIRED_VALUE")
   })
+
+  it("validates and normalizes imported height and weight using the contact rules", () => {
+    const mappings = suggestImportMappings(["First name", "Last name", "Height", "Weight"], [])
+    const result = prepareImportRow(["Ada", "Lovelace", "5f 2in", "260 pounds"], mappings, settings, catalog)
+    assert.equal(result.ok, true)
+    if (result.ok) {
+      assert.equal(result.row.contact.height, "5 ft 2 in")
+      assert.equal(result.row.contact.weight, "260 lb")
+    }
+    for (const [height, weight] of [["5 ft 12 in", "260"], ["5 ft 2 in", "260.5"], ["tall", "heavy"]]) {
+      const invalid = prepareImportRow(["Ada", "Lovelace", height, weight], mappings, settings, catalog)
+      assert.equal(invalid.ok, false)
+      if (!invalid.ok) assert.equal(invalid.code, "INVALID_VALUE")
+    }
+  })
 })

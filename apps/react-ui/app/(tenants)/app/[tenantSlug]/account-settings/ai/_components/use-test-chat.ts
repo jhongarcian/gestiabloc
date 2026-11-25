@@ -99,6 +99,7 @@ export function useTestChat(tenantId: string) {
       releaseTerminalAiAttempt(tracking.current, activity.requestId, cause)
       if (!controller.signal.aborted) setError(errorMessage(cause))
     } finally {
+      window.dispatchEvent(new Event("ai-credits-changed"))
       if (request.current === controller) {
         request.current = null
         setPending(null)

@@ -1,5 +1,6 @@
 import { parsePhoneNumberFromString, isSupportedCountry, type CountryCode } from "libphonenumber-js"
 import { normalizeCustomFieldValue } from "./contact-custom-field-values.js"
+import { contactHeightSchema, contactWeightSchema } from "./contact-measurements.js"
 
 export const IMPORT_CONTACT_FIELDS = [
   ["firstName", "First name"], ["middleName", "Middle name"], ["lastName", "Last name"],
@@ -184,6 +185,13 @@ export function prepareImportRow(
       const date = parseImportDate(raw, settings.dateFormat)
       if (!date) return { ok: false, code: "INVALID_DATE", message: `${mapping.sourceHeader}: date must match ${importDateHint(settings.dateFormat)}.` }
       contact[key] = date
+    } else if (key === "height" || key === "weight") {
+      const schema = key === "height" ? contactHeightSchema : contactWeightSchema
+      const result = schema.safeParse(raw)
+      if (!result.success) {
+        return { ok: false, code: "INVALID_VALUE", message: `${mapping.sourceHeader}: ${result.error.issues[0].message}` }
+      }
+      contact[key] = result.data
     } else if (key === "email") {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) {
         return { ok: false, code: "INVALID_EMAIL", message: `${mapping.sourceHeader}: invalid email address.` }

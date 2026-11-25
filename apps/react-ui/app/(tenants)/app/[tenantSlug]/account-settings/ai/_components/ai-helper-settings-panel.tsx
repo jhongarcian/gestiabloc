@@ -1,5 +1,6 @@
 "use client"
 
+import { AiCreditUsage } from "@/components/ai-credit-usage"
 import { useRef } from "react"
 import { Check, Loader2, Upload } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -198,6 +199,7 @@ function AvatarPicker() {
 
 export function AiSettings() {
   const {
+    tenantId, tenantSlug, userRole,
     draft,
     setHelper,
     companyName,
@@ -219,6 +221,7 @@ export function AiSettings() {
         description="Give your helper a name and a consistent way of speaking."
         actions={<SaveHelperButton />}
       />
+      <AiCreditUsage tenantId={tenantId} tenantSlug={tenantSlug} userRole={userRole} />
       {helperError ? (
         <Alert variant="destructive" className="rounded-2xl" role="alert">
           <AlertTitle>

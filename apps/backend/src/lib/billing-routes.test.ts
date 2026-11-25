@@ -55,3 +55,32 @@ test("billing controls require active admins, trusted origin and server-selected
   const overview = await fetch(root.replace(/\/checkout$/, "/credits"), { headers })
   assert.equal(overview.status, 200); assert.equal((await overview.json()).purchasesEnabled, false)
 })
+
+test("credit overview returns real balances, plan/access metadata and no fabricated balances when enforcement is off", async t => {
+  const { prisma } = await import("./prisma.js"), { creditTestEnv } = await import("./ai-credit-execution.test-fixtures.js")
+  const originals = { session: prisma.session.findUnique, membership: prisma.membership.findUnique }, tenantId = randomUUID(), actorId = randomUUID()
+  prisma.session.findUnique = (async () => ({ expiresAt: new Date(Date.now() + 60000), user: { id: actorId, name: "Fixture", email: "fixture@example.test", platformRole: "NONE" } })) as unknown as typeof originals.session
+  let admin = true, transactions = 0
+  prisma.membership.findUnique = (async () => ({ status: "ACTIVE", role: admin ? "TENANT_ADMIN" : "TENANT_USER" })) as unknown as typeof originals.membership
+  t.after(() => { prisma.session.findUnique = originals.session; prisma.membership.findUnique = originals.membership })
+  const sub = { planKey: "PRO", status: "PAST_DUE", paidThrough: new Date(Date.now() - 60000), graceEndsAt: null, cancelAtPeriodEnd: false }
+  const db = {
+    tenantSubscription: { findUnique: async () => sub }, tenant: { findUnique: async () => ({ timezone: "America/Chicago" }) }, aiCreditPurchase: { findFirst: async () => null },
+    $transaction: async (action: (tx: unknown) => unknown) => { transactions++; return action({ aiCreditWallet: { findUnique: async () => ({ revision: 5, purchasedBalance: 600, purchasedReserved: 20, purchaseReviewRequired: false }) }, aiCreditPeriod: { findFirst: async () => ({ startsAt: new Date(Date.now() - 86400000), endsAt: new Date(Date.now() + 86400000), granted: 2400, used: 500, reserved: 100 }) } }) },
+  } as unknown as BillingDatabase
+  const app = express(); app.use(cookieParser(), express.json())
+  app.use("/api/billing", createBillingRouter({ db, env: creditTestEnv }))
+  app.use("/off", createBillingRouter({ db, env: { ...creditTestEnv, AI_CREDIT_ENFORCEMENT_ENABLED: "false" } }))
+  const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); s.once("error", reject) })
+  t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections() }))
+  const root = `http://127.0.0.1:${(server.address() as AddressInfo).port}`, headers = { cookie: "sid=test" }
+  const res = await fetch(`${root}/api/billing/${tenantId}/credits`, { headers }), data = await res.json()
+  assert.equal(res.status, 200); assert.equal(res.headers.get("cache-control"), "no-store")
+  assert.equal(data.plan.name, "Pro"); assert.equal(data.plan.monthlyAllowance, 2400); assert.equal(data.access.state, "GRACE")
+  assert.equal(data.timeZone, "America/Chicago"); assert.ok(Number.isFinite(Date.parse(data.asOf)))
+  assert.equal(data.usage.monthly.remaining, 1800); assert.equal(data.usage.purchased.available, 580); assert.equal(data.usage.available, 2380)
+  assert.equal(data.eligible, false); assert.equal(transactions, 1)
+  const off = await (await fetch(`${root}/off/${tenantId}/credits`, { headers })).json()
+  assert.equal(off.usage, null); assert.equal(transactions, 1)
+  admin = false; assert.equal((await fetch(`${root}/api/billing/${tenantId}/credits`, { headers })).status, 403)
+})

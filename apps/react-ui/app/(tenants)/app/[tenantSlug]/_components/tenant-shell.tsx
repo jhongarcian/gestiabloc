@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { BillingAccessNotice } from "@/components/billing-access-notice"
 import { useRouter, useSelectedLayoutSegments } from "next/navigation"
 import {
   type UIEvent,
@@ -58,9 +59,12 @@ import { registerRealtimeNotification } from "@/lib/realtime-notifications"
 type TenantShellProps = {
   tenantSlug: string
   tenantName: string
+  tenantTimezone?: string | null
   children: React.ReactNode
   user: TenantUser & { role?: string | null }
   subscription?: {
+    billingEnabled?: boolean
+    access?: { state: string; graceEndsAt: string | null }
     planKey: string
     seatLimit: number
     status: string
@@ -335,6 +339,7 @@ const appendOlderNotifications = (
 export function TenantShell({
   tenantSlug,
   tenantName,
+  tenantTimezone,
   children,
   user,
   subscription,
@@ -1195,7 +1200,7 @@ export function TenantShell({
           }`}
         >
           <TenantUserProvider user={currentUser}>
-            <div className="flex h-full w-full min-h-0 flex-col">{children}</div>
+            <div className="flex h-full w-full min-h-0 flex-col gap-4"><BillingAccessNotice subscription={subscription} tenantSlug={tenantSlug} timeZone={tenantTimezone} administrator={canAccessAccountSettings} />{children}</div>
           </TenantUserProvider>
         </div>
       </SidebarInset>

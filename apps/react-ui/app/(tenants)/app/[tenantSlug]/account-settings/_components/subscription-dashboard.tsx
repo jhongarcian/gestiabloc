@@ -148,8 +148,9 @@ export function SubscriptionDashboard({
             {subscription.currentPeriodEnd && (
               <div className="text-xs text-slate-500">
                 {subscription.status === "TRIALING"
-                  ? `Trial ends ${formatDate(subscription.currentPeriodEnd)}`
-                  : `Renews ${formatDate(subscription.currentPeriodEnd)}`}
+                  ? "Payment is required to activate this plan."
+                  : subscription.cancelAtPeriodEnd ? `Paid access ends ${formatDate(subscription.paidThrough ?? subscription.currentPeriodEnd)}`
+                  : subscription.status === "ACTIVE" ? `Current billing period ends ${formatDate(subscription.currentPeriodEnd)}` : "Payment confirmation is required before the next allowance is added."}
               </div>
             )}
           </CardContent>
@@ -250,7 +251,7 @@ export function SubscriptionDashboard({
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-slate-500" />
-              <CardDescription>AI Credits</CardDescription>
+              <CardDescription>Monthly plan allowance</CardDescription>
             </div>
           </CardHeader>
           <CardContent>
@@ -261,7 +262,7 @@ export function SubscriptionDashboard({
               <span className="text-sm text-slate-500">/month</span>
             </div>
             <p className="mt-2 text-xs text-slate-500">
-              Included in your {currentPlan?.name ?? subscription.planKey} plan
+              Included after payment in your {currentPlan?.name ?? subscription.planKey} plan; this is not a live balance.
             </p>
           </CardContent>
         </Card>

@@ -44,6 +44,7 @@ export default async function AiLayout({
       key={tenantSlug}
       tenantSlug={tenantSlug}
       tenantId={tenantId}
+      userRole={membership.role}
       companyName={membership.tenant.name}
       initialSettings={initialSettings}
       initialCompany={initialCompany}

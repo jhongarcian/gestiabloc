@@ -1,12 +1,14 @@
 "use client"
 import { useEffect, useRef, useState } from "react"
+import { AiCreditUsageCard } from "@/components/ai-credit-usage"
+import { useAiCreditOverview } from "@/lib/use-ai-credit-overview"
 import { isAxiosError } from "axios"
 import { api } from "@/lib/api"
 import { aiCreditPacks } from "@/lib/subscription-plans"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 type PackKey = keyof typeof aiCreditPacks
-type Overview = { purchasesEnabled: boolean; eligible: boolean; usage: { purchased: { balance: number; reserved: number; available: number }; purchaseReviewRequired: boolean } | null; pendingCheckout?: { id: string; packKey: string; url: string | null } | null }
+
 function go(url: string) {
   const parsed = new URL(url)
   if (parsed.protocol !== "https:" || parsed.hostname !== "checkout.stripe.com") throw new Error("Invalid Checkout link")
@@ -23,54 +25,54 @@ const messages: Record<string, string> = {
   BILLING_CHECKOUT_EXPIRED: "That unpaid Checkout expired. Choose a pack to start a new payment.",
 }
 export function CreditPurchaseControls({ tenantId, userRole }: { tenantId: string; userRole: string }) {
-  const [loaded, setLoaded] = useState<{ tenantId: string; data: Overview } | null>(null), [refresh, setRefresh] = useState(0)
+  const overview = useAiCreditOverview(tenantId, userRole === "TENANT_ADMIN")
+  const { data, refresh } = overview
   const [error, setError] = useState(""), [busy, setBusy] = useState(false)
   const attempt = useRef<{ tenantId: string; packKey: PackKey; requestId: string } | null>(null)
-  const data = loaded?.tenantId === tenantId ? loaded.data : null, admin = userRole === "TENANT_ADMIN"
-  useEffect(() => {
-    if (!admin) return
-    const controller = new AbortController()
-    void api.get<Overview>(`/api/billing/${tenantId}/credits`, { signal: controller.signal }).then(({ data }) => {
-      if (!controller.signal.aborted) setLoaded({ tenantId, data })
-    }).catch(() => { if (!controller.signal.aborted) setError("Could not load credit purchase status. Try refreshing.") })
-    return () => controller.abort()
-  }, [tenantId, admin, refresh])
+  const mutation = useRef<AbortController | null>(null)
+  useEffect(() => () => mutation.current?.abort(), [tenantId])
+  const admin = userRole === "TENANT_ADMIN"
   async function buy(packKey: PackKey) {
     if (busy || !data?.eligible) return
     if (attempt.current?.tenantId !== tenantId || attempt.current.packKey !== packKey) attempt.current = { tenantId, packKey, requestId: crypto.randomUUID() }
+    const controller = new AbortController(); mutation.current = controller
     setBusy(true); setError("")
     try {
-      const { data } = await api.post<{ url: string }>(`/api/billing/${tenantId}/credits/checkout`, { packKey, requestId: attempt.current.requestId })
+      const { data } = await api.post<{ url: string }>(`/api/billing/${tenantId}/credits/checkout`, { packKey, requestId: attempt.current.requestId }, { signal: controller.signal })
+      if (controller.signal.aborted) return
       go(data.url); attempt.current = null
     } catch (cause) {
+      if (controller.signal.aborted) return
       const code = isAxiosError(cause) ? cause.response?.data?.error : undefined
       if (["BILLING_REQUEST_CONFLICT", "BILLING_CHECKOUT_EXPIRED"].includes(code)) attempt.current = null
       setError(messages[code] ?? "Payment could not be confirmed. Refresh the purchase status before trying again.")
-      setRefresh(value => value + 1)
+      refresh()
     } finally { setBusy(false) }
   }
   async function cancel() {
     if (!data?.pendingCheckout || busy) return
+    const controller = new AbortController(); mutation.current = controller
     setBusy(true); setError("")
     try {
-      await api.post(`/api/billing/${tenantId}/credits/${data.pendingCheckout.id}/cancel`, {})
-      attempt.current = null; setRefresh(value => value + 1)
+      await api.post(`/api/billing/${tenantId}/credits/${data.pendingCheckout.id}/cancel`, {}, { signal: controller.signal })
+      attempt.current = null; refresh(); window.dispatchEvent(new Event("ai-credits-changed"))
     } catch (cause) {
+      if (controller.signal.aborted) return
       const code = isAxiosError(cause) ? cause.response?.data?.error : undefined
       setError(messages[code] ?? "Could not cancel this payment. Refresh its status before continuing.")
-      setRefresh(value => value + 1)
+      refresh()
     } finally { setBusy(false) }
   }
-  return <Card>
-    <CardHeader><CardTitle>Additional AI credits</CardTitle><CardDescription>One-time purchases. Purchased credits carry over; an active subscription is required to use them.</CardDescription></CardHeader>
+  return <><AiCreditUsageCard controller={overview} userRole={userRole} manageHref="#ai-credit-purchases" /><Card id="ai-credit-purchases">
+    <CardHeader><CardTitle>Additional AI credits</CardTitle><CardDescription>One-time purchases. One credit covers one generated AI reply; rules-only checks are free. Purchased credits carry over and require an active subscription.</CardDescription></CardHeader>
     <CardContent className="grid gap-4">
-      {!admin ? <p className="text-sm text-muted-foreground">Your account administrator can purchase credits.</p> : !data?.purchasesEnabled ? <p className="text-sm text-muted-foreground">Additional credit purchases are not available yet.</p> : !data.eligible && !data.pendingCheckout && !data.usage?.purchaseReviewRequired ? <p className="text-sm text-muted-foreground">An active paid subscription is required to purchase credits.</p> : null}
-      {data?.usage ? <p className="text-sm">Purchased credits available: <strong>{data.usage.purchased.available.toLocaleString()}</strong>{data.usage.purchased.reserved ? ` (${data.usage.purchased.reserved.toLocaleString()} reserved)` : ""}</p> : null}
+      {!admin ? <p className="text-sm text-muted-foreground">Your account administrator can purchase credits.</p> : overview.error ? <p role="alert" className="text-sm text-destructive">Purchase availability could not be verified. Refresh the credit status to try again.</p> : !data ? <p className="text-sm text-muted-foreground">Checking purchase availability…</p> : !data.purchasesEnabled ? <p className="text-sm text-muted-foreground">Additional credit purchases are not available yet.</p> : !data.eligible && !data.pendingCheckout && !data.usage?.purchaseReviewRequired ? <p className="text-sm text-muted-foreground">An active paid subscription is required to purchase credits.</p> : null}
+
       {data?.usage?.purchaseReviewRequired ? <p role="alert" className="text-sm text-destructive">A purchase needs billing review. New AI spending and purchases are paused; your balances are retained.</p> : null}
-      {data?.pendingCheckout ? <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3"><p className="text-sm">An unpaid purchase is awaiting confirmation.</p>{data.pendingCheckout.url && data.purchasesEnabled ? <Button variant="outline" disabled={busy} onClick={() => { try { go(data.pendingCheckout!.url!) } catch { setError("Could not open this Checkout.") } }}>Resume Checkout</Button> : null}<Button variant="ghost" disabled={busy} onClick={() => void cancel()}>Cancel unpaid Checkout</Button></div> : null}
+      {data?.pendingCheckout ? <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3"><p className="text-sm">A credit purchase is awaiting confirmation.</p>{data.pendingCheckout.url && data.canResume ? <Button variant="outline" disabled={busy} onClick={() => { try { go(data.pendingCheckout!.url!) } catch { setError("Could not open this Checkout.") } }}>Resume Checkout</Button> : null}<Button variant="ghost" disabled={busy} onClick={() => void cancel()}>Cancel unpaid Checkout</Button></div> : null}
       <div className="grid gap-3 md:grid-cols-3">{Object.entries(aiCreditPacks).map(([key, pack]) => <div key={key} className="grid gap-3 rounded-lg border p-4"><div><p className="font-medium">{pack.credits.toLocaleString()} credits</p><p className="text-sm text-muted-foreground">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(pack.priceCents / 100)} one time</p></div><Button variant="outline" disabled={!admin || !data?.eligible || busy} onClick={() => void buy(key as PackKey)}>{busy ? "Please wait…" : "Continue to secure Checkout"}</Button></div>)}</div>
-      {admin ? <Button variant="ghost" disabled={busy} onClick={() => { setError(""); setRefresh(value => value + 1) }}>Refresh credit status</Button> : null}
+      {admin ? <Button variant="ghost" disabled={busy} onClick={() => { setError(""); refresh() }}>Refresh credit status</Button> : null}
       {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
     </CardContent>
-  </Card>
+  </Card></>
 }

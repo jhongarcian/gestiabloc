@@ -11,7 +11,7 @@ import { BillingCommandSchema, BillingError, processSubscriptionEvent, runSubscr
 import { StripeCreditGateway, type CreditGateway } from "../lib/stripe-credit-gateway.js"
 import { CreditCheckoutSchema, startCreditCheckout, processCreditEvent, cancelCreditCheckout, type PurchaseDatabase } from "../lib/ai-credit-purchases.js"
 import { readAiCreditUsage } from "../lib/ai-credit-wallet.js"
-import { aiCreditPacks } from "../lib/subscription-plans.js"
+import { aiCreditPacks, subscriptionPlans } from "../lib/subscription-plans.js"
 import { subscriptionAccess } from "../lib/subscription-billing.js"
 
 type Dependencies = { db?: BillingDatabase; gateway?: BillingGateway; creditGateway?: CreditGateway; env?: Record<string, string | undefined> }
@@ -37,12 +37,22 @@ export function createBillingRouter(deps: Dependencies = {}) {
   router.get("/:tenantId/credits", requireAuth, admin, async (req, res) => {
     const { tenantId } = z.object({ tenantId: z.uuid() }).parse(req.params), env = deps.env ?? process.env, config = getBillingConfiguration(env)
     res.setHeader("Cache-Control", "no-store")
-    if (!config.enabled || !config.creditEnforcementEnabled) return res.json({ ok: true, purchasesEnabled: false, eligible: false, usage: null, packs: aiCreditPacks })
+    const now = new Date(), asOf = now.toISOString()
+    if (!config.enabled) return res.json({ ok: true, enabled: false, enforcementEnabled: false, asOf, plan: null, access: null, timeZone: null, purchasesEnabled: false, eligible: false, canResume: false, usage: null, pendingCheckout: null, packs: aiCreditPacks })
     const db = (deps.db ?? prisma) as PurchaseDatabase
-    const sub = await db.tenantSubscription.findUnique({ where: { tenantId } }), usage = await readAiCreditUsage(db, tenantId)
+    const [sub, tenant] = await Promise.all([
+      db.tenantSubscription.findUnique({ where: { tenantId } }),
+      db.tenant.findUnique({ where: { id: tenantId }, select: { timezone: true } }),
+    ])
+    const metadata = { enabled: true, enforcementEnabled: config.creditEnforcementEnabled, asOf, timeZone: tenant?.timezone ?? null,
+      plan: sub ? { key: sub.planKey, name: subscriptionPlans[sub.planKey].name, monthlyAllowance: subscriptionPlans[sub.planKey].aiCreditsPerMonth } : null,
+      access: subscriptionAccess(sub, now), paidThrough: sub?.paidThrough ?? null, cancelAtPeriodEnd: sub?.cancelAtPeriodEnd ?? false }
+    if (!config.creditEnforcementEnabled) return res.json({ ok: true, ...metadata, purchasesEnabled: false, eligible: false, canResume: false, usage: null, pendingCheckout: null, packs: aiCreditPacks })
+    const usage = await readAiCreditUsage(db, tenantId, now)
     const pending = await db.aiCreditPurchase.findFirst({ where: { tenantId, status: "PENDING" }, select: { id: true, packKey: true, command: { select: { result: true } } } })
     const link = z.object({ url: z.string().url() }).safeParse(pending?.command.result)
-    res.json({ ok: true, purchasesEnabled: config.creditPurchasesEnabled, eligible: config.creditPurchasesEnabled && subscriptionAccess(sub).aiAllowed && !usage.purchaseReviewRequired && !pending, usage, packs: aiCreditPacks, pendingCheckout: pending ? { id: pending.id, packKey: pending.packKey, url: link.success ? link.data.url : null } : null })
+    const canResume = config.creditPurchasesEnabled && subscriptionAccess(sub).aiAllowed && !usage.purchaseReviewRequired
+    res.json({ ok: true, ...metadata, purchasesEnabled: config.creditPurchasesEnabled, eligible: canResume && !pending, canResume, usage, packs: aiCreditPacks, pendingCheckout: pending ? { id: pending.id, packKey: pending.packKey, url: link.success ? link.data.url : null } : null })
   })
   router.post("/:tenantId/credits/:purchaseId/cancel", requireAuth, admin, async (req, res) => {
     enforceSameOrigin(req)
