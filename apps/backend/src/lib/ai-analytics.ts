@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { Prisma, type PrismaClient } from "../generated/prisma/index.js"
+import { loadAiUsageAnalytics } from "./ai-usage-analytics.js"
+import { encryptReviewDetails, AiReviewReasonSchema, type AiReviewDetails, type AiReviewReason } from "./ai-review-details.js"
 
 export const AiTrackingFields = {
   conversationId: z.uuid().optional(),
@@ -19,6 +21,8 @@ export type AiActivity = {
   requestId?: string
   questionOutcome: "ANSWERED" | "NEEDS_REVIEW" | null
   qualificationRun: boolean
+  review?: AiReviewDetails
+  reviewReason?: AiReviewReason
 }
 
 export async function recordAiInteraction(
@@ -27,11 +31,15 @@ export async function recordAiInteraction(
 ) {
   // The database unique key also deduplicates concurrent retries across processes.
   // Legacy clients without tracking IDs remain supported as separate interactions.
+  const { review, reviewReason, ...metadata } = activity
+  const identity = { ...metadata, conversationId: (activity.conversationId ?? randomUUID()).toLowerCase(), requestId: (activity.requestId ?? randomUUID()).toLowerCase() }
+  let details = {}
+  if (activity.questionOutcome === "NEEDS_REVIEW" && review) {
+    try { details = encryptReviewDetails(review, identity) }
+    catch { console.warn("AI review details could not be saved; verify encryption configuration and payload limits.") }
+  }
   return client.aiInteraction.createMany({
-    data: [{ ...activity,
-      conversationId: activity.conversationId ?? randomUUID(),
-      requestId: activity.requestId ?? randomUUID(),
-    }],
+    data: [{ ...identity, ...details, ...(activity.questionOutcome === "NEEDS_REVIEW" ? { reviewReason: AiReviewReasonSchema.catch("OTHER").parse(reviewReason) } : {}) }],
     skipDuplicates: true,
   })
 }
@@ -55,7 +63,7 @@ export function buildAiAnalytics(
 ) {
   const days = Number(query.days)
   const { start, end } = analyticsWindow(days, now)
-  const byDate = new Map(rows.filter((row) => row.date !== null).map((row) => [row.date, row]))
+  const byDate = new Map(rows.flatMap(row => row.date === null ? [] : [[row.date, { ...row, date: row.date }] as const]))
   const total = rows.find((row) => row.date === null)
   const { date: _date, ...totals } = total ?? { date: null, ...zeroMetrics() }
   const daily = Array.from({ length: days }, (_, index) => {
@@ -75,7 +83,7 @@ export async function loadAiAnalytics(
   const { start, end } = analyticsWindow(Number(query.days), now)
   const channel = query.channel === "ALL" ? Prisma.empty
     : Prisma.sql`AND "channel" = ${query.channel}::"AiActivityChannel"`
-  const rows = await client.$queryRaw<AggregateRow[]>(Prisma.sql`
+  const activity = client.$queryRaw<AggregateRow[]>(Prisma.sql`
     WITH activity AS (
       SELECT *, to_char("createdAt", 'YYYY-MM-DD') AS day
       FROM "AiInteraction"
@@ -89,5 +97,8 @@ export async function loadAiAnalytics(
       COUNT(*) FILTER (WHERE "qualificationRun")::int AS "qualificationRuns"
     FROM activity GROUP BY GROUPING SETS ((), (day))
   `)
-  return buildAiAnalytics(rows, query, now)
+  const dates = buildAiAnalytics([], query, now).daily.map(day => day.date)
+  const [rows, usage] = await Promise.all([activity, loadAiUsageAnalytics(client, tenantId, query.channel, start, end, dates)])
+  const analytics = buildAiAnalytics(rows, query, now)
+  return { ...analytics, usage: { ...usage, meteringEnabled: process.env.AI_PROVIDER_METERING_ENABLED === "true", creditEnforcementEnabled: process.env.AI_CREDIT_ENFORCEMENT_ENABLED === "true" } }
 }

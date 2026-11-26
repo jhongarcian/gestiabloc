@@ -1249,77 +1249,113 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.deepEqual(failure.serviceContext, run.serviceContext)
   })
 
-  test("every service step owns one disabled entry draft and preserves its identity through saves", async () => {
-    const initial = await request(`${settingsPath()}/${parentId}`, "PATCH", {
-      steps: [{ title: "Review" }, { title: "Submit" }],
-    })
-    assert.equal(initial.status, 200)
-    const steps = initial.data.service.steps
-    assert.equal(steps.length, 2)
-    for (const step of steps) {
-      assert.equal(step.automations.length, 2)
-      assert.equal(step.automations[0].isEnabled, false)
-      assert.equal(step.automations[0]._count.actions, 0)
+  async function createStepAutomation(serviceStepId: string, triggerType: "SERVICE_STEP_ENTERED" | "SERVICE_STEP_COMPLETED" = "SERVICE_STEP_ENTERED", serviceOfferingId?: string) {
+    const name = `Tenant-created workflow ${randomUUID()}`
+    if (!serviceOfferingId) {
+      // Existing shared workflows remain supported. Seed them explicitly in legacy-scope
+      // regressions instead of relying on service saves to generate starter drafts.
+      const created = await db.automation.create({ data: { tenantId, name, serviceStepId, triggerType, isEnabled: false } })
+      const loaded = await request(`/api/account-settings/${tenantId}/automations/${created.id}`)
+      assert.equal(loaded.status, 200, JSON.stringify(loaded.data))
+      return loaded.data.automation
     }
-    const first = steps[0]
-    const automationPath = `/api/account-settings/${tenantId}/automations/${first.automations[0].id}`
-    const loaded = await request(automationPath)
-    assert.equal(loaded.data.automation.trigger.type, "SERVICE_STEP_ENTERED")
-    assert.equal(loaded.data.automation.trigger.serviceStepId, first.id)
-    assert.equal(loaded.data.automation.serviceStep.serviceId, parentId)
-    const payload = {
-      name: "Review entry",
-      trigger: loaded.data.automation.trigger,
+    const created = await request(`/api/account-settings/${tenantId}/automations`, "POST", {
+      name,
+      trigger: { type: triggerType, serviceStepId, serviceOfferingId },
+      isEnabled: false,
       conditions: [],
       actions: [],
-      isEnabled: false,
-    }
-    assert.equal((await request(automationPath, "PATCH", payload)).status, 200)
-    assert.equal(
-      (await request(automationPath, "PATCH", { ...payload, isEnabled: true })).status,
-      400,
-    )
-    assert.equal(
-      (await request(`/api/account-settings/${tenantId}/automations`, "POST", payload)).status,
-      400,
-    )
-    const saved = await request(`${settingsPath()}/${parentId}`, "PATCH", {
-      steps: [...steps]
-        .reverse()
-        .map((step: any) => ({ id: step.id, title: `${step.title} edited` })),
     })
-    assert.deepEqual(
-      saved.data.service.steps.map((step: any) => step.automations[0].id),
-      [...steps].reverse().map((step: any) => step.automations[0].id),
-    )
-    assert.equal(
-      await db.automation.count({ where: { tenantId, triggerType: "SERVICE_STEP_ENTERED" } }),
-      2,
-    )
-    const child = await createChild()
-    assert.deepEqual(
-      child.data.service.steps.map((step: any) => step.automations[0].id),
-      saved.data.service.steps.map((step: any) => step.automations[0].id),
-    )
-    const customized = await request(`${settingsPath()}/${child.data.service.id}`, "PATCH", {
-      stepsMode: "CUSTOM",
-    })
-    const customIds = customized.data.service.steps.map((step: any) => step.automations[0].id)
-    assert.ok(
-      customIds.every((id: string) => !steps.some((step: any) => step.automations[0].id === id)),
-    )
-    assert.ok(customized.data.service.steps.every((step: any) => !step.automations[0].isEnabled))
+    assert.equal(created.status, 201, JSON.stringify(created.data))
+    return created.data.automation
+  }
+
+  test("creating, editing, reordering and customizing service steps never creates automation drafts", async () => {
     const created = await request(settingsPath(), "POST", {
-      kind: "GROUP",
-      name: "New parent",
-      basePriceCents: 0,
+      kind: "GROUP", name: "New parent", basePriceCents: 0,
       steps: [{ title: "Intake" }, { title: "Intake" }],
     })
     assert.equal(created.status, 201, JSON.stringify(created.data))
-    assert.equal(created.data.service.steps[0].automations.length, 2)
-    const names = created.data.service.steps.map((step: any) => step.automations[0].name)
-    assert.equal(new Set(names).size, 2)
-    assert.ok(names.every((name: string) => /^Step entered: Intake(?: \(\d+\))?$/.test(name)))
+    assert.equal(created.data.service.steps.length, 2)
+    assert.ok(created.data.service.steps.every((step: any) => step.automations.length === 0))
+    assert.equal(await db.automation.count({ where: { tenantId } }), 0)
+
+    const directOffering = await request(settingsPath(), "POST", {
+      kind: "OFFERING", parentServiceId: parentId, name: "Custom offering", basePriceCents: 0,
+      stepsMode: "CUSTOM", steps: [{ title: "Independent intake" }],
+    })
+    assert.equal(directOffering.status, 201, JSON.stringify(directOffering.data))
+    assert.equal(directOffering.data.service.steps.length, 1)
+    assert.deepEqual(directOffering.data.service.steps[0].automations, [])
+
+    const initial = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [{ title: "Review" }, { title: "Submit" }],
+    })
+    assert.equal(initial.status, 200, JSON.stringify(initial.data))
+    const steps = initial.data.service.steps
+    const payload = { steps: [...steps].reverse().map((step: any) => ({ id: step.id, title: `${step.title} edited` })) }
+    for (let pass = 0; pass < 2; pass++) {
+      const saved = await request(`${settingsPath()}/${parentId}`, "PATCH", payload)
+      assert.equal(saved.status, 200, JSON.stringify(saved.data))
+      assert.deepEqual(saved.data.service.steps.map((step: any) => step.id), [...steps].reverse().map((step: any) => step.id))
+      assert.ok(saved.data.service.steps.every((step: any) => step.automations.length === 0))
+    }
+    const appended = await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [...payload.steps, { title: "Finish" }] })
+    assert.equal(appended.status, 200, JSON.stringify(appended.data))
+    assert.equal(appended.data.service.steps.length, 3)
+    assert.ok(appended.data.service.steps.every((step: any) => step.automations.length === 0))
+    const child = (await createChild()).data.service
+    assert.deepEqual(child.steps.map((step: any) => step.id), appended.data.service.steps.map((step: any) => step.id))
+    assert.ok(child.steps.every((step: any) => step.automations.length === 0))
+    const customized = await request(`${settingsPath()}/${child.id}`, "PATCH", { stepsMode: "CUSTOM" })
+    assert.equal(customized.status, 200, JSON.stringify(customized.data))
+    assert.ok(customized.data.service.steps.every((step: any) => !child.steps.some((inherited: any) => inherited.id === step.id) && step.automations.length === 0))
+    const restored = await request(`${settingsPath()}/${child.id}`, "PATCH", { stepsMode: "INHERIT" })
+    assert.equal(restored.status, 200, JSON.stringify(restored.data))
+    assert.deepEqual(restored.data.service.steps.map((step: any) => step.id), child.steps.map((step: any) => step.id))
+    assert.equal(await db.automation.count({ where: { tenantId } }), 0)
+    assert.deepEqual((await request(`/api/account-settings/${tenantId}/automations`)).data.items, [])
+  })
+
+  test("tenant-created entry and completion automations survive saves and are never recreated after deletion", async () => {
+    const initial = await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: [{ title: "Review" }, { title: "Submit" }] })
+    assert.equal(initial.status, 200, JSON.stringify(initial.data))
+    const steps = initial.data.service.steps
+    const first = steps[0]
+    const child = (await createChild()).data.service
+    const entry = await createStepAutomation(first.id, "SERVICE_STEP_ENTERED", child.id)
+    const completion = await createStepAutomation(first.id, "SERVICE_STEP_COMPLETED", child.id)
+    const path = `/api/account-settings/${tenantId}/automations/${entry.id}`
+    const payload = {
+      name: "Tenant review entry", trigger: entry.trigger, conditions: [], actions: [noteAction()], isEnabled: true,
+    }
+    assert.equal((await request(path, "PATCH", payload)).status, 200)
+    assert.equal((await request(`/api/account-settings/${tenantId}/automations/${completion.id}`, "PATCH", {
+      name: "Tenant review completion", trigger: completion.trigger, conditions: [], actions: [], isEnabled: true,
+    })).status, 400)
+    const before = (await request(path)).data.automation
+    const saved = await request(`${settingsPath()}/${parentId}`, "PATCH", {
+      steps: [...steps].reverse().map((step: any) => ({ id: step.id, title: `${step.title} edited` })),
+    })
+    assert.equal(saved.status, 200, JSON.stringify(saved.data))
+    const linked = saved.data.service.steps.find((step: any) => step.id === first.id).automations
+    assert.deepEqual(new Set(linked.map((automation: any) => automation.id)), new Set([entry.id, completion.id]))
+    assert.ok(saved.data.service.steps.find((step: any) => step.id !== first.id).automations.length === 0)
+    const after = (await request(path)).data.automation
+    assert.deepEqual(after.actions, before.actions)
+    assert.deepEqual(after.trigger, before.trigger)
+    assert.equal(after.isEnabled, true)
+    const inherited = (await request(`${settingsPath()}/${child.id}`)).data.service
+    assert.deepEqual(new Set(inherited.steps.find((step: any) => step.id === first.id).automations.map((automation: any) => automation.id)), new Set([entry.id, completion.id]))
+    const custom = await request(`${settingsPath()}/${child.id}`, "PATCH", { stepsMode: "CUSTOM" })
+    assert.equal(custom.status, 200, JSON.stringify(custom.data))
+    assert.ok(custom.data.service.steps.every((step: any) => step.automations.length === 0))
+    assert.equal(await db.automation.count({ where: { tenantId } }), 2)
+    assert.equal((await request(path, "DELETE")).status, 200)
+    const resaved = await request(`${settingsPath()}/${parentId}`, "PATCH", { steps: saved.data.service.steps.map((step: any) => ({ id: step.id, title: step.title })) })
+    assert.equal(resaved.status, 200, JSON.stringify(resaved.data))
+    assert.deepEqual(resaved.data.service.steps.find((step: any) => step.id === first.id).automations.map((automation: any) => automation.id), [completion.id])
+    assert.equal(await db.automation.count({ where: { tenantId } }), 1)
   })
 
   test("step entry queues one pinned workflow per occurrence, including inherited enrollments and revisits", async () => {
@@ -1327,7 +1363,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       steps: [{ title: "Review" }],
     })
     const source = configured.data.service.steps[0]
-    const automationId = source.automations[0].id
+    const automationId = (await createStepAutomation(source.id)).id
     const automationPath = `/api/account-settings/${tenantId}/automations/${automationId}`
     const payload = {
       name: "Review entry",
@@ -1494,7 +1530,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       steps: [{ title: "Review" }],
     })
     const source = saved.data.service.steps[0]
-    const automationId = source.automations[0].id
+    const automationId = (await createStepAutomation(source.id)).id
     const child = await createChild()
     const contact = await createContact()
     const enroll = () =>
@@ -1545,9 +1581,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     })
     assert.equal(configured.status, 200, JSON.stringify(configured.data))
     const source = configured.data.service.steps[0]
-    const automation = source.automations.find(
-      (item: any) => item.triggerType === "SERVICE_STEP_COMPLETED",
-    )
+    const automation = await createStepAutomation(source.id, "SERVICE_STEP_COMPLETED")
     const automationPath = `/api/account-settings/${tenantId}/automations/${automation.id}`
     const payload = {
       name: "Review completion",
@@ -2061,9 +2095,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const second = await db.contactServiceStep.findFirstOrThrow({
       where: { contactServiceId: fixture.id, sortOrder: 20 },
     })
-    const entry = await db.automation.findFirstOrThrow({
-      where: { tenantId, serviceStepId: second.sourceStepId, triggerType: "SERVICE_STEP_ENTERED" },
-    })
+    const entry = await createStepAutomation(second.sourceStepId!)
     await request(`/api/account-settings/${tenantId}/automations/${entry.id}`, "PATCH", {
       name: "Next entry",
       isEnabled: true,
@@ -3981,7 +4013,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       action("SET_SERVICE_STATUS", { status: "IN_PROGRESS" }),
       noteAction("After service checkpoints"),
     ]
-    const entry = fixture.source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+    const entry = await createStepAutomation(fixture.source.id)
     const path = `/api/account-settings/${tenantId}/automations/${entry.id}`
     const payload = { name: "Service updates", trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: fixture.source.id, serviceOfferingId: fixture.child.data.service.id }, isEnabled: true, conditions: [], actions }
     const saved = await request(path, "PATCH", payload)
@@ -4042,7 +4074,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
       const target = await db.contactServiceStep.findFirstOrThrow({ where: { contactServiceId: fixture.id, id: { not: fixture.occurrence.stepId } } })
       const serviceConfig = terminalType === "MOVE_SERVICE_STEP" ? { targetSourceStepId: target.sourceStepId, reason: "Automation move" } : terminalType === "SKIP_SERVICE_STEP" ? { reason: "Automation skip" } : terminalType === "SET_SERVICE_STATUS" ? { status: "CANCELED" } : {}
       const action = { nodeKey: randomUUID(), type: terminalType, serviceConfig }
-      const entry = fixture.source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+      const entry = await createStepAutomation(fixture.source.id)
       const path = `/api/account-settings/${tenantId}/automations/${entry.id}`
       const payload = { name: terminalType, trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: fixture.source.id, serviceOfferingId: fixture.child.data.service.id }, isEnabled: true, conditions: [], actions: [action] }
       assert.equal((await request(path, "PATCH", { ...payload, actions: [action, noteAction("Forbidden tail")] })).status, 400)
@@ -4145,7 +4177,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     const fixture = await completionFixture()
     const steps = (await request(`${settingsPath()}/${parentId}`)).data.service.steps
     for (const [index, source] of steps.entries()) {
-      const entry = source.automations.find((item: any) => item.triggerType === "SERVICE_STEP_ENTERED")
+      const entry = await createStepAutomation(source.id)
       const target = steps[index === 0 ? 1 : 0]
       const saved = await request(`/api/account-settings/${tenantId}/automations/${entry.id}`, "PATCH", { name: `Move from ${source.title}`, trigger: { type: "SERVICE_STEP_ENTERED", serviceStepId: source.id, serviceOfferingId: null }, isEnabled: true, conditions: [], actions: [{ nodeKey: randomUUID(), type: "MOVE_SERVICE_STEP", serviceConfig: { targetSourceStepId: target.id, reason: "Automatic routing" } }] })
       assert.equal(saved.status, 200, JSON.stringify(saved.data))
@@ -4746,7 +4778,7 @@ describe("service hierarchy APIs and database constraints", { skip: !databaseUrl
     assert.equal(configured.status, 200)
     const child = (await createChild()).data.service
     const other = (await createChild("Part A")).data.service
-    const workflow = configured.data.service.steps[0].automations[0]
+    const workflow = await createStepAutomation(configured.data.service.steps[0].id)
     await db.automation.update({ where: { id: workflow.id }, data: { serviceOfferingId: other.id } })
     await db.membership.update({ where: { userId_tenantId: { tenantId, userId } }, data: { role: "TENANT_USER", securityLevel: "LOW" } })
     const catalog = await request(`/api/services/${tenantId}/catalog?serviceGroupId=${parentId}&serviceId=${child.id}&search=Medicare`)

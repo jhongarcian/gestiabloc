@@ -35,7 +35,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { api } from "@/lib/api"
+import {
+  prepareHeightUpdate,
+  prepareWeightUpdate,
+  readHeightInput,
+  readWeightInput,
+} from "@/lib/contact-measurements"
 import { cn } from "@/lib/utils"
+import { normalizeStateAbbreviation, US_STATE_OPTIONS } from "@/lib/us-states"
 import { ContactTagsSection } from "../../_components/contact-tags-section"
 
 type StatusOption = {
@@ -214,8 +221,6 @@ const baseContactSchema = z.object({
   emergencyContactPhone: optionalPhoneSchema,
   emergencyContactRelationship: optionalStringSchema,
   gender: z.union([contactGenderSchema, z.literal("")]),
-  height: z.string().trim().max(60),
-  weight: z.string().trim().max(60),
   deceasedAt: z.date().optional(),
   smokerStatus: z.union([contactSmokerStatusSchema, z.literal("")]),
   leadDate: z.date().optional(),
@@ -466,6 +471,57 @@ function FieldError({ message }: { message?: string }) {
   return <p className="text-xs text-rose-600">{message}</p>
 }
 
+function AddressStateSelect({
+  id,
+  value,
+  onValueChange,
+  invalid,
+}: {
+  id: string
+  value: string
+  onValueChange: (value: string) => void
+  invalid: boolean
+}) {
+  const isKnownState = US_STATE_OPTIONS.some((option) => option.code === value)
+
+  return (
+    <Select
+      value={value || "__empty__"}
+      onValueChange={(nextValue) => onValueChange(nextValue === "__empty__" ? "" : nextValue)}
+    >
+      <SelectTrigger
+        id={id}
+        className={PROFILE_SELECT_TRIGGER_CLASSNAME}
+        aria-invalid={invalid}
+      >
+        <SelectValue>{value || "No selection"}</SelectValue>
+      </SelectTrigger>
+      <SelectContent position="popper" align="start">
+        <SelectGroup>
+          <SelectItem value="__empty__" className="cursor-pointer">
+            No selection
+          </SelectItem>
+          {value && !isKnownState ? (
+            <SelectItem value={value} className="cursor-pointer">
+              {value}
+            </SelectItem>
+          ) : null}
+          {US_STATE_OPTIONS.map((option) => (
+            <SelectItem
+              key={option.code}
+              value={option.code}
+              textValue={`${option.code} ${option.name}`}
+              className="cursor-pointer"
+            >
+              {option.code} — {option.name}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
+  )
+}
+
 function normalizeInitialCustomFieldValue(field: CustomField) {
   if (field.fieldType === "DATE") {
     const parsedDate = parseStoredDate(
@@ -553,7 +609,7 @@ export function ContactOverviewForm({
     initialContact.address.addressLine2 ?? "",
   )
   const [city, setCity] = useState(initialContact.address.city ?? "")
-  const [state, setState] = useState(initialContact.address.state ?? "")
+  const [state, setState] = useState(normalizeStateAbbreviation(initialContact.address.state))
   const [postalCode, setPostalCode] = useState(
     initialContact.address.postalCode ?? "",
   )
@@ -571,7 +627,7 @@ export function ContactOverviewForm({
     initialContact.mailingAddress.city ?? "",
   )
   const [mailingState, setMailingState] = useState(
-    initialContact.mailingAddress.state ?? "",
+    normalizeStateAbbreviation(initialContact.mailingAddress.state),
   )
   const [mailingPostalCode, setMailingPostalCode] = useState(
     initialContact.mailingAddress.postalCode ?? "",
@@ -591,8 +647,8 @@ export function ContactOverviewForm({
   const [gender, setGender] = useState<ContactGender | "">(
     initialContact.gender ?? "",
   )
-  const [height, setHeight] = useState(initialContact.height ?? "")
-  const [weight, setWeight] = useState(initialContact.weight ?? "")
+  const [height, setHeight] = useState(() => readHeightInput(initialContact.height))
+  const [weight, setWeight] = useState(() => readWeightInput(initialContact.weight))
   const [deceasedAt, setDeceasedAt] = useState<Date | undefined>(initialDeceasedAt)
   const [deceasedAtInput, setDeceasedAtInput] = useState(
     initialDeceasedAt ? format(initialDeceasedAt, "MM/dd/yyyy") : "",
@@ -620,6 +676,8 @@ export function ContactOverviewForm({
         ]),
       ),
   )
+  const heightUpdate = prepareHeightUpdate(initialContact.height, height)
+  const weightUpdate = prepareWeightUpdate(initialContact.weight, weight)
   const parsedDateOfBirthInput = parseDateInput(dateOfBirthInput)
   const parsedDeceasedAtInput = parseDateInput(deceasedAtInput)
   const parsedLeadDateInput = parseDateInput(leadDateInput)
@@ -642,14 +700,14 @@ export function ContactOverviewForm({
       addressLine1: initialContact.address.addressLine1 ?? "",
       addressLine2: initialContact.address.addressLine2 ?? "",
       city: initialContact.address.city ?? "",
-      state: initialContact.address.state ?? "",
+      state: normalizeStateAbbreviation(initialContact.address.state),
       postalCode: initialContact.address.postalCode ?? "",
       country: initialContact.address.country ?? "",
       hasDifferentMailingAddress: Object.values(initialContact.mailingAddress).some(Boolean),
       mailingAddressLine1: initialContact.mailingAddress.addressLine1 ?? "",
       mailingAddressLine2: initialContact.mailingAddress.addressLine2 ?? "",
       mailingCity: initialContact.mailingAddress.city ?? "",
-      mailingState: initialContact.mailingAddress.state ?? "",
+      mailingState: normalizeStateAbbreviation(initialContact.mailingAddress.state),
       mailingPostalCode: initialContact.mailingAddress.postalCode ?? "",
       mailingCountry: initialContact.mailingAddress.country ?? "",
       emergencyContactName: initialContact.emergencyContactName ?? "",
@@ -657,8 +715,8 @@ export function ContactOverviewForm({
       emergencyContactRelationship:
         initialContact.emergencyContactRelationship ?? "",
       gender: initialContact.gender ?? "",
-      height: initialContact.height ?? "",
-      weight: initialContact.weight ?? "",
+      height: readHeightInput(initialContact.height),
+      weight: readWeightInput(initialContact.weight),
       deceasedAt: initialDeceasedAt ? format(initialDeceasedAt, "MM/dd/yyyy") : "",
       smokerStatus: initialContact.smokerStatus ?? "",
       leadDate: initialLeadDate ? format(initialLeadDate, "MM/dd/yyyy") : "",
@@ -786,8 +844,6 @@ export function ContactOverviewForm({
       emergencyContactPhone,
       emergencyContactRelationship,
       gender,
-      height,
-      weight,
       deceasedAt:
         parsedDeceasedAtInput === null ? undefined : parsedDeceasedAtInput,
       smokerStatus,
@@ -798,6 +854,9 @@ export function ContactOverviewForm({
     })
 
     const nextErrors: FieldErrors = {}
+
+    if (heightUpdate.error) nextErrors.height = heightUpdate.error
+    if (weightUpdate.error) nextErrors.weight = weightUpdate.error
 
     if (parsedDateOfBirthInput === null) {
       nextErrors.dateOfBirth = "Enter a valid date in MM/DD/YYYY format."
@@ -886,8 +945,8 @@ export function ContactOverviewForm({
         emergencyContactRelationship:
           emergencyContactRelationship.trim() || null,
         gender: gender || null,
-        height: height.trim() || null,
-        weight: weight.trim() || null,
+        height: heightUpdate.value,
+        weight: weightUpdate.value,
         deceasedAt: deceasedAtIso,
         smokerStatus: smokerStatus || null,
         leadDate: leadDateIso,
@@ -903,6 +962,8 @@ export function ContactOverviewForm({
         })),
       })
 
+      if (heightUpdate.value !== undefined) setHeight(readHeightInput(heightUpdate.value))
+      if (weightUpdate.value !== undefined) setWeight(readWeightInput(weightUpdate.value))
       toast.success("Contact updated.")
       router.refresh()
     } catch (error) {
@@ -1014,7 +1075,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel
                   htmlFor="contact-overview-first-name"
@@ -1072,7 +1133,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-dob" label="Date of Birth" />
                 <DateInput
@@ -1147,7 +1208,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.secondaryPhone} />
               </div>
 
-              <div className="grid gap-2 md:col-span-2">
+              <div className="grid gap-2 @lg/contact-content:col-span-2">
                 <FieldLabel htmlFor="contact-overview-email" label="Email" />
                 <Input
                   id="contact-overview-email"
@@ -1172,7 +1233,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel label="Gender" />
                 <Select
@@ -1215,30 +1276,96 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.gender} />
               </div>
 
-              <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+              <div className="grid min-w-0 gap-3 @sm/contact-content:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
                 <div className="grid min-w-0 gap-2">
-                  <FieldLabel htmlFor="contact-overview-height" label="Height" />
-                  <Input
-                    id="contact-overview-height"
-                    value={height}
-                    onChange={(event) => setHeight(event.target.value)}
-                    placeholder="5 ft 8 in"
-                    maxLength={60}
-                    aria-invalid={Boolean(fieldErrors.height)}
-                  />
+                  <FieldLabel htmlFor="contact-overview-height-feet" label="Height (ft / in)" />
+                  <div className="grid min-w-0 grid-cols-2 gap-1.5">
+                    <Input
+                      id="contact-overview-height-feet"
+                      aria-label="Height in feet"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]"
+                      maxLength={1}
+                      className="px-2"
+                      value={height.feet}
+                      onChange={(event) => {
+                        const feet = event.target.value
+                        if (/^[0-9]?$/.test(feet)) {
+                          setHeight((previous) => ({ ...previous, feet, legacyValue: null }))
+                        }
+                      }}
+                      placeholder="ft"
+                      aria-invalid={Boolean(fieldErrors.height)}
+                    />
+                    <Input
+                      id="contact-overview-height-inches"
+                      aria-label="Height in inches"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]|1[01]"
+                      maxLength={2}
+                      className="px-2"
+                      value={height.inches}
+                      onChange={(event) => {
+                        const inches = event.target.value
+                        if (/^[0-9]{0,2}$/.test(inches)) {
+                          setHeight((previous) => ({ ...previous, inches, legacyValue: null }))
+                        }
+                      }}
+                      placeholder="in"
+                      aria-invalid={Boolean(fieldErrors.height)}
+                    />
+                  </div>
+                  {height.legacyValue !== null ? (
+                    <div className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      <span className="min-w-0 break-words">Saved: {height.legacyValue}. Enter feet and inches to replace.</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto max-w-full whitespace-normal"
+                        onClick={() => setHeight(readHeightInput(null))}
+                      >
+                        Clear saved height
+                      </Button>
+                    </div>
+                  ) : null}
                   <FieldError message={fieldErrors.height} />
                 </div>
 
                 <div className="grid min-w-0 gap-2">
-                  <FieldLabel htmlFor="contact-overview-weight" label="Weight" />
+                  <FieldLabel htmlFor="contact-overview-weight" label="Weight (lb)" />
                   <Input
                     id="contact-overview-weight"
-                    value={weight}
-                    onChange={(event) => setWeight(event.target.value)}
-                    placeholder="165 lb"
-                    maxLength={60}
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{1,4}"
+                    value={weight.pounds}
+                    onChange={(event) => {
+                      const pounds = event.target.value
+                      if (/^[0-9]{0,4}$/.test(pounds)) {
+                        setWeight({ pounds, legacyValue: null })
+                      }
+                    }}
+                    placeholder="260"
+                    maxLength={4}
                     aria-invalid={Boolean(fieldErrors.weight)}
                   />
+                  {weight.legacyValue !== null ? (
+                    <div className="flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                      <span className="min-w-0 break-words">Saved: {weight.legacyValue}. Enter pounds to replace.</span>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto max-w-full whitespace-normal"
+                        onClick={() => setWeight(readWeightInput(null))}
+                      >
+                        Clear saved weight
+                      </Button>
+                    </div>
+                  ) : null}
                   <FieldError message={fieldErrors.weight} />
                 </div>
               </div>
@@ -1318,8 +1445,8 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
-              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
+              <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-1"
                   label="Address Line 1"
@@ -1333,7 +1460,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.addressLine1} />
               </div>
 
-              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+              <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-2"
                   label="Address Line 2"
@@ -1360,11 +1487,11 @@ export function ContactOverviewForm({
 
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-state" label="State" />
-                <Input
+                <AddressStateSelect
                   id="contact-overview-state"
                   value={state}
-                  onChange={(event) => setState(event.target.value)}
-                  aria-invalid={Boolean(fieldErrors.state)}
+                  onValueChange={setState}
+                  invalid={Boolean(fieldErrors.state)}
                 />
                 <FieldError message={fieldErrors.state} />
               </div>
@@ -1421,8 +1548,8 @@ export function ContactOverviewForm({
             </div>
 
             {hasDifferentMailingAddress ? (
-              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
-                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
+                <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                   <FieldLabel
                     htmlFor="contact-overview-mailing-address-line-1"
                     label="Mailing Address Line 1"
@@ -1436,7 +1563,7 @@ export function ContactOverviewForm({
                   <FieldError message={fieldErrors.mailingAddressLine1} />
                 </div>
 
-                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+                <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                   <FieldLabel
                     htmlFor="contact-overview-mailing-address-line-2"
                     label="Mailing Address Line 2"
@@ -1463,11 +1590,11 @@ export function ContactOverviewForm({
 
                 <div className="grid gap-2">
                   <FieldLabel htmlFor="contact-overview-mailing-state" label="Mailing State" />
-                  <Input
+                  <AddressStateSelect
                     id="contact-overview-mailing-state"
                     value={mailingState}
-                    onChange={(event) => setMailingState(event.target.value)}
-                    aria-invalid={Boolean(fieldErrors.mailingState)}
+                    onValueChange={setMailingState}
+                    invalid={Boolean(fieldErrors.mailingState)}
                   />
                   <FieldError message={fieldErrors.mailingState} />
                 </div>
@@ -1513,7 +1640,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel
                   htmlFor="contact-overview-emergency-name"
@@ -1569,7 +1696,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-lead-date" label="Lead Date" />
                 <DateInput
@@ -1651,7 +1778,7 @@ export function ContactOverviewForm({
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4">
                 {initialContact.customFields.map((field) => {
                   const value = customFieldValues[field.id]
                   const error =
@@ -1668,7 +1795,7 @@ export function ContactOverviewForm({
                       className={cn(
                         "grid min-w-0 gap-2",
                         isFullWidth &&
-                          "md:col-span-2 lg:col-span-3 xl:col-span-4",
+                          "@lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-4",
                       )}
                     >
                       <FieldLabel

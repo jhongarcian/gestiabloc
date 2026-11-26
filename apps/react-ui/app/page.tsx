@@ -58,7 +58,7 @@ const compactFeatureGroups: Record<string, string[]> = {
     "Mobile-friendly workspace with AI assistance",
   ],
   PRO: [
-    "Everything in Basic, plus advanced task control",
+    "Everything in Starter, plus advanced task control",
     "Department organization, live updates, and audit history",
     "Advanced reporting with exports and stronger AI capacity",
   ],
@@ -123,7 +123,7 @@ export default function HomePage() {
                 asChild
                 className="rounded-full bg-stone-900 px-5 text-stone-50 hover:bg-stone-800"
               >
-                <Link href="/signup">Start free trial</Link>
+                <Link href="/signup">Get started</Link>
               </Button>
             </div>
           </header>
@@ -151,7 +151,7 @@ export default function HomePage() {
                   className="h-12 rounded-full bg-stone-900 px-6 text-base text-stone-50 hover:bg-stone-800"
                 >
                   <Link href="/signup">
-                    Start free trial
+                    Get started
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </Link>
                 </Button>
@@ -284,6 +284,7 @@ export default function HomePage() {
           </p>
         </div>
 
+        <p className="mb-6 text-sm text-stone-600">Billed monthly. No free trials. AI credits are added after payment confirmation; rules-only qualification checks are free.</p>
         <div className="grid gap-6 lg:grid-cols-3">
           {subscriptionPlans.map((plan) => (
             <article
@@ -385,7 +386,7 @@ export default function HomePage() {
               <div className={`mt-8 border-t ${plan.featured ? "border-white/10" : "border-stone-900/10"} pt-6`}>
                 <div className="space-y-3 text-sm">
                   <p className={plan.featured ? "text-stone-300" : "text-stone-600"}>
-                    <span className="font-semibold text-current">AI Usage:</span>{" "}
+                    <span className="font-semibold text-current">AI credits:</span>{" "}
                     {plan.aiUsage}
                   </p>
                   <p className={plan.featured ? "text-stone-300" : "text-stone-600"}>

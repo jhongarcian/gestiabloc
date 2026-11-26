@@ -371,7 +371,7 @@ function AppSidebarContent({
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <h4 className="text-sm font-semibold">
-                    {planKey === "STARTER" ? "Basic Plan" : "Pro Plan"}
+                    {planKey === "STARTER" ? "Starter Plan" : "Pro Plan"}
                   </h4>
                   <p className="mt-1 mb-3 text-xs leading-5 text-slate-300">
                     Upgrade to unlock more features

@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from "express";
 import { sha256 } from "../lib/crypto.js";
 import { SESSION_COOKIE_NAME } from "../lib/cookies.js";
 import { prisma } from "../lib/prisma.js";
+import { allowBillingAccess } from "./requireBillingAccess.js";
 
 export type AuthedRequest = Request & {
   user: { id: string; email: string; name: string | null; platformRole: string };
@@ -33,6 +34,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
       platformRole: session.user.platformRole,
     };
 
+    if (!await allowBillingAccess(req, res, session.user.id)) return;
     return next();
   } catch (e) {
     return next(e);

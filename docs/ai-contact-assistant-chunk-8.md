@@ -2,12 +2,23 @@
 
 The contact assistant now uses the saved account helper for company and service knowledge questions. Helper name/avatar, response preferences, company information, structured FAQs, guidance, and ready source excerpts come from the same saved configuration as Account Settings → AI.
 
+## Reply presentation
+
+Contact chat and Test helper reveal each new answer word by word on the chat canvas, without an assistant background bubble. The reveal begins after the complete validated response arrives; this is a display animation, not provider streaming. Full answers remain in conversation history for follow-up requests. The existing API, provider calls and credit deductions are unchanged.
+
+The animation preserves whitespace and paragraphs, finishes within eight seconds and offers **Show full answer** to skip it. Reduced-motion preferences display the complete answer immediately. Screen readers receive a stable full answer instead of individual animated words. Sources and reply details appear after the reveal. Closing Test helper ends the reveal so reopening it does not animate old replies again. Clearing or leaving the chat cancels its animation frames.
+
+The contact composer stays in place while the transcript scrolls. Replies follow the bottom while the user is near it; typing a new question or reading earlier messages preserves their position. User questions retain their existing bubble styling.
+
+Validation: the frontend production build, TypeScript and focused lint checks passed; full lint has four existing date-input warnings and no errors. Word-boundary/timing tests and existing chat-history/retry checks passed. Desktop and 390px sample-data browser checks verified progressive text, skipping, full follow-up history, reopening without replay, reduced-motion behavior, wrapping, and preserved reading/composer positions. Browser logs had no warnings or errors. No real AI or billing requests were used for these checks.
+
 ## Reply and qualification boundaries
 
 - `ai-helper-replies.ts` is the shared grounded reply engine. Existing workspace imports remain compatible through `ai-test-chat.ts`.
 - A selected service limits both structured knowledge/FAQ queries and document retrieval to that service. Every query remains tenant-scoped and excludes inactive offerings, inactive parents, deleted sources and sources that are not ready. All-service questions can use all active skills, including skills with qualification turned off.
 - Contact questions use the submitted question and current saved company/service knowledge. For the current contact only, generation also receives a fresh server-built projection of authorized non-encrypted facts, exact expected values, and every alternative qualification path. Sensitive/encrypted custom fields and raw engine reason strings are excluded. Up to six completed conversation pairs (12,000 characters total) support follow-ups; messages remain in page memory and clear on rerun, contact change, departure or refresh. Current server facts override quoted history.
-- Exact FAQ answers retain their saved text, including paragraphs. Translation uses the existing translation-only path; helper writing preferences cannot add a signature or rewrite an exact answer. Adapted replies use saved language, tone, and instructions.
+- The person chatting is an authenticated agency team member working on the contact's behalf. Contact facts describe the subject, not the speaker. Generated replies refer to the contact in third person, using the contact's name or they/them unless recorded pronouns or the user's wording support he/she. Earlier customer-facing replies and saved greeting preferences do not change this audience. The assistant addresses the contact directly only for an explicitly requested, labelled message draft.
+- Contact-chat FAQ answers are adapted into this agency-facing perspective, preserving the saved facts, requirements, conditions and amounts with their source references. This also applies when a FAQ has exact-answer enabled; a verbatim reply or translation could retain “Hi [contact]” or “your appointment.” Test helper continues to support verbatim and translation-only exact FAQs. Contact replies still follow the saved language and tone where consistent with the audience rules.
 - Typed questions, including qualification questions, use the shared grounded reply engine. It explains actual recorded values and exact thresholds, including all alternative paths. Eligibility, scores and service actions remain owned by the deterministic engine. Knowledge exceptions absent from the saved checks must be cited and flagged for review, never used to change qualification. Missing values remain unknown. The assistant must not invent disability, terminal-illness or other medical exceptions. Personal qualification questions bypass generic exact FAQ matching.
 - The first scan and explicit service selection use deterministic explanations without a generation request. The existing passive fit-scan GET and qualification-preview contracts remain available with their existing behavior.
 
@@ -29,16 +40,16 @@ Active tenant staff retain access to the contact assistant. The new public helpe
 
 ## Analytics and validation
 
-Completed contact replies keep the chunk 7 metadata-only analytics and retry deduplication. Every completed explicit scan still records one qualification run. A delivered rule fallback for a knowledge question is a completed reply marked `NEEDS_REVIEW`; a failed or canceled request does not manufacture an answered question or handoff.
+Completed contact replies keep the chunk 7 aggregates and retry deduplication. New flagged question/reply pairs additionally use the encrypted, admin-only 30-day review workflow documented in `ai-analytics-chunk-7.md`. Every completed explicit scan still records one qualification run. A delivered rule fallback for a knowledge question is a completed reply marked `NEEDS_REVIEW`; a failed or canceled request does not manufacture an answered question or handoff.
 
-Automated tests cover saved settings/company changes, exact and translated FAQs, scoped document citations, removed/inactive/foreign sources, model input boundaries, staff/admin permissions, bounded generation, fallback behavior, unchanged scores, and analytics isolation. The database test uses temporary tenants and a controlled provider; it reuses the real authenticated deterministic scan and removes its fixtures afterward:
+Automated tests cover saved settings/company changes, agency-facing FAQ adaptation in English and Spanish, legacy customer-facing history, scoped document citations, removed/inactive/foreign sources, model input boundaries, staff/admin permissions, bounded generation, fallback behavior, unchanged scores, and analytics isolation. The database test uses temporary tenants and a controlled provider; it reuses the real authenticated deterministic scan and removes its fixtures afterward:
 
 ```bash
 cd apps/backend
 AI_CONTACT_ASSISTANT_DB_TEST=1 node --env-file=.env --import tsx --test src/lib/ai-contact-assistant.integration.test.ts
 ```
 
-Live external browsing, contact actions performed by AI, transcript persistence, and a handoff workflow remain outside this integration. Ready saved knowledge sources supply factual answers.
+Live external browsing, contact actions performed by AI, full conversation persistence, and an automated handoff workflow remain outside this integration. Only flagged question/reply pairs have the limited review retention described above. Ready saved knowledge sources supply factual answers.
 
 Original chunk 8 validation (before the contact-aware conversation update):
 

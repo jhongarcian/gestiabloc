@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { isCancel } from "axios"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   Loader2,
   MessageSquare,
@@ -15,7 +15,11 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Textarea } from "@/components/ui/textarea"
 import { AiHelperAvatar } from "@/components/ai-helper-avatar"
+import { AiReplyText } from "@/components/ai-reply-text"
+import { followAiReply } from "@/lib/ai-reply-reveal"
+import { aiReviewReasonLabel } from "@/lib/ai-answer-reviews"
 import { api } from "@/lib/api"
+import { aiCreditErrorMessage, releaseTerminalAiAttempt } from "@/lib/ai-credit-errors"
 import { AiActivityTracker } from "@/lib/ai-activity-tracking"
 import { getServiceEnrollmentHref } from "@/lib/routes"
 import { cn } from "@/lib/utils"
@@ -52,6 +56,8 @@ type AssistantMessage = {
   role: "assistant" | "user"
   title?: string
   body: string
+  outcome?: "ANSWERED" | "NEEDS_REVIEW"
+  reviewReason?: string
   bullets?: string[]
   showServiceChoices?: boolean
   helperName?: string
@@ -85,6 +91,8 @@ type ServiceFitAssistantResponse = {
   answer: {
     title: string
     summary: string
+    outcome?: "ANSWERED" | "NEEDS_REVIEW"
+    reviewReason?: string
     bullets: string[]
     recordReferences?: ContactCaseReference[]
     replySource?: AssistantMessage["replySource"]
@@ -146,6 +154,8 @@ function buildAssistantReplyMessage(response: ServiceFitAssistantResponse) {
   return createMessage({
     role: "assistant",
     body: response.answer.summary,
+    outcome: response.answer.outcome,
+    reviewReason: response.answer.reviewReason,
     bullets: response.answer.bullets,
     citations: response.answer.citations,
     helperName: ["KNOWLEDGE", "CONTACT"].includes(response.answer.replySource ?? "") ? response.answer.title : response.helper?.name,
@@ -210,6 +220,8 @@ export function ContactAiQualificationPanel({
 }: ContactAiQualificationPanelProps) {
   const [items, setItems] = useState<ServiceFitScanItem[]>([])
   const [messages, setMessages] = useState<AssistantMessage[]>([])
+  const [revealingReplyId, setRevealingReplyId] = useState<string | null>(null)
+  const finishReveal = useCallback((id: string) => setRevealingReplyId(current => current === id ? null : current), [])
   const [ranAt, setRanAt] = useState<Date | null>(null)
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false)
   const [isSending, setIsSending] = useState(false)
@@ -225,6 +237,8 @@ export function ContactAiQualificationPanel({
   const [helper, setHelper] = useState(initialHelper)
   const activeRequest = useRef<AbortController | null>(null)
   const endRef = useRef<HTMLDivElement | null>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const followReply = useCallback(() => followAiReply(endRef.current, scrollRef.current), [])
   const tracking = useRef(new AiActivityTracker())
   const runAttempt = useRef<ReturnType<AiActivityTracker["forRequest"]> | null>(null)
   const history = useRef<Array<{ role: "user" | "assistant"; content: string }>>([])
@@ -246,10 +260,11 @@ export function ContactAiQualificationPanel({
   useEffect(() => () => activeRequest.current?.abort(), [])
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+    followAiReply(endRef.current, scrollRef.current, true)
   }, [messages, isSending])
 
   const appendMessage = (message: AssistantMessage) => {
+    setRevealingReplyId(message.role === "assistant" ? message.id : null)
     setMessages((current) => [...current, message])
   }
 
@@ -286,7 +301,9 @@ export function ContactAiQualificationPanel({
       setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
       history.current = []
       setRanAt(new Date())
-      setMessages([buildInitialAssistantMessage(nextItems)])
+      const initialMessage = buildInitialAssistantMessage(nextItems)
+      setMessages([initialMessage])
+      setRevealingReplyId(initialMessage.id)
     } catch (error) {
       if (!isCancel(error)) toast.error("Could not run qualification analysis.")
     } finally {
@@ -305,8 +322,8 @@ export function ContactAiQualificationPanel({
     if (activeRequest.current) return
     const controller = new AbortController()
     activeRequest.current = controller
+    const activity = tracking.current.forRequest(JSON.stringify([contactId, options, history.current, caseHistory]))
     try {
-      const activity = tracking.current.forRequest(JSON.stringify([contactId, options]))
       const { data } = await api.post<ServiceFitAssistantResponse>(
         `/api/services/${encodeURIComponent(tenantId)}/fit-scan/assistant`,
         {
@@ -345,7 +362,11 @@ export function ContactAiQualificationPanel({
       if (data.selectedCase) setCaseHistory({ paymentsPage: data.selectedCase.history.paymentsPage, notesPage: data.selectedCase.history.notesPage, q: data.selectedCase.history.search })
       else setCaseHistory({ paymentsPage: 1, notesPage: 1, q: "" })
       appendMessage(buildAssistantReplyMessage(data))
+    } catch (error) {
+      releaseTerminalAiAttempt(tracking.current, activity.requestId, error)
+      throw error
     } finally {
+      window.dispatchEvent(new Event("ai-credits-changed"))
       if (activeRequest.current === controller) activeRequest.current = null
     }
   }
@@ -355,7 +376,7 @@ export function ContactAiQualificationPanel({
     setIsSending(true)
     appendMessage(createMessage({ role: "user", body: `Review ${contactCaseLabel(item, bookingContext.tenantTimezone)}.` }))
     try { await requestAssistant({ scope: "case", serviceId: item.serviceId, contactServiceId: item.contactServiceId }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not review that purchase.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not review that purchase.") }
     finally { setIsSending(false) }
   }
 
@@ -363,7 +384,7 @@ export function ContactAiQualificationPanel({
     if (!selectedServiceId || activeRequest.current) return
     setIsSending(true)
     try { await requestAssistant({ scope: "case", serviceId: selectedServiceId }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not load purchases for this service.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not load purchases for this service.") }
     finally { setIsSending(false) }
   }
 
@@ -372,7 +393,7 @@ export function ContactAiQualificationPanel({
     setIsSending(true)
     appendMessage(createMessage({ role: "user", body: "Compare the selected purchases." }))
     try { await requestAssistant({ scope: "case", compareContactServiceIds: ids, question: "Compare the selected purchases." }) }
-    catch (error) { if (!isCancel(error)) toast.error("Could not compare those purchases.") }
+    catch (error) { if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not compare those purchases.") }
     finally { setIsSending(false) }
   }
 
@@ -404,7 +425,7 @@ export function ContactAiQualificationPanel({
         serviceId,
       })
     } catch (error) {
-      if (!isCancel(error)) toast.error("Could not analyze that service.")
+      if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not analyze that service.")
     } finally {
       setIsSending(false)
     }
@@ -437,7 +458,7 @@ export function ContactAiQualificationPanel({
       })
       setDraft("")
     } catch (error) {
-      if (!isCancel(error)) toast.error("Could not send that question.")
+      if (!isCancel(error)) toast.error(aiCreditErrorMessage(error) ?? "Could not send that question.")
     } finally {
       setIsSending(false)
     }
@@ -522,10 +543,10 @@ export function ContactAiQualificationPanel({
         {selectedCase ? <ContactAiCaseHistory key={`${selectedCase.contactServiceId}:${caseVersion}`} tenantId={tenantId} contactId={contactId} item={selectedCase} onHistoryChange={setCaseHistory} /> : null}
       </div>
 
-      <div className="grid min-h-[640px] min-w-0 grid-rows-[1fr_auto] overflow-hidden rounded-[26px] border border-slate-200 bg-slate-50/70">
-        <ScrollArea className="min-h-0 min-w-0 [&_[data-slot=scroll-area-viewport]>div]:block!">
+      <div className="grid h-[80dvh] max-h-[56rem] min-h-[640px] min-w-0 grid-rows-[1fr_auto] overflow-hidden rounded-[26px] border border-slate-200 bg-background">
+        <ScrollArea ref={scrollRef} className="min-h-0 min-w-0 [&_[data-slot=scroll-area-viewport]>div]:block!">
           {!hasRun ? (
-            <div className="flex min-h-[620px] items-center justify-center px-6 py-10">
+            <div className="flex h-full min-h-[360px] items-center justify-center px-6 py-10">
               <div className="mx-auto flex w-full max-w-2xl flex-col items-center text-center">
                 <AiHelperAvatar name={helper.name} avatar={helper.avatar} className="size-16" />
 
@@ -568,7 +589,7 @@ export function ContactAiQualificationPanel({
               </div>
             </div>
           ) : (
-            <div className="flex min-w-0 flex-col gap-6 px-5 py-6 md:px-7 md:py-7">
+            <div role="log" aria-label="Contact conversation" aria-live="polite" aria-relevant="additions" className="flex min-w-0 flex-col gap-6 px-5 py-6 md:px-7 md:py-7">
               {ranAt ? <div className="flex flex-wrap items-center justify-center gap-2">
                 <span className="rounded-full border border-white/80 bg-white/75 px-3 py-1 text-xs font-medium text-slate-600 shadow-sm">
                   {analysisMeta.serviceCount} {analysisMeta.serviceCount === 1 ? "service" : "services"} reviewed
@@ -592,14 +613,13 @@ export function ContactAiQualificationPanel({
                     message.role === "user" ? "justify-end" : "justify-start",
                   )}
                 >
-                  <div className="min-w-0 max-w-[94%] xl:max-w-[72%]">
+                  <div className={cn("min-w-0", message.role === "user" ? "max-w-[94%] xl:max-w-[72%]" : "w-full max-w-3xl")}>
                     {message.role === "assistant" ? <p className="mb-2 break-words px-1 text-xs font-medium text-slate-600">{message.helperName ?? helper.name}</p> : null}
                     <div
                       className={cn(
-                        "rounded-[26px] px-5 py-4 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.6)]",
                         message.role === "user"
-                          ? "bg-slate-950 text-white"
-                          : "border border-white/80 bg-white/88 text-slate-900 backdrop-blur",
+                          ? "rounded-[26px] bg-slate-950 px-5 py-4 text-white shadow-sm"
+                          : "text-foreground",
                       )}
                     >
                       {message.title ? (
@@ -612,7 +632,7 @@ export function ContactAiQualificationPanel({
                           {message.title}
                         </p>
                       ) : null}
-                      <p
+                      {message.role === "assistant" ? <AiReplyText id={message.id} text={message.body} animate={revealingReplyId === message.id} onFinish={finishReveal} onProgress={followReply} className={message.title ? "mt-1.5" : undefined} /> : <p
                         className={cn(
                           "whitespace-pre-wrap break-words text-sm leading-6",
                           message.title ? "mt-1.5" : "",
@@ -620,12 +640,14 @@ export function ContactAiQualificationPanel({
                         )}
                       >
                         {message.body}
-                      </p>
+                      </p>}
 
+                      {revealingReplyId !== message.id ? <>
+                      {message.outcome === "NEEDS_REVIEW" ? <div className="mt-3 flex flex-col gap-2"><Badge variant="outline" className="w-fit">Needs agency review</Badge><p className="text-xs text-muted-foreground">{aiReviewReasonLabel(message.reviewReason)}</p></div> : null}
                       {message.bullets?.length ? (
                         <ul
                           className={cn(
-                            "mt-3 space-y-2 text-sm leading-6",
+                            "mt-3 flex flex-col gap-2 text-sm leading-6",
                             message.role === "user" ? "text-slate-100" : "text-slate-700",
                           )}
                         >
@@ -650,7 +672,7 @@ export function ContactAiQualificationPanel({
                         {message.replySource === "FALLBACK" ? <p className="text-xs leading-relaxed text-slate-500">A conversational reply is unavailable right now. These are the current {message.recordReferences?.length ? "purchase records" : "qualification checks"}.</p> : null}
                       </div> : null}
 
-                      {message.sources?.length ? <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+                      {message.sources?.length ? <details className="mt-3 border-t border-border pt-3 text-xs">
                         <summary className="cursor-pointer rounded-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">Sources ({message.sources.length})</summary>
                         <ul className="mt-3 flex flex-col gap-3">
                           {message.sources.map((source) => <li key={source.id} className="flex flex-col gap-1">
@@ -732,6 +754,7 @@ export function ContactAiQualificationPanel({
                           ) : null}
                         </div>
                       ) : null}
+                      </> : null}
                     </div>
 
                     {message.role === "assistant" && selectedService && scopeMode !== "case" && message.id === messages[messages.length - 1]?.id ? (
@@ -755,9 +778,9 @@ export function ContactAiQualificationPanel({
               ))}
 
               {isSending ? (
-                <div className="flex justify-start">
+                <div className="flex justify-start" role="status">
                   <div className="max-w-[92%] pr-8 md:max-w-[72%] md:pr-20">
-                    <div className="rounded-[26px] border border-white/80 bg-white/88 px-5 py-4 text-sm text-slate-600 shadow-[0_18px_45px_-32px_rgba(15,23,42,0.6)] backdrop-blur">
+                    <div className="py-3 text-sm text-muted-foreground">
                       <div className="flex items-center gap-2">
                         <Loader2 data-icon="inline-start" className="animate-spin" aria-hidden="true" />
                         {helper.name} is preparing a reply…

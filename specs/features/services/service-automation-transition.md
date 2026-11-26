@@ -62,11 +62,12 @@ waits and chained workflows; execution logs and waiting-run APIs return it. Ordi
 remain unscoped. Service triggers and linked drafts remain in Chunk 10.
 
 ### 10. Implement “Step entered”
-Add the trigger and create a disabled entry-automation draft for each step. Link it to the existing Automations editor.
+Add the trigger and let tenants create optional entry automations through the existing Automations editor.
 
-**Done when:** Entering a step executes its enabled entry workflow once; empty drafts remain disabled.
+**Done when:** Entering a step executes each matching enabled entry workflow once; creating or saving a step creates no automation drafts.
 
-Implemented: every step owns a disabled entry draft linked to the existing Automations editor.
+Implemented: step automations are created explicitly by tenants. Steps offer links to the existing
+Automations editor; service creation and step saves do not create or recreate drafts.
 New entry occurrences queue their matching published workflow atomically with the entry. Retries
 reuse the occurrence; revisits get independent events. Queued actions are pinned and tenant scoped.
 The automation sidebar now supports selecting service, sub-service, step and entry/completion event.
@@ -74,9 +75,10 @@ Multiple workflows can target each step. Triggers can be reassigned or deleted; 
 required to execute them. Empty drafts cannot publish.
 
 ### 11. Implement completion and default advancement
-Add the completion trigger and linked draft. Advance immediately without an enabled completion workflow; otherwise advance after its actions finish.
+Add the optional completion trigger. Advance immediately without an enabled completion workflow; otherwise advance after its actions finish.
 
-**Implemented:** Each step also owns a disabled completion draft. Staff can complete an active enrolled
+**Implemented:** Tenants can create completion automations when needed. No completion draft is
+created automatically. Staff can complete an active enrolled
 occurrence. Enrollment locking and saved progression states make repeated requests and worker retries
 idempotent. All matching completion workflows must succeed to release the next saved step and its entry trigger; failed or
 stopped workflows visibly pause progression. Waits retain the gate until the final segment succeeds.

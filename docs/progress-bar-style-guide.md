@@ -124,6 +124,10 @@ Compact rules:
 
 Use the base shadcn `Progress` component without foreground pills for transient utility progress, such as an upload inside a compact form row. Those indicators describe an active operation rather than persistent business completion.
 
+## AI credit availability
+
+The AI credit summary reuses `LabeledProgress` for **monthly credits remaining**, where a larger emerald fill means more available capacity. Never show consumed credits as positive completion. Compute the percentage from `(granted - used - reserved) / granted`, and label both the remaining count and percentage explicitly. Show purchased credits separately because they carry over and have no monthly denominator. A missing allowance or unavailable balance has explanatory text instead of a fabricated 0% bar. See `docs/ai-credit-ui-chunk-7.md` for the billing-specific states and refresh behavior.
+
 ## Accessibility
 
 - Keep the Radix/shadcn progress primitive so `role="progressbar"` and value semantics remain intact.

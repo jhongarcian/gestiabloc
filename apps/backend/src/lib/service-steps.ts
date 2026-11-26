@@ -1,7 +1,4 @@
-import {
-  ensureServiceStepAutomationsTx,
-  serviceStepAutomationSelect,
-} from "./service-step-automations.js"
+import { serviceStepAutomationSelect } from "./service-step-automations.js"
 import { z } from "zod"
 import { Prisma } from "../generated/prisma/index.js"
 import {
@@ -71,7 +68,6 @@ export async function saveServiceStepsTx(
     if (step.id) await tx.serviceStep.update({ where: { id: step.id, tenantId, serviceId }, data })
     else await tx.serviceStep.create({ data: { tenantId, serviceId, ...data } })
   }
-  await ensureServiceStepAutomationsTx(tx, tenantId, serviceId)
 }
 
 export const enrolledServiceStepsSelect = {

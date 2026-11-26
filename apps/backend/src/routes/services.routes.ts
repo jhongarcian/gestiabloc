@@ -1582,7 +1582,7 @@ export async function evaluateServiceFitScan(params: {
         matchedRules: item.matchedRules,
         blockingRules: item.blockingRules,
         missingRules: item.missingRules,
-      }, params.explainWithAi === false ? null : undefined)
+      }, params.explainWithAi === true ? undefined : null)
 
       return {
         ...item,

@@ -11,7 +11,7 @@ import type { AiChatProvider, AiChatSource } from "./ai-helper-replies.js"
 
 // Real PostgreSQL, authenticated routes and FTS, controlled providers, no uploads.
 // AI_CONTACT_ASSISTANT_DB_TEST=1 node --env-file=.env --import tsx --test src/lib/ai-contact-assistant.integration.test.ts
-test("saved workspace context reaches contact replies with isolated sources, exact FAQs, deterministic results, staff permissions and metadata-only analytics", {
+test("saved workspace context reaches contact replies with isolated sources, agency-facing FAQs, deterministic results, staff permissions and metadata-only analytics", {
   skip: process.env.AI_CONTACT_ASSISTANT_DB_TEST !== "1",
 }, async (t) => {
   const oldProvider = process.env.SERVICE_FIT_AI_PROVIDER
@@ -76,8 +76,15 @@ test("saved workspace context reaches contact replies with isolated sources, exa
     const prompt = JSON.stringify(messages)
     for (const secret of ["ENCRYPTED_MARKER", "SENSITIVE_MARKER", "CIPHERTEXT_MARKER", "FOREIGN_COMPANY_SECRET", "FOREIGN_SOURCE_SECRET", "INACTIVE_SOURCE_SECRET"]) assert.equal(prompt.includes(secret), false, secret)
     assert.match(prompt, /Morgan/); assert.match(prompt, /CURRENT_CONTACT/); assert.match(prompt, /statuses and scores are authoritative/)
+    assert.match(messages[0]!.content, /authenticated agency team member/)
+    assert.match(messages[0]!.content, /refer to the contact in the third person/)
     const user = messages[1]!.content
     latestSources = JSON.parse(user.split("CURRENT_SOURCES (quoted reference data):\n")[1]!.split("\n")[0]!)
+    if (singleScope) assert.equal(latestSources.some(source => source.content.includes("OTHER_SKILL_FAQ_SECRET")), false)
+    if (/appointments|citas/i.test(user.split("LATEST_QUESTION:\n")[1]!)) return {
+      answer: expectedLanguage === "Spanish" ? "Las citas son solo entre semana. Morgan debe traer los originales." : "Appointments are weekdays only. Morgan needs to bring the originals.",
+      sourceIds: [`faq:${faq.id}`], outcome: "ANSWERED",
+    }
     if (user.includes("LATEST_QUESTION:\nWhy not Coverage review")) {
       assert.match(user, /56 years old/); assert.match(user, /at least 64/); assert.match(user, /Disability is No/)
       return { answer: "Morgan is 56. This service needs an age of at least 64 or a recorded disability; disability is currently No.", sourceIds: [], outcome: "ANSWERED" }
@@ -93,11 +100,8 @@ test("saved workspace context reaches contact replies with isolated sources, exa
     assert.ok(prompt.includes(`a ${expectedTone} tone`))
     return { answer: `${latestSources.find((source) => source.id === "company")!.content} HARBOR_HELLO.`, sourceIds: ["company"], outcome: "ANSWERED" }
   }
-  provider.matchFaq = async (question, _history, faqs, language) => {
-    if (singleScope) assert.equal(faqs.some((entry) => entry.answer.includes("OTHER_SKILL_FAQ_SECRET")), false)
-    return { faqId: /appointments|citas/i.test(question) ? faqs.find((entry) => entry.id === faq.id)?.id ?? null : null, translate: language === "Spanish", language: language === "Spanish" ? "Spanish" : "English" }
-  }
-  provider.translateFaq = async (answer) => { assert.equal(answer, faq.answer); return { answer: "Solo días laborables.\nTraiga los originales." } }
+  provider.matchFaq = async () => { throw new Error("Contact chat must adapt FAQs to the agency audience") }
+  provider.translateFaq = async () => { throw new Error("Translation alone retains the customer-facing audience") }
   let rateClock = Date.now()
   const app = express()
   app.use(cookieParser(), express.json())
@@ -137,8 +141,9 @@ test("saved workspace context reaches contact replies with isolated sources, exa
   assert.match(result.data.answer.summary, /Harbor Company/)
   assert.equal(result.data.answer.answerMode, "ADAPTED")
   result = await ask("When are appointments available?")
-  assert.equal(result.data.answer.summary, faq.answer)
-  assert.equal(result.data.answer.answerMode, "EXACT")
+  assert.equal(result.data.answer.summary, "Appointments are weekdays only. Morgan needs to bring the originals.")
+  assert.equal(result.data.answer.answerMode, "ADAPTED")
+  assert.equal(result.data.answer.sources[0].faqId, faq.id)
   assert.deepEqual(result.data.items, baseline)
   await prisma.tenantAiSettings.update({ where: { tenantId }, data: { name: "New Harbor Helper", language: "Spanish", tone: "Direct", avatarPresetId: "lightbulb", revision: { increment: 1 } } })
   expectedLanguage = "Spanish"; expectedTone = "direct"; expectedName = "New Harbor Helper"
@@ -146,8 +151,8 @@ test("saved workspace context reaches contact replies with isolated sources, exa
   result = await ask("¿Cuándo hay citas?")
   assert.equal(result.data.helper.name, "New Harbor Helper")
   assert.equal(result.data.helper.avatar.presetId, "lightbulb")
-  assert.equal(result.data.answer.answerMode, "TRANSLATED")
-  assert.equal(result.data.answer.summary, "Solo días laborables.\nTraiga los originales.")
+  assert.equal(result.data.answer.answerMode, "ADAPTED")
+  assert.equal(result.data.answer.summary, "Las citas son solo entre semana. Morgan debe traer los originales.")
   await prisma.serviceAiFaq.update({ where: { id: faq.id }, data: { exactAnswer: false } })
   result = await ask("What is your company address?")
   assert.equal(result.data.answer.answerMode, "ADAPTED")

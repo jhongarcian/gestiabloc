@@ -1,6 +1,8 @@
 export type AiTestReply = {
   id: string
   answer: string
+  outcome?: "ANSWERED" | "NEEDS_REVIEW"
+  reviewReason?: string
   answerMode?: "ADAPTED" | "EXACT" | "TRANSLATED"
   helper: { name: string; language: string; tone: string; revision: number }
   sources: Array<{

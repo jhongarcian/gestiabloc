@@ -1,5 +1,6 @@
+import { requestAi, completionJson } from "./ai-provider-request.js"
 import { z } from "zod"
-import { getGroqConfiguration } from "./groq-config.js"
+import { getAiConfiguration } from "./ai-provider-config.js"
 
 export type ServiceFitExplanationStatus = "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
 
@@ -241,55 +242,17 @@ export function buildServiceFitExplanationPrompt(input: ServiceFitExplanationInp
   ].join("\n")
 }
 
-class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider {
-  constructor(
-    private readonly apiKey: string,
-    private readonly model: string,
-    private readonly baseUrl: string,
-  ) {}
+class ConfiguredServiceFitExplanationProvider implements ServiceFitExplanationProvider {
+  constructor(private readonly config: NonNullable<ReturnType<typeof getAiConfiguration>>) {}
 
   async explainQualification(input: ServiceFitExplanationInput): Promise<ServiceFitExplanationOutput> {
-    const response = await fetch(this.baseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: 0.2,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You produce short, accurate qualification explanations for services. Return only JSON.",
-          },
-          {
-            role: "user",
-            content: buildServiceFitExplanationPrompt(input),
-          },
-        ],
-      }),
-    })
-
-    if (!response.ok) {
-      throw new Error(`GROQ_REQUEST_FAILED:${response.status}`)
-    }
-
-    const payload = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string | null } | null }>
-    }
-    const content = payload.choices?.[0]?.message?.content
-    if (typeof content !== "string" || !content.trim()) {
-      throw new Error("GROQ_EMPTY_RESPONSE")
-    }
-
-    const rawJson = extractJsonObject(content)
-    if (!rawJson) {
-      throw new Error("GROQ_INVALID_JSON")
-    }
-
-    const parsed = PROVIDER_OUTPUT_SCHEMA.parse(JSON.parse(rawJson))
+    const parsed = await requestAi({ ...this.config,
+      purpose: "QUALIFICATION_EXPLANATION", maxTokens: 1800,
+      messages: [
+        { role: "system", content: "You produce short, accurate qualification explanations for services. Return only JSON." },
+        { role: "user", content: buildServiceFitExplanationPrompt(input) },
+      ],
+    }, payload => PROVIDER_OUTPUT_SCHEMA.parse(completionJson(payload)))
     return {
       reasonSummary: parsed.reasonSummary,
       configurationGapNotes: dedupeStrings(parsed.configurationGapNotes),
@@ -298,13 +261,9 @@ class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider
 }
 
 export function getServiceFitExplanationProvider(): ServiceFitExplanationProvider | null {
-  const config = getGroqConfiguration()
+  const config = getAiConfiguration()
   if (!config) return null
-  return new GroqServiceFitExplanationProvider(
-    config.apiKey,
-    config.model,
-    config.baseUrl,
-  )
+  return new ConfiguredServiceFitExplanationProvider(config)
 }
 
 export async function generateServiceFitExplanation(

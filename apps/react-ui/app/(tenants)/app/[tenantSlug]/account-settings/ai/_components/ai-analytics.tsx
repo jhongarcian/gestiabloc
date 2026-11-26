@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts"
 import { RefreshCw } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -13,7 +13,10 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { AiEmpty, AiPageHeader, AiPanel, SECONDARY_BUTTON } from "./ai-ui"
 import { useAiWorkspace } from "./ai-workspace"
 import { useAiAnalytics } from "./use-ai-analytics"
-import type { AiAnalyticsChannel, AiAnalyticsPeriod } from "../_lib/analytics"
+import type { AiAnalytics as AnalyticsData, AiAnalyticsChannel, AiAnalyticsPeriod } from "../_lib/analytics"
+import { useAiCreditOverview, type AiCreditOverviewController } from "@/lib/use-ai-credit-overview"
+import { AiUsageReport } from "./ai-usage-report"
+import { AiAnswerReviews } from "./ai-answer-reviews"
 
 const chartConfig = {
   conversations: { label: "Conversations", color: "var(--chart-3)" },
@@ -37,17 +40,32 @@ const dateLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDate
 const toggleClass = "h-8 cursor-pointer rounded-full px-3 text-xs font-semibold data-[state=on]:bg-blue-950 data-[state=on]:text-white"
 
 export function AiAnalytics() {
-  const { tenantId } = useAiWorkspace()
+  const { tenantId, tenantSlug, userRole } = useAiWorkspace()
   const [period, setPeriod] = useState<AiAnalyticsPeriod>("30")
   const [channel, setChannel] = useState<AiAnalyticsChannel>("ALL")
-  const { data, loading, error, refresh } = useAiAnalytics(tenantId, period, channel)
+  const report = useAiAnalytics(tenantId, period, channel)
+  const credits = useAiCreditOverview(tenantId, userRole === "TENANT_ADMIN")
+  const refreshReport = report.refresh, refreshCredits = credits.refresh
+  const refresh = useCallback(() => {
+    refreshReport(); refreshCredits(); window.dispatchEvent(new Event("ai-review-changed"))
+  }, [refreshReport, refreshCredits])
+  return <AiAnalyticsContent {...report} credits={{ ...credits, refresh }} tenantId={tenantId} tenantSlug={tenantSlug} userRole={userRole} period={period} setPeriod={setPeriod} channel={channel} setChannel={setChannel} refresh={refresh} />
+}
+
+export function AiAnalyticsContent({ data, loading, error, refresh, credits, tenantId, tenantSlug, userRole, period, setPeriod, channel, setChannel }: {
+  data?: AnalyticsData; loading: boolean; error?: string; refresh: () => void; credits: AiCreditOverviewController
+  tenantId: string; tenantSlug: string; userRole: string; period: AiAnalyticsPeriod; setPeriod: (value: AiAnalyticsPeriod) => void
+  channel: AiAnalyticsChannel; setChannel: (value: AiAnalyticsChannel) => void
+}) {
   const hasActivity = data && data.totals.conversations > 0
+  const initialLoading = loading && !data
+  const refreshing = loading || credits.loading
 
   return (
-    <div className="flex min-w-0 flex-col gap-4" aria-busy={loading}>
-      <AiPageHeader title="Analytics" description="Follow your helper’s conversations, answers, and qualification activity."
-        actions={<Button variant="outline" className={SECONDARY_BUTTON} onClick={refresh} disabled={loading}>
-          <RefreshCw data-icon="inline-start" aria-hidden="true" />{loading ? "Loading…" : "Refresh"}
+    <div className="flex min-w-0 flex-col gap-4" aria-busy={refreshing}>
+      <AiPageHeader title="Analytics" description="Follow your helper’s activity, credit spending, and token usage."
+        actions={<Button variant="outline" className={SECONDARY_BUTTON} onClick={refresh} disabled={refreshing}>
+          <RefreshCw data-icon="inline-start" aria-hidden="true" />{refreshing ? "Refreshing…" : "Refresh"}
         </Button>}>
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -69,15 +87,19 @@ export function AiAnalytics() {
                 <CardDescription className="text-xs">{metric.description}</CardDescription>
               </CardHeader>
               <CardContent className="px-4">
-                {loading ? <Skeleton className="h-8 w-16" /> : <p className="text-2xl font-semibold text-slate-950 tabular-nums">{data ? data.totals[metric.key].toLocaleString() : "—"}</p>}
+                {initialLoading ? <Skeleton className="h-8 w-16" /> : <p className="text-2xl font-semibold text-slate-950 tabular-nums">{data ? data.totals[metric.key].toLocaleString() : "—"}</p>}
+                {metric.key === "needsReview" && userRole === "TENANT_ADMIN" ? <Button asChild variant="link" size="sm" className="px-0"><a href="#ai-answer-reviews">View flagged replies</a></Button> : null}
               </CardContent>
             </Card>)}
           </div>
         </div>
       </AiPageHeader>
 
+      <AiUsageReport usage={data?.usage} loading={initialLoading} credits={credits} tenantSlug={tenantSlug} userRole={userRole} />
+      {userRole === "TENANT_ADMIN" ? <AiAnswerReviews key={`${tenantId}:${period}:${channel}`} tenantId={tenantId} tenantSlug={tenantSlug} days={period} channel={channel} onRefresh={refresh} /> : null}
+
       {error ? <Alert variant="destructive" role="alert"><AlertTitle>Analytics unavailable</AlertTitle><AlertDescription>{error} Counts are unavailable, rather than zero.</AlertDescription></Alert> : null}
-      {loading ? <div role="status" aria-label="Loading Analytics" className="flex flex-col gap-3"><Skeleton className="h-80 w-full rounded-[22px]" /><span className="sr-only">Loading activity…</span></div> : null}
+      {initialLoading ? <div role="status" aria-label="Loading Analytics" className="flex flex-col gap-3"><Skeleton className="h-80 w-full rounded-[22px]" /><span className="sr-only">Loading activity…</span></div> : null}
       {data ? <>
         <div className="flex flex-wrap items-center justify-between gap-2 px-1 text-xs text-slate-500">
           <p>{dateLabel(data.from.slice(0, 10))} – {dateLabel(data.through.slice(0, 10))} · Daily totals in UTC</p>
@@ -119,7 +141,7 @@ export function AiAnalytics() {
             </div>
           </details>
         </>}
-        <p className="px-1 text-xs leading-relaxed text-slate-500">Completed replies and scans are counted. Failed requests and test replies stopped before completion are excluded. Test helper never runs qualification checks. Contact analysis counts each explicit scan, including scans performed for follow-up questions. “Needs review” includes contact questions answered with rule guidance when saved knowledge is unavailable; it is not a human review queue. Questions and replies are not retained in Analytics.</p>
+        <p className="px-1 text-xs leading-relaxed text-slate-500">Completed replies and scans are counted. Failed requests and test replies stopped before completion are excluded. Test helper never runs qualification checks. Contact analysis counts each explicit scan, including scans performed for follow-up questions. “Needs review” is the original automatic outcome, including rule guidance when conversation generation is unavailable. The review list tracks team follow-up separately and retains flagged details for 30 days.</p>
       </> : null}
     </div>
   )

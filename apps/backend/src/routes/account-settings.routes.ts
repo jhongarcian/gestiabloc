@@ -1,5 +1,6 @@
+import { getBillingConfiguration } from "../lib/billing-config.js"
+import { subscriptionAccess } from "../lib/subscription-billing.js"
 import { ServicePaymentSettingsSchema, resolvePaymentSettings, legacyPaymentFields } from "../lib/service-billing.js";
-import { ensureServiceStepAutomationsTx } from "../lib/service-step-automations.js";
 import { type NextFunction, type Request, type Response, Router } from "express";
 import argon2 from "argon2";
 import multer from "multer";
@@ -1286,7 +1287,7 @@ router.post("/:tenantId/users", ...writeMiddlewares, async (req, res, next) => {
     const [subscription, activeMembersCount] = await prisma.$transaction([
       prisma.tenantSubscription.findUnique({
         where: { tenantId },
-        select: { seatLimit: true, planKey: true },
+        select: { seatLimit: true, planKey: true, scheduledPlanKey: true },
       }),
       prisma.membership.count({
         where: {
@@ -1300,7 +1301,8 @@ router.post("/:tenantId/users", ...writeMiddlewares, async (req, res, next) => {
       return res.status(409).json({ error: "SUBSCRIPTION_NOT_FOUND" });
     }
 
-    if (activeMembersCount >= subscription.seatLimit) {
+    const effectiveSeatLimit = subscription.scheduledPlanKey ? Math.min(subscription.seatLimit, getPlanDetails(subscription.scheduledPlanKey).seatLimit) : subscription.seatLimit;
+    if (activeMembersCount >= effectiveSeatLimit) {
       return res.status(409).json({
         error: "SEAT_LIMIT_REACHED",
         details: {
@@ -3999,7 +4001,6 @@ router.post("/:tenantId/services", ...writeMiddlewares, async (req, res, next) =
           sortOrder: true,
         },
       });
-      await ensureServiceStepAutomationsTx(tx, tenantId, record.id);
       const steps = await tx.serviceStep.findMany({ where: { tenantId, serviceId: record.id, archivedAt: null }, orderBy: { sortOrder: "asc" }, select: serviceStepSelect });
       return { ...record, steps };
     });
@@ -5049,7 +5050,7 @@ router.get("/:tenantId/subscription", ...readMiddlewares, async (req, res, next)
             planKey: true,
             seatLimit: true,
             status: true,
-            currentPeriodEnd: true,
+            currentPeriodEnd: true, currentPeriodStart: true, paidThrough: true, graceEndsAt: true, scheduledPlanKey: true, scheduledChangeAt: true, cancelAtPeriodEnd: true,
             stripeCustomerId: true,
             stripeSubscriptionId: true,
           },
@@ -5072,6 +5073,10 @@ router.get("/:tenantId/subscription", ...readMiddlewares, async (req, res, next)
     return res.json({
       ok: true,
       subscription: {
+        billingEnabled: getBillingConfiguration().enabled,
+        access: subscriptionAccess(subscription),
+        paidThrough: subscription.paidThrough, graceEndsAt: subscription.graceEndsAt,
+        scheduledPlanKey: subscription.scheduledPlanKey, scheduledChangeAt: subscription.scheduledChangeAt, cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
         planKey: subscription.planKey,
         seatLimit: subscription.seatLimit,
         status: subscription.status,
@@ -5085,7 +5090,7 @@ router.get("/:tenantId/subscription", ...readMiddlewares, async (req, res, next)
         },
         storageUsedBytes,
         storageLimitBytes: planDetails.storageBytes,
-        aiActionsPerMonth: planDetails.aiActionsPerMonth,
+        aiCreditsPerMonth: planDetails.aiCreditsPerMonth,
         memberCount: totalMemberCount,
         activeMemberCount,
       },

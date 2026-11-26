@@ -207,7 +207,7 @@ export default async function ContactOverviewPage({
           </div>
         ) : null}
 
-        <div className="relative grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative grid gap-3 @lg/contact-content:grid-cols-2 @5xl/contact-content:grid-cols-4">
           <ProfileMetric
             href={`${contactBaseHref}/services`}
             icon={CircleDollarSign}

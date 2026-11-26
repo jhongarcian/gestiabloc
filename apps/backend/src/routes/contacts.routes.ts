@@ -9,6 +9,10 @@ import {
   encryptCustomFieldValue,
 } from "../lib/contact-custom-field-encryption.js"
 import { buildContactAssigneeUpdate } from "../lib/contact-assignee-update.js"
+import {
+  optionalContactHeightSchema,
+  optionalContactWeightSchema,
+} from "../lib/contact-measurements.js"
 import { loadContactChangeSnapshot, queueContactChangedAutomationEvent, queueContactCreatedAutomationEvent, queueContactNoteAddedAutomationEvent } from "../lib/automation-event-queue.js"
 import { kickAutomationEventWorker } from "../lib/automation-event-worker.js"
 import { normalizeCustomFieldValue } from "../lib/contact-custom-field-values.js"
@@ -327,8 +331,8 @@ const UpdateContactSchema = z.object({
   emergencyContactPhone: optionalPhoneField(),
   emergencyContactRelationship: optionalStringField(120),
   gender: ContactGenderSchema.nullable().optional(),
-  height: optionalStringField(60),
-  weight: optionalStringField(60),
+  height: optionalContactHeightSchema,
+  weight: optionalContactWeightSchema,
   deceasedAt: optionalDateField(),
   smokerStatus: ContactSmokerStatusSchema.nullable().optional(),
   leadDate: optionalDateField(),

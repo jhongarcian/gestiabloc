@@ -1,3 +1,4 @@
+import { allowTenantBillingAccess } from "../middleware/requireBillingAccess.js"
 import { Router } from "express"
 import { z } from "zod"
 import multer from "multer"
@@ -135,6 +136,7 @@ router.post(
       return res.status(403).json({ error: "FORBIDDEN" })
     }
 
+    if (!await allowTenantBillingAccess(tenantId, res, user.id)) return
     const fileId = randomUUID()
     const safeFilename = sanitizeFilename(file.originalname || "avatar")
     const pathname = `tenants/${tenantId}/avatars/${user.id}/${fileId}/${safeFilename}`
@@ -191,6 +193,7 @@ router.post("/presign-download", requireAuth, async (req, res) => {
   if (!file) {
     return res.status(404).json({ error: "NOT_FOUND" })
   }
+  if (!await allowTenantBillingAccess(file.tenantId, res, user.id)) return
 
   const membership = await prisma.membership.findUnique({
     where: { userId_tenantId: { userId: user.id, tenantId: file.tenantId } },

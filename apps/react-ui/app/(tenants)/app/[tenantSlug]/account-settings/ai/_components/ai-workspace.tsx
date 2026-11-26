@@ -37,6 +37,8 @@ type WorkspaceContext = ReturnType<typeof useHelperSettings> &
   ReturnType<typeof useAiSkills> & {
     basePath: string
     tenantId: string
+    tenantSlug: string
+    userRole: string
     companyName: string
     companyProfile: ReturnType<typeof useAccountProfile>
     draft: AiWorkspaceDraft
@@ -90,6 +92,7 @@ export function AiWorkspace({
   tenantSlug,
   tenantId,
   companyName,
+  userRole,
   initialCompany,
   initialSettings,
   initialCatalog,
@@ -98,6 +101,7 @@ export function AiWorkspace({
   tenantSlug: string
   tenantId: string
   companyName: string
+  userRole: string
   initialCompany: AccountProfileResponse["tenant"] | null
   initialSettings: AiHelperSettings | null
   initialCatalog: AiSkillsResponse | null
@@ -119,7 +123,7 @@ export function AiWorkspace({
     ...faqState,
     ...sourceState,
     basePath,
-    tenantId,
+    tenantId, tenantSlug, userRole,
     companyName: companyProfile.savedProfile?.name ?? companyName,
     companyProfile,
     draft,

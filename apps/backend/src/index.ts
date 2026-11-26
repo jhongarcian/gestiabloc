@@ -1,4 +1,6 @@
 import "dotenv/config"
+import { getBillingConfiguration } from "./lib/billing-config.js"
+import { createBillingRouter, createStripeWebhookRouter } from "./routes/billing.routes.js"
 import http from "http"
 import express from "express"
 import cors, { type CorsOptions } from "cors"
@@ -15,6 +17,7 @@ import aiSkillsRoutes from "./routes/ai-skills.routes.js"
 import aiTestChatRoutes from "./routes/ai-test-chat.routes.js"
 import aiSourcesRoutes from "./routes/ai-sources.routes.js"
 import aiAnalyticsRoutes from "./routes/ai-analytics.routes.js"
+import { purgeExpiredAiReviews } from "./lib/ai-answer-reviews.js"
 import { startAiSourceWorker } from "./lib/ai-source-worker.js"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
@@ -57,6 +60,8 @@ const env = {
   cookieDomain: process.env.COOKIE_DOMAIN || undefined,
 }
 const allowedWebOrigins = getAllowedWebOrigins()
+// Reject unsafe rollout configuration before serving any requests.
+getBillingConfiguration()
 
 const app = express()
 
@@ -95,7 +100,10 @@ const corsOptions: CorsOptions = {
 app.use(cors(corsOptions))
 app.options("/*splat", cors(corsOptions))
 app.use(cookieParser())
+// Signature verification requires the original bytes, before express.json().
+app.use("/api/billing", createStripeWebhookRouter())
 app.use(express.json())
+app.use("/api/billing", createBillingRouter())
 
 app.get("/api/heartbeat", (_req, res) => {
   res.status(200).json({ ok: true })
@@ -233,6 +241,10 @@ let stopAiSources: (() => Promise<void>) | undefined
 const start = async () => {
   await prisma.$connect()
   setRealtimeServer(io)
+  const purgeReviews = () => { void purgeExpiredAiReviews(prisma).catch(() => console.error("AI review retention cleanup failed; verify database availability and migrations.")) }
+  purgeReviews()
+  const reviewRetentionInterval = setInterval(purgeReviews, 60 * 60 * 1000)
+  reviewRetentionInterval.unref()
   if (process.env.AI_SOURCE_WORKER_ENABLED !== "false") stopAiSources = startAiSourceWorker()
 
   await refreshTaskPrioritiesForTenants().catch((error) => {

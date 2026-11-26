@@ -5,6 +5,8 @@ import {
 import { buildServiceFitAssistantReply, type ServiceFitAssistantReply } from "./service-fit-assistant.js"
 import { contactContextForPrompt, explainContactService, type ContactAssistantContext } from "./contact-assistant-context.js"
 import type { AiTestChatInput } from "./ai-helper-replies.js"
+import { AiCreditError } from "./ai-credit-wallet.js"
+import type { AiReplyExecutor } from "./ai-credit-execution.js"
 import { caseContextForPrompt, contactCaseReferences, explainContactCase, type ContactCaseEvidence, type ContactCaseReference } from "./ai-contact-cases.js"
 
 export type ContactAssistantInput = Omit<Parameters<typeof buildServiceFitAssistantReply>[0], "scope"> & {
@@ -22,6 +24,7 @@ export type ContactAssistantAnswer = ServiceFitAssistantReply & {
 type Dependencies = {
   load: typeof loadAiHelperSnapshot
   getProvider: () => AiChatProvider | null
+  executeReply: AiReplyExecutor
 }
 const ruleQuestions = new Set([
   "what should i do next for this service",
@@ -70,7 +73,7 @@ export async function answerContactAssistant(
   if (!question)
     return { ...rules(), outcome: "ANSWERED", replySource: input.cases?.length ? "CASE" : "RULES", recordReferences: references }
 
-  const { load = loadAiHelperSnapshot, getProvider = getAiChatProvider } = dependencies
+  const { load = loadAiHelperSnapshot, getProvider = getAiChatProvider, executeReply = (_fingerprint, generate) => generate() } = dependencies
   try {
     const provider = getProvider()
     if (!provider) throw new Error("AI_PROVIDER_UNAVAILABLE")
@@ -89,22 +92,25 @@ export async function answerContactAssistant(
     const groundedSnapshot = personal ? { ...snapshot, faqs: snapshot.faqs?.map((faq) => ({ ...faq, exactAnswer: false })) } : snapshot
     const contactPrompt = input.contactContext ? contactContextForPrompt(input.contactContext, serviceIds) : input.cases?.length
       ? { contactName: input.cases[0]!.contactName, facts: [], services: [], catalog: [], limited: false } : undefined
-    const reply = await replyToAiHelper(groundedSnapshot, request, provider, signal, "CONTACT",
-      contactPrompt ? { ...contactPrompt, ...(input.cases?.length ? { cases: caseContextForPrompt(input.cases) } : {}) } : undefined)
+    const prompt = contactPrompt ? { ...contactPrompt, ...(input.cases?.length ? { cases: caseContextForPrompt(input.cases) } : {}) } : undefined
+    const reply = await executeReply({ snapshot: groundedSnapshot, request, prompt },
+      () => replyToAiHelper(groundedSnapshot, request, provider, signal, "CONTACT", prompt), provider.modelReference ?? provider.model)
     return {
       title: snapshot.helper.name,
       summary: reply.answer,
       bullets: [], suggestedQuestions: [],
       outcome: reply.outcome,
+      reviewReason: reply.reviewReason,
       replySource: input.cases?.length ? "CASE" : input.contactContext ? "CONTACT" : "KNOWLEDGE",
       recordReferences: references,
       answerMode: reply.answerMode,
       sources: reply.sources,
     }
   } catch (error) {
+    if (error instanceof AiCreditError) throw error
     if (signal?.aborted) throw error
     // Provider absence, timeout, invalid citations and source-read failures must
     // never disable qualification guidance or service-start controls.
-    return { ...rules(), outcome: "NEEDS_REVIEW", replySource: "FALLBACK", recordReferences: references }
+    return { ...rules(), outcome: "NEEDS_REVIEW", reviewReason: "ASSISTANT_UNAVAILABLE", replySource: "FALLBACK", recordReferences: references }
   }
 }

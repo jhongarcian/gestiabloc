@@ -58,6 +58,7 @@ export default async function AccountSettingsSubscriptionPage({
       tenantSlug={tenantSlug}
       subscription={subscription}
       userRole={membership.role}
+      timeZone={membership.tenant.timezone}
     />
   )
 }

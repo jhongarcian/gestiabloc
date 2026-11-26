@@ -1,12 +1,9 @@
+import { unpaidSubscription } from "../lib/subscription-signup.js"
 import { Router, type Response } from "express"
 import argon2 from "argon2"
 import { z } from "zod"
 
 import { prisma } from "../lib/prisma.js"
-import {
-  getSeatLimitForPlan,
-  trialPeriodDays,
-} from "../lib/subscription-plans.js"
 import { enforceSameOrigin } from "../lib/security.js"
 import { randomToken, sha256 } from "../lib/crypto.js"
 import { clearSessionCookie, setSessionCookie } from "../lib/cookies.js"
@@ -31,14 +28,13 @@ const passwordSchema = z
   .regex(/[0-9]/, "Password must include at least one number.")
   .regex(/[^A-Za-z0-9]/, "Password must include at least one symbol.")
 
-const TenantSignupSchema = z.object({
+export const TenantSignupSchema = z.object({
   tenantName: z.string().min(1).max(120),
   planKey: z.enum(["STARTER", "PRO", "BUSINESS"]),
-  paidNow: z.boolean().default(false),
   adminName: z.string().min(1).max(120),
   adminEmail: z.string().email().max(255),
   adminPassword: passwordSchema.max(200),
-})
+}).strict()
 
 function slugifyTenantName(name: string) {
   return name
@@ -219,7 +215,6 @@ router.post("/tenant/signup", async (req, res, next) => {
     const {
       tenantName,
       planKey,
-      paidNow,
       adminName,
       adminEmail,
       adminPassword,
@@ -292,12 +287,7 @@ router.post("/tenant/signup", async (req, res, next) => {
       await tx.tenantSubscription.create({
         data: {
           tenantId: tenant.id,
-          planKey,
-          seatLimit: getSeatLimitForPlan(planKey),
-          status: paidNow ? "ACTIVE" : "TRIALING",
-          currentPeriodEnd: paidNow
-            ? null
-            : new Date(Date.now() + trialPeriodDays * 24 * 60 * 60 * 1000),
+          ...unpaidSubscription(planKey),
         },
       })
 

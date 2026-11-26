@@ -1,3 +1,7 @@
+import { createAiReplyExecutor } from "../lib/ai-credit-execution.js"
+import { AiCreditError } from "../lib/ai-credit-wallet.js"
+import { AiChatError } from "../lib/ai-helper-replies.js"
+import { aiUsageContext } from "../lib/ai-provider-usage.js"
 import { Router, type Response } from "express"
 import { z } from "zod"
 import { requireAuth, type AuthedRequest } from "../middleware/requireAuth.js"
@@ -27,6 +31,7 @@ type ScanResult = { error: string; items?: never } | { error?: never; items: Con
 type Dependencies = {
   requireMembership: (req: AuthedRequest, res: Response, tenantId: string) => Promise<unknown | null>
   evaluate: (input: { tenantId: string; contactId: string; serviceId?: string; explainWithAi?: boolean; includeContactContext?: boolean }) => Promise<ScanResult>
+  execute?: typeof createAiReplyExecutor
   reply?: typeof answerContactAssistant
   identity?: typeof loadAiHelperIdentity
   record?: typeof recordAiInteraction
@@ -38,7 +43,7 @@ type Dependencies = {
 export function createContactAssistantRouter(dependencies: Dependencies) {
   const { requireMembership, evaluate, reply = answerContactAssistant,
     identity = loadAiHelperIdentity, record = recordAiInteraction, now = Date.now,
-    listCases = listContactCases, loadCase = loadContactCase } = dependencies
+    listCases = listContactCases, loadCase = loadContactCase, execute = createAiReplyExecutor } = dependencies
   const router = Router()
   const limit = new AiReplyLimit()
 
@@ -94,7 +99,7 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
     res.json({ ok: true, items: presentContactScanItems(result.items, result.contactContext), helper: await identity(prisma, tenantId) })
   })
 
-  router.post("/:tenantId/fit-scan/assistant", requireAuth, async (req, res) => {
+  router.post("/:tenantId/fit-scan/assistant", requireAuth, aiUsageContext("CONTACT_ASSISTANT"), async (req, res) => {
     enforceSameOrigin(req)
     const authed = req as AuthedRequest
     const { tenantId } = tenantPath.parse(req.params)
@@ -104,7 +109,12 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
     const controller = new AbortController()
     const disconnected = () => { if (!res.writableEnded) controller.abort() }
     res.once("close", disconnected)
-    let release: (() => void) | null = null
+    const run = execute(prisma, { tenantId, actorId: authed.user.id, channel: "CONTACT_ASSISTANT", requestId: payload.requestId, conversationId: payload.conversationId }, { signal: controller.signal })
+    const executeReply: import("../lib/ai-credit-execution.js").AiReplyExecutor = (fingerprint, generate, model) => run({ payload, fingerprint }, async () => {
+      const release = limit.acquire(`${tenantId}:${authed.user.id}`, now())
+      if (!release) throw new AiChatError(429, "AI_CHAT_RATE_LIMITED")
+      try { return await generate() } finally { release() }
+    }, model)
     try {
       if (payload.scope === "case" || payload.contactServiceId || payload.compareContactServiceIds || (payload.question && isContactCaseQuestion(payload.question))) {
         const catalog = await listCases(prisma, tenantId, ContactCasesQuerySchema.parse({ contactId: payload.contactId, pageSize: 25 }))
@@ -132,17 +142,18 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
         if (qualification && !qualification.items) return res.status(404).json({ error: qualification.error })
         const qualificationOnly = Boolean(!cases.length && qualification?.items)
         if (controller.signal.aborted) return
-        if (payload.question && (cases.length || qualificationOnly)) release = limit.acquire(`${tenantId}:${authed.user.id}`, now())
         const mode = qualificationOnly ? serviceId ? "service" : "all" : "case"
         const answer = cases.length || qualificationOnly
           ? await reply(prisma, tenantId, { items: qualification?.items ?? [], contactContext: qualification?.contactContext, scope: mode, serviceId, cases: cases.length ? cases : undefined, question: payload.question, history: payload.history }, controller.signal,
-            payload.question && !release ? { getProvider: () => null } : {})
+            { executeReply })
           : { title: "Purchased services", summary: candidates.pagination.total
             ? `There are ${candidates.pagination.total} matching purchases. ${compare ? "Compare up to five purchases at a time. " : ""}Which purchase would you like to review? Choose by date, status and reference below.`
             : "No purchased cases were found for this contact in the selected service scope.", bullets: [], suggestedQuestions: [], outcome: "ANSWERED" as const, replySource: "CASE" as const }
         if (controller.signal.aborted) return
         await record(prisma, { tenantId, actorId: authed.user.id, channel: "CONTACT_ASSISTANT", conversationId: payload.conversationId, requestId: payload.requestId,
-          questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null, qualificationRun: Boolean(qualification) })
+          questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null, qualificationRun: Boolean(qualification),
+          reviewReason: "reviewReason" in answer ? answer.reviewReason : undefined,
+          review: payload.question ? { question: payload.question, answer: answer.summary.slice(0, 24000), contactId: payload.contactId, serviceName: (cases[0]?.serviceName ?? catalog.services.find(item => item.serviceId === serviceId)?.serviceName)?.slice(0, 200), sourceLabels: "sources" in answer ? answer.sources?.map(source => source.label.slice(0, 320)) : [] } : undefined })
         res.setHeader("Cache-Control", "no-store")
         return res.json({ ok: true, helper: await identity(prisma, tenantId), ...(qualification?.items ? { items: presentContactScanItems(qualification.items, qualification.contactContext) } : {}),
           scope: { mode, serviceId: cases[0]?.serviceId ?? serviceId ?? null, serviceName: cases[0]?.serviceName ?? catalog.services.find((service) => service.serviceId === serviceId)?.serviceName ?? null,
@@ -162,18 +173,18 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
       if (selectedId && !service) return res.status(404).json({ error: "SERVICE_NOT_FOUND" })
       const scope = service ? "service" : "all"
       if (controller.signal.aborted) return
-      const usesKnowledge = Boolean(payload.question)
-      if (usesKnowledge) release = limit.acquire(`${tenantId}:${authed.user.id}`, now())
       const answer = await reply(prisma, tenantId, {
         items: result.items, scope, serviceId: service?.serviceId, question: payload.question,
         contactContext: result.contactContext, history: payload.history,
-      }, controller.signal, usesKnowledge && !release ? { getProvider: () => null } : {})
+      }, controller.signal, { executeReply })
       if (controller.signal.aborted) return
       await record(prisma, {
         tenantId, actorId: authed.user.id, channel: "CONTACT_ASSISTANT",
         conversationId: payload.conversationId, requestId: payload.requestId,
         questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null,
         qualificationRun: true,
+        reviewReason: answer.reviewReason,
+        review: payload.question ? { question: payload.question, answer: answer.summary.slice(0, 24000), contactId: payload.contactId, serviceName: service?.serviceName.slice(0, 200), sourceLabels: answer.sources?.map(source => source.label.slice(0, 320)) } : undefined,
       })
       res.setHeader("Cache-Control", "no-store")
       res.json({
@@ -182,9 +193,13 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
       })
     } catch (error) {
       if (error instanceof ContactCaseError) return res.status(404).json({ error: error.message })
+      if (error instanceof AiCreditError) {
+        res.setHeader("Cache-Control", "no-store")
+        if (error.code === "AI_REQUEST_IN_PROGRESS") res.setHeader("Retry-After", "2")
+        return res.status(error.status).json({ error: error.code })
+      }
       throw error
     } finally {
-      release?.()
       res.removeListener("close", disconnected)
     }
   })
