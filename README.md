@@ -47,6 +47,11 @@ in the backend file. Both real `.env` files are ignored by Git.
 
 ## Start development
 
+For Neon, keep the pooled connection in `DATABASE_URL` and set `DIRECT_URL` to
+the direct connection for the same database (hostname without `-pooler`). Prisma
+CLI uses `DIRECT_URL`, then `DATABASE_URL_UNPOOLED`, then `DATABASE_URL` as a local
+fallback. Only one migration command should run against a database at a time.
+
 On a new development database, generate the Prisma client and apply migrations:
 
 ```sh

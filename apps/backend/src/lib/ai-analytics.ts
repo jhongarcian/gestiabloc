@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { Prisma, type PrismaClient } from "../generated/prisma/index.js"
 import { loadAiUsageAnalytics } from "./ai-usage-analytics.js"
+import { encryptReviewDetails, AiReviewReasonSchema, type AiReviewDetails, type AiReviewReason } from "./ai-review-details.js"
 
 export const AiTrackingFields = {
   conversationId: z.uuid().optional(),
@@ -20,6 +21,8 @@ export type AiActivity = {
   requestId?: string
   questionOutcome: "ANSWERED" | "NEEDS_REVIEW" | null
   qualificationRun: boolean
+  review?: AiReviewDetails
+  reviewReason?: AiReviewReason
 }
 
 export async function recordAiInteraction(
@@ -28,11 +31,15 @@ export async function recordAiInteraction(
 ) {
   // The database unique key also deduplicates concurrent retries across processes.
   // Legacy clients without tracking IDs remain supported as separate interactions.
+  const { review, reviewReason, ...metadata } = activity
+  const identity = { ...metadata, conversationId: (activity.conversationId ?? randomUUID()).toLowerCase(), requestId: (activity.requestId ?? randomUUID()).toLowerCase() }
+  let details = {}
+  if (activity.questionOutcome === "NEEDS_REVIEW" && review) {
+    try { details = encryptReviewDetails(review, identity) }
+    catch { console.warn("AI review details could not be saved; verify encryption configuration and payload limits.") }
+  }
   return client.aiInteraction.createMany({
-    data: [{ ...activity,
-      conversationId: activity.conversationId ?? randomUUID(),
-      requestId: activity.requestId ?? randomUUID(),
-    }],
+    data: [{ ...identity, ...details, ...(activity.questionOutcome === "NEEDS_REVIEW" ? { reviewReason: AiReviewReasonSchema.catch("OTHER").parse(reviewReason) } : {}) }],
     skipDuplicates: true,
   })
 }

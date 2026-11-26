@@ -840,12 +840,23 @@ model AiInteraction {
   requestId        String            @db.Uuid
   questionOutcome  AiQuestionOutcome?
   qualificationRun Boolean           @default(false)
+  reviewReason     String?
+  reviewCiphertext String?
+  reviewIv         String?
+  reviewAuthTag    String?
+  reviewKeyVersion Int?
+  reviewExpiresAt  DateTime?
+  reviewedAt       DateTime?
+  reviewedById     String?
+  reviewRevision   Int               @default(0)
   createdAt        DateTime          @default(now())
   tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, actorId, channel, requestId])
   @@index([tenantId, createdAt])
   @@index([tenantId, channel, createdAt])
+  @@index([tenantId, questionOutcome, createdAt, id])
+  @@index([reviewExpiresAt])
 }
 
 model TenantAiSettings {

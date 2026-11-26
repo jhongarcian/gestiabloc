@@ -42,10 +42,3 @@ export function formatCreditDate(value: string | null | undefined, timeZone?: st
   try { return new Intl.DateTimeFormat("en-US", opts).format(new Date(value)) }
   catch { return new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" }).format(new Date(value)) }
 }
-export function nextCreditRefresh(data: AiCreditOverview | undefined, now = Date.now()) {
-  const deadlines = [data?.usage?.period?.endsAt, data?.paidThrough, data?.access?.graceEndsAt].flatMap(value => {
-    const at = value ? Date.parse(value) : NaN
-    return Number.isFinite(at) && at > now ? [at - now + 100] : []
-  })
-  return Math.max(1000, Math.min(30000, ...deadlines))
-}

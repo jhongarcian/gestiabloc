@@ -7458,6 +7458,96 @@ paths:
         "400": { description: Unsupported filters or unknown query parameters }
         "401": { description: Authentication required }
         "403": { description: Active tenant administrator access required }
+  /api/account-settings/{tenantId}/ai/analytics/reviews:
+    get:
+      tags: [AI]
+      summary: List flagged AI replies with saved review details
+      description: Active tenant administrators only. Only NEEDS_REVIEW pairs are retained, encrypted for 30 days. Earlier metadata-only records and expired pairs contribute to unavailable counts. Source and UTC date filters match Analytics. Returns question previews, never full answers or ciphertext. Review state is independent of original outcomes. Cache-Control no-store.
+      parameters:
+        - $ref: "#/components/parameters/TenantIdPathParam"
+        - { in: query, name: days, schema: { type: string, enum: ["7", "30", "90"], default: "30" } }
+        - { in: query, name: channel, schema: { type: string, enum: [ALL, TEST, CONTACT_ASSISTANT], default: ALL } }
+        - { in: query, name: state, schema: { type: string, enum: [OPEN, REVIEWED, ALL], default: OPEN } }
+        - { in: query, name: cursor, schema: { type: string, format: uuid }, description: Last item ID from the same tenant and filtered result }
+      responses:
+        "200":
+          description: At most 20 saved reviews and period counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  reviews:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        maxItems: 20
+                        items:
+                          allOf:
+                            - $ref: "#/components/schemas/AiAnswerReview"
+                            - type: object
+                              properties:
+                                questionPreview: { type: string, nullable: true, maxLength: 200 }
+                                detailsAvailable: { type: boolean }
+                      nextCursor: { type: string, format: uuid, nullable: true }
+                      counts:
+                        type: object
+                        properties:
+                          open: { type: integer, minimum: 0 }
+                          reviewed: { type: integer, minimum: 0 }
+                          unavailable: { type: integer, minimum: 0 }
+                      captureAvailable: { type: boolean }
+                      retentionDays: { type: integer, enum: [30] }
+        "400": { description: Invalid filters or foreign/stale cursor }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+  /api/account-settings/{tenantId}/ai/analytics/reviews/{id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantIdPathParam"
+      - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [AI]
+      summary: Read an unexpired flagged question and reply
+      description: Active tenant administrators only. Decrypts only the requested tenant-owned record. Includes the single question, reply, source labels and optional contact/service context; excludes earlier chat history. Cache-Control no-store.
+      responses:
+        "200":
+          description: Saved review detail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiAnswerReviewResponse" }
+        "401": { description: Authentication required }
+        "403": { description: Active tenant administrator access required }
+        "404": { description: Missing, foreign or expired record }
+        "410": { description: Saved detail cannot be decrypted }
+    patch:
+      tags: [AI]
+      summary: Mark a flagged reply reviewed or reopen it
+      description: Active tenant administrator and trusted origin required. Revision prevents overwriting concurrent changes; replaying an already-applied state is idempotent. The original question outcome, Analytics counts and credit ledger remain unchanged. Cache-Control no-store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reviewed, revision]
+              properties:
+                reviewed: { type: boolean }
+                revision: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Current review detail and revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiAnswerReviewResponse" }
+        "400": { description: Invalid body }
+        "401": { description: Authentication required }
+        "403": { description: Administrator access and trusted origin required }
+        "404": { description: Missing, foreign or expired record }
+        "409": { description: Review state changed; reload before retrying }
+        "410": { description: Saved detail cannot be decrypted }
   /api/services/{tenantId}/fit-scan/helper:
     get:
       tags: [AI]
@@ -7611,6 +7701,7 @@ paths:
                       suggestedQuestions: { type: array, items: { type: string } }
                       outcome: { type: string, enum: [ANSWERED, NEEDS_REVIEW] }
                       replySource: { type: string, enum: [KNOWLEDGE, CONTACT, CASE, RULES, FALLBACK] }
+                      reviewReason: { $ref: "#/components/schemas/AiReviewReason" }
                       recordReferences:
                         type: array
                         items:
@@ -8313,6 +8404,37 @@ components:
         answered: { type: integer, minimum: 0, description: Questions marked ANSWERED by the reply path }
         needsReview: { type: integer, minimum: 0, description: Questions flagged for missing knowledge or agency help; not a human review queue }
         qualificationRuns: { type: integer, minimum: 0, description: Completed explicit contact analysis requests, including scans for assistant follow-up questions }
+    AiReviewReason:
+      type: string
+      enum: [MISSING_KNOWLEDGE, OUT_OF_SCOPE, POLICY_EXCEPTION, AGENCY_HELP, ASSISTANT_UNAVAILABLE, OTHER]
+      description: Automatic reason for a NEEDS_REVIEW flag; OTHER when no specific reason is available. Does not represent human review or eligibility.
+    AiAnswerReview:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        channel: { type: string, enum: [TEST, CONTACT_ASSISTANT] }
+        createdAt: { type: string, format: date-time }
+        reason: { $ref: "#/components/schemas/AiReviewReason" }
+        reviewedAt: { type: string, format: date-time, nullable: true }
+        revision: { type: integer, minimum: 0 }
+        expiresAt: { type: string, format: date-time }
+    AiAnswerReviewResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+        review:
+          allOf:
+            - $ref: "#/components/schemas/AiAnswerReview"
+            - type: object
+              properties:
+                details:
+                  type: object
+                  properties:
+                    question: { type: string, maxLength: 2000 }
+                    answer: { type: string, maxLength: 24000 }
+                    contactId: { type: string, format: uuid }
+                    serviceName: { type: string, maxLength: 200 }
+                    sourceLabels: { type: array, maxItems: 9, items: { type: string, maxLength: 320 } }
     AiUsageMetrics:
       type: object
       required: [creditsUsed, chargedReplies, providerCalls, inputTokens, outputTokens, unknownTokenCalls, inProgressCalls, failedCalls]
@@ -8332,6 +8454,7 @@ components:
         answer: { type: string, maxLength: 6000 }
         answerMode: { type: string, enum: [ADAPTED, EXACT, TRANSLATED] }
         outcome: { type: string, enum: [ANSWERED, NEEDS_REVIEW] }
+        reviewReason: { $ref: "#/components/schemas/AiReviewReason" }
         helper:
           type: object
           properties:

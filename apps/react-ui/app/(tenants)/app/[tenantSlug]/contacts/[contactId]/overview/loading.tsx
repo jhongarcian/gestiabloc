@@ -26,7 +26,7 @@ export default function ContactOverviewLoading() {
           className="pointer-events-none absolute -right-20 -top-24 size-56 rounded-full bg-blue-200/30 blur-3xl"
         />
 
-        <div className="relative grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="relative grid gap-3 @lg/contact-content:grid-cols-2 @5xl/contact-content:grid-cols-4">
           {Array.from({ length: 4 }, (_, index) => (
             <MetricSkeleton key={index} />
           ))}

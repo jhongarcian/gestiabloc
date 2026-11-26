@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { isAxiosError } from "axios"
 import { api } from "./api"
-import { nextCreditRefresh, type AiCreditOverview } from "./ai-credit-usage"
+import type { AiCreditOverview } from "./ai-credit-usage"
 
 export function useAiCreditOverview(tenantId: string, enabled = true) {
   const [version, setVersion] = useState(0)
@@ -22,21 +22,6 @@ export function useAiCreditOverview(tenantId: string, enabled = true) {
     })
     return () => controller.abort()
   }, [tenantId, enabled, version])
-  useEffect(() => {
-    if (!enabled) return
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const schedule = () => { clearTimeout(timer); if (!document.hidden && !loading) timer = setTimeout(refresh, nextCreditRefresh(current?.data)) }
-    const visible = () => { if (!document.hidden) refresh(); else clearTimeout(timer) }
-    // Debounce refresh signals: generation and analytics events can arrive together.
-    let activityTimer: ReturnType<typeof setTimeout> | undefined
-    const changed = () => { clearTimeout(activityTimer); activityTimer = setTimeout(() => { if (!document.hidden) refresh() }, 200) }
-    schedule()
-    window.addEventListener("focus", visible)
-    document.addEventListener("visibilitychange", visible)
-    window.addEventListener("ai-activity-recorded", changed)
-    window.addEventListener("ai-credits-changed", changed)
-    return () => { clearTimeout(timer); clearTimeout(activityTimer); window.removeEventListener("focus", visible); document.removeEventListener("visibilitychange", visible); window.removeEventListener("ai-activity-recorded", changed); window.removeEventListener("ai-credits-changed", changed) }
-  }, [tenantId, enabled, loading, current?.data, refresh])
   return { data: current?.data, error: current?.error, loading, refresh }
 }
 export type AiCreditOverviewController = ReturnType<typeof useAiCreditOverview>

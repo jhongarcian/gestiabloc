@@ -100,6 +100,7 @@ export async function answerContactAssistant(
       summary: reply.answer,
       bullets: [], suggestedQuestions: [],
       outcome: reply.outcome,
+      reviewReason: reply.reviewReason,
       replySource: input.cases?.length ? "CASE" : input.contactContext ? "CONTACT" : "KNOWLEDGE",
       recordReferences: references,
       answerMode: reply.answerMode,
@@ -110,6 +111,6 @@ export async function answerContactAssistant(
     if (signal?.aborted) throw error
     // Provider absence, timeout, invalid citations and source-read failures must
     // never disable qualification guidance or service-start controls.
-    return { ...rules(), outcome: "NEEDS_REVIEW", replySource: "FALLBACK", recordReferences: references }
+    return { ...rules(), outcome: "NEEDS_REVIEW", reviewReason: "ASSISTANT_UNAVAILABLE", replySource: "FALLBACK", recordReferences: references }
   }
 }

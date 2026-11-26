@@ -1075,7 +1075,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel
                   htmlFor="contact-overview-first-name"
@@ -1133,7 +1133,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-dob" label="Date of Birth" />
                 <DateInput
@@ -1208,7 +1208,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.secondaryPhone} />
               </div>
 
-              <div className="grid gap-2 md:col-span-2">
+              <div className="grid gap-2 @lg/contact-content:col-span-2">
                 <FieldLabel htmlFor="contact-overview-email" label="Email" />
                 <Input
                   id="contact-overview-email"
@@ -1233,7 +1233,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel label="Gender" />
                 <Select
@@ -1276,7 +1276,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.gender} />
               </div>
 
-              <div className="grid min-w-0 gap-3 sm:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+              <div className="grid min-w-0 gap-3 @sm/contact-content:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
                 <div className="grid min-w-0 gap-2">
                   <FieldLabel htmlFor="contact-overview-height-feet" label="Height (ft / in)" />
                   <div className="grid min-w-0 grid-cols-2 gap-1.5">
@@ -1445,8 +1445,8 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
-              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
+              <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-1"
                   label="Address Line 1"
@@ -1460,7 +1460,7 @@ export function ContactOverviewForm({
                 <FieldError message={fieldErrors.addressLine1} />
               </div>
 
-              <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+              <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                 <FieldLabel
                   htmlFor="contact-overview-address-line-2"
                   label="Address Line 2"
@@ -1548,8 +1548,8 @@ export function ContactOverviewForm({
             </div>
 
             {hasDifferentMailingAddress ? (
-              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 [&>*]:min-w-0">
-                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+              <div className="grid gap-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4 [&>*]:min-w-0">
+                <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                   <FieldLabel
                     htmlFor="contact-overview-mailing-address-line-1"
                     label="Mailing Address Line 1"
@@ -1563,7 +1563,7 @@ export function ContactOverviewForm({
                   <FieldError message={fieldErrors.mailingAddressLine1} />
                 </div>
 
-                <div className="grid gap-2 md:col-span-2 lg:col-span-3 xl:col-span-2">
+                <div className="grid gap-2 @lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-2">
                   <FieldLabel
                     htmlFor="contact-overview-mailing-address-line-2"
                     label="Mailing Address Line 2"
@@ -1640,7 +1640,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel
                   htmlFor="contact-overview-emergency-name"
@@ -1696,7 +1696,7 @@ export function ContactOverviewForm({
               </p>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3 [&>*]:min-w-0">
+            <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 [&>*]:min-w-0">
               <div className="grid gap-2">
                 <FieldLabel htmlFor="contact-overview-lead-date" label="Lead Date" />
                 <DateInput
@@ -1778,7 +1778,7 @@ export function ContactOverviewForm({
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              <div className="grid gap-4 @lg/contact-content:grid-cols-2 @3xl/contact-content:grid-cols-3 @5xl/contact-content:grid-cols-4">
                 {initialContact.customFields.map((field) => {
                   const value = customFieldValues[field.id]
                   const error =
@@ -1795,7 +1795,7 @@ export function ContactOverviewForm({
                       className={cn(
                         "grid min-w-0 gap-2",
                         isFullWidth &&
-                          "md:col-span-2 lg:col-span-3 xl:col-span-4",
+                          "@lg/contact-content:col-span-2 @3xl/contact-content:col-span-3 @5xl/contact-content:col-span-4",
                       )}
                     >
                       <FieldLabel

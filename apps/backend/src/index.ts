@@ -17,6 +17,7 @@ import aiSkillsRoutes from "./routes/ai-skills.routes.js"
 import aiTestChatRoutes from "./routes/ai-test-chat.routes.js"
 import aiSourcesRoutes from "./routes/ai-sources.routes.js"
 import aiAnalyticsRoutes from "./routes/ai-analytics.routes.js"
+import { purgeExpiredAiReviews } from "./lib/ai-answer-reviews.js"
 import { startAiSourceWorker } from "./lib/ai-source-worker.js"
 import contactsRoutes from "./routes/contacts.routes"
 import notificationsRoutes from "./routes/notifications.routes"
@@ -240,6 +241,10 @@ let stopAiSources: (() => Promise<void>) | undefined
 const start = async () => {
   await prisma.$connect()
   setRealtimeServer(io)
+  const purgeReviews = () => { void purgeExpiredAiReviews(prisma).catch(() => console.error("AI review retention cleanup failed; verify database availability and migrations.")) }
+  purgeReviews()
+  const reviewRetentionInterval = setInterval(purgeReviews, 60 * 60 * 1000)
+  reviewRetentionInterval.unref()
   if (process.env.AI_SOURCE_WORKER_ENABLED !== "false") stopAiSources = startAiSourceWorker()
 
   await refreshTaskPrioritiesForTenants().catch((error) => {

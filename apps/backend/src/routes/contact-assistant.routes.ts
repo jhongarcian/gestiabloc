@@ -151,7 +151,9 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
             : "No purchased cases were found for this contact in the selected service scope.", bullets: [], suggestedQuestions: [], outcome: "ANSWERED" as const, replySource: "CASE" as const }
         if (controller.signal.aborted) return
         await record(prisma, { tenantId, actorId: authed.user.id, channel: "CONTACT_ASSISTANT", conversationId: payload.conversationId, requestId: payload.requestId,
-          questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null, qualificationRun: Boolean(qualification) })
+          questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null, qualificationRun: Boolean(qualification),
+          reviewReason: "reviewReason" in answer ? answer.reviewReason : undefined,
+          review: payload.question ? { question: payload.question, answer: answer.summary.slice(0, 24000), contactId: payload.contactId, serviceName: (cases[0]?.serviceName ?? catalog.services.find(item => item.serviceId === serviceId)?.serviceName)?.slice(0, 200), sourceLabels: "sources" in answer ? answer.sources?.map(source => source.label.slice(0, 320)) : [] } : undefined })
         res.setHeader("Cache-Control", "no-store")
         return res.json({ ok: true, helper: await identity(prisma, tenantId), ...(qualification?.items ? { items: presentContactScanItems(qualification.items, qualification.contactContext) } : {}),
           scope: { mode, serviceId: cases[0]?.serviceId ?? serviceId ?? null, serviceName: cases[0]?.serviceName ?? catalog.services.find((service) => service.serviceId === serviceId)?.serviceName ?? null,
@@ -181,6 +183,8 @@ export function createContactAssistantRouter(dependencies: Dependencies) {
         conversationId: payload.conversationId, requestId: payload.requestId,
         questionOutcome: payload.question ? answer.outcome ?? "NEEDS_REVIEW" : null,
         qualificationRun: true,
+        reviewReason: answer.reviewReason,
+        review: payload.question ? { question: payload.question, answer: answer.summary.slice(0, 24000), contactId: payload.contactId, serviceName: service?.serviceName.slice(0, 200), sourceLabels: answer.sources?.map(source => source.label.slice(0, 320)) } : undefined,
       })
       res.setHeader("Cache-Control", "no-store")
       res.json({

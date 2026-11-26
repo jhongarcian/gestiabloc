@@ -84,6 +84,8 @@ export function createAiTestChatRouter(
         requestId: input.requestId,
         questionOutcome: reply.outcome,
         qualificationRun: false,
+        reviewReason: reply.reviewReason,
+        review: { question: input.question, answer: reply.answer, sourceLabels: reply.sources.map(source => source.label.slice(0, 320)) },
       })
       res.setHeader("Cache-Control", "no-store")
       res.json({ ok: true, reply })

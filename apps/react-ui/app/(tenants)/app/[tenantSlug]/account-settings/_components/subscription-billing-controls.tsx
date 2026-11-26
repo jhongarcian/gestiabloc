@@ -1,6 +1,5 @@
 "use client"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
-import { useRouter } from "next/navigation"
 import { isAxiosError } from "axios"
 import { api, type SubscriptionResponse } from "@/lib/api"
 import { formatSubscriptionDate, formatStorageSize, subscriptionPlanDescriptions } from "@/lib/subscription-display"
@@ -24,8 +23,8 @@ const messages: Record<string, string> = {
   BILLING_PAID_PERIOD_REMAINS: "Your previous paid period has not ended. Contact your administrator before starting a replacement subscription.",
   BILLING_PRICE_MISMATCH: "This plan is temporarily unavailable. Contact your administrator.",
 }
-export function SubscriptionBillingControls({ tenantId, subscription, userRole, timeZone, children }: { tenantId: string; subscription: Data; userRole: string; timeZone?: string | null; children?: ReactNode }) {
-  const router = useRouter(), [pending, setPending] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("")
+export function SubscriptionBillingControls({ tenantId, subscription, userRole, timeZone, children, onRefresh }: { tenantId: string; subscription: Data; userRole: string; timeZone?: string | null; children?: ReactNode; onRefresh: () => void }) {
+  const [pending, setPending] = useState(false), [error, setError] = useState(""), [notice, setNotice] = useState("")
   const [selected, setSelected] = useState<PlanKey | null>(null)
   const attempt = useRef<{ key: string; requestId: string } | null>(null)
   const syncInFlight = useRef(false), syncedReturn = useRef<string | null>(null)
@@ -43,16 +42,15 @@ export function SubscriptionBillingControls({ tenantId, subscription, userRole, 
     try {
       const { data } = await api.post<{ access: { state: "PAID" | "GRACE" | "BLOCKED" } }>(`/api/billing/${tenantId}/sync`, {})
       setNotice(data.access.state === "PAID" ? "Your paid subscription is up to date." : data.access.state === "GRACE" ? "Payment needs attention. Update your payment method to resume AI replies." : "Payment is still awaiting confirmation. Refresh again after completing payment.")
-      window.dispatchEvent(new Event("ai-credits-changed"))
-      router.refresh()
+      onRefresh()
     } catch (cause) {
       const code = isAxiosError(cause) ? cause.response?.data?.error : undefined
       if (code === "BILLING_CHECKOUT_PENDING") {
         setNotice("Payment confirmation is in progress. Refresh status again shortly.")
-        router.refresh()
+        onRefresh()
       } else setError(messages[code] ?? "Payment status could not be verified. Try refreshing again shortly.")
     } finally { syncInFlight.current = false; setPending(false) }
-  }, [admin, enabled, tenantId, router])
+  }, [admin, enabled, tenantId, onRefresh])
   useEffect(() => {
     if (syncedReturn.current === tenantId || new URLSearchParams(window.location.search).get("checkout") !== "complete") return
     if (!admin || !enabled) return
@@ -73,7 +71,7 @@ export function SubscriptionBillingControls({ tenantId, subscription, userRole, 
         window.location.assign(url.toString())
       } else {
         setNotice(data.paymentPending ? "Your plan change is waiting for payment confirmation." : "Your billing request was saved. Refresh status to see the latest payment confirmation.")
-        router.refresh()
+        onRefresh()
       }
     } catch (cause) {
       const code = isAxiosError(cause) ? cause.response?.data?.error : undefined

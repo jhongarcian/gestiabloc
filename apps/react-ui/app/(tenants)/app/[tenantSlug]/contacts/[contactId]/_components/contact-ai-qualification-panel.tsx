@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { AiReplyText } from "@/components/ai-reply-text"
 import { followAiReply } from "@/lib/ai-reply-reveal"
+import { aiReviewReasonLabel } from "@/lib/ai-answer-reviews"
 import { api } from "@/lib/api"
 import { aiCreditErrorMessage, releaseTerminalAiAttempt } from "@/lib/ai-credit-errors"
 import { AiActivityTracker } from "@/lib/ai-activity-tracking"
@@ -55,6 +56,8 @@ type AssistantMessage = {
   role: "assistant" | "user"
   title?: string
   body: string
+  outcome?: "ANSWERED" | "NEEDS_REVIEW"
+  reviewReason?: string
   bullets?: string[]
   showServiceChoices?: boolean
   helperName?: string
@@ -88,6 +91,8 @@ type ServiceFitAssistantResponse = {
   answer: {
     title: string
     summary: string
+    outcome?: "ANSWERED" | "NEEDS_REVIEW"
+    reviewReason?: string
     bullets: string[]
     recordReferences?: ContactCaseReference[]
     replySource?: AssistantMessage["replySource"]
@@ -149,6 +154,8 @@ function buildAssistantReplyMessage(response: ServiceFitAssistantResponse) {
   return createMessage({
     role: "assistant",
     body: response.answer.summary,
+    outcome: response.answer.outcome,
+    reviewReason: response.answer.reviewReason,
     bullets: response.answer.bullets,
     citations: response.answer.citations,
     helperName: ["KNOWLEDGE", "CONTACT"].includes(response.answer.replySource ?? "") ? response.answer.title : response.helper?.name,
@@ -636,6 +643,7 @@ export function ContactAiQualificationPanel({
                       </p>}
 
                       {revealingReplyId !== message.id ? <>
+                      {message.outcome === "NEEDS_REVIEW" ? <div className="mt-3 flex flex-col gap-2"><Badge variant="outline" className="w-fit">Needs agency review</Badge><p className="text-xs text-muted-foreground">{aiReviewReasonLabel(message.reviewReason)}</p></div> : null}
                       {message.bullets?.length ? (
                         <ul
                           className={cn(

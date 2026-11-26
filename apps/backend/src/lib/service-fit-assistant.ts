@@ -1,5 +1,6 @@
 import type { ServiceFitExplanationRuleSummary } from "./service-fit-explanations.js"
 import type { ServiceFitProfile } from "./service-fit.js"
+import type { AiReviewReason } from "./ai-review-details.js"
 
 type ServiceFitAssistantStatus = "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
 
@@ -29,6 +30,7 @@ export type ServiceFitAssistantScanItem = {
 
 export type ServiceFitAssistantReply = {
   outcome?: "ANSWERED" | "NEEDS_REVIEW"
+  reviewReason?: AiReviewReason
   title: string
   summary: string
   bullets: string[]

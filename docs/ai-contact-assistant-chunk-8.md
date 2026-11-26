@@ -40,7 +40,7 @@ Active tenant staff retain access to the contact assistant. The new public helpe
 
 ## Analytics and validation
 
-Completed contact replies keep the chunk 7 metadata-only analytics and retry deduplication. Every completed explicit scan still records one qualification run. A delivered rule fallback for a knowledge question is a completed reply marked `NEEDS_REVIEW`; a failed or canceled request does not manufacture an answered question or handoff.
+Completed contact replies keep the chunk 7 aggregates and retry deduplication. New flagged question/reply pairs additionally use the encrypted, admin-only 30-day review workflow documented in `ai-analytics-chunk-7.md`. Every completed explicit scan still records one qualification run. A delivered rule fallback for a knowledge question is a completed reply marked `NEEDS_REVIEW`; a failed or canceled request does not manufacture an answered question or handoff.
 
 Automated tests cover saved settings/company changes, agency-facing FAQ adaptation in English and Spanish, legacy customer-facing history, scoped document citations, removed/inactive/foreign sources, model input boundaries, staff/admin permissions, bounded generation, fallback behavior, unchanged scores, and analytics isolation. The database test uses temporary tenants and a controlled provider; it reuses the real authenticated deterministic scan and removes its fixtures afterward:
 
@@ -49,7 +49,7 @@ cd apps/backend
 AI_CONTACT_ASSISTANT_DB_TEST=1 node --env-file=.env --import tsx --test src/lib/ai-contact-assistant.integration.test.ts
 ```
 
-Live external browsing, contact actions performed by AI, transcript persistence, and a handoff workflow remain outside this integration. Ready saved knowledge sources supply factual answers.
+Live external browsing, contact actions performed by AI, full conversation persistence, and an automated handoff workflow remain outside this integration. Only flagged question/reply pairs have the limited review retention described above. Ready saved knowledge sources supply factual answers.
 
 Original chunk 8 validation (before the contact-aware conversation update):
 

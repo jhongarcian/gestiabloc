@@ -25,6 +25,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { AiHelperAvatar } from "@/components/ai-helper-avatar"
 import { AiReplyText } from "@/components/ai-reply-text"
 import { followAiReply } from "@/lib/ai-reply-reveal"
+import { aiReviewReasonLabel } from "@/lib/ai-answer-reviews"
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, TEXTAREA_CLASS } from "./ai-ui"
 import { useTestChat } from "./use-test-chat"
 import type { AiHelperSettings } from "../_lib/helper-settings"
@@ -144,6 +145,7 @@ export function AiTestChat({
                     </Badge>
                   ) : null}
                   <AiReplyText id={turn.reply.id} text={turn.reply.answer} animate={chat.revealingReplyId === turn.reply.id} onFinish={chat.finishReveal} onProgress={followReply} />
+                  {chat.revealingReplyId !== turn.reply.id && turn.reply.outcome === "NEEDS_REVIEW" ? <div className="flex flex-col gap-2"><Badge variant="outline" className="w-fit">Needs agency review</Badge><p className="text-xs text-muted-foreground">{aiReviewReasonLabel(turn.reply.reviewReason)}</p></div> : null}
                   {chat.revealingReplyId !== turn.reply.id && turn.reply.sources.length ? (
                     <details className="border-t border-slate-100 pt-3">
                       <summary className="cursor-pointer rounded text-xs font-medium text-blue-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700">

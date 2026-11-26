@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { creditDisplay, creditUsageIsConsistent, formatCreditDate, nextCreditRefresh, type AiCreditOverview } from "./ai-credit-usage"
+import { creditDisplay, creditUsageIsConsistent, formatCreditDate, type AiCreditOverview } from "./ai-credit-usage"
 const overview = (): AiCreditOverview => ({ enabled: true, enforcementEnabled: true, asOf: "2026-10-30T12:00:00Z", timeZone: "America/Chicago", plan: { key: "STARTER", name: "Starter", monthlyAllowance: 1200 }, access: { crmAllowed: true, aiAllowed: true, state: "PAID", graceEndsAt: null }, purchasesEnabled: true, eligible: true, canResume: true, pendingCheckout: null, usage: { revision: 1, purchaseReviewRequired: false, period: { startsAt: "2026-10-01T00:00:00Z", endsAt: "2026-11-01T00:00:00Z" }, monthly: { granted: 1200, used: 240, reserved: 60, remaining: 900 }, purchased: { balance: 1000, reserved: 20, available: 980 }, available: 1880 } })
 test("monthly remaining percentage excludes both spent and reserved credits; purchased balance is separate", () => {
   const d = overview(), view = creditDisplay(d)
@@ -36,10 +36,8 @@ test("low, fully reserved and exhausted wallets are distinct; rollover can chang
   u.period = { startsAt: "2026-11-01T00:00:00Z", endsAt: "2026-12-01T00:00:00Z" }
   const fresh = creditDisplay(d); assert.ok("monthlyPercent" in fresh); assert.equal(fresh.monthlyPercent, 100)
 })
-test("expiry refresh uses timestamps instead of revision, and tenant dates safely handle invalid timezones", () => {
-  const d = overview(), now = Date.parse("2026-10-31T23:59:55Z")
-  assert.equal(nextCreditRefresh(d, now), 5100)
-  assert.equal(nextCreditRefresh(d, Date.parse("2026-11-02T00:00:00Z")), 30000)
+test("tenant dates safely handle invalid timezones", () => {
+  const d = overview()
   assert.match(formatCreditDate(d.asOf, "America/Chicago")!, /Oct 30/)
   assert.match(formatCreditDate(d.asOf, "invalid-zone")!, /UTC/)
   assert.equal(formatCreditDate("bad"), null)

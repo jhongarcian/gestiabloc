@@ -1,7 +1,9 @@
 "use client"
 
 import Link from "next/link"
-import { ArrowUpRight, HardDrive, Users } from "lucide-react"
+import { useCallback, useTransition } from "react"
+import { useRouter } from "next/navigation"
+import { ArrowUpRight, HardDrive, RefreshCw, Users } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -23,17 +25,28 @@ type SubscriptionDashboardProps = {
 }
 
 export function SubscriptionDashboard(props: SubscriptionDashboardProps) {
+  const router = useRouter()
+  const [refreshing, startTransition] = useTransition()
   const credits = useAiCreditOverview(props.tenantId, Boolean(props.subscription) && props.userRole === "TENANT_ADMIN")
-  return <SubscriptionDashboardContent {...props} credits={credits} />
+  const refreshCredits = credits.refresh
+  const refresh = useCallback(() => {
+    refreshCredits()
+    startTransition(() => router.refresh())
+  }, [refreshCredits, router])
+  return <SubscriptionDashboardContent {...props} credits={{ ...credits, refresh }} refreshing={refreshing} />
 }
 
-export function SubscriptionDashboardContent({ tenantId, tenantSlug, subscription, userRole, timeZone, credits }: SubscriptionDashboardProps & { credits: AiCreditOverviewController }) {
+export function SubscriptionDashboardContent({ tenantId, tenantSlug, subscription, userRole, timeZone, credits, refreshing = false }: SubscriptionDashboardProps & { credits: AiCreditOverviewController; refreshing?: boolean }) {
+  const busy = refreshing || credits.loading
   const percent = (used: number, limit: number) => limit > 0 ? Math.min(100, Math.max(0, used / limit * 100)) : 0
   return (
     <div className="flex w-full flex-col gap-7 pb-8">
-      <header className="flex flex-col gap-1.5">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Subscription & billing</h1>
-        <p className="text-sm text-muted-foreground">Your plan, usage, and billing details in one place.</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Subscription & billing</h1>
+          <p className="text-sm text-muted-foreground">Your plan, usage, and billing details in one place.</p>
+        </div>
+        {userRole === "TENANT_ADMIN" ? <Button type="button" variant="outline" size="sm" disabled={busy} onClick={credits.refresh}><RefreshCw data-icon="inline-start" aria-hidden="true" />{busy ? "Refreshing…" : "Refresh"}</Button> : null}
       </header>
 
       {!subscription ? (
@@ -45,7 +58,7 @@ export function SubscriptionDashboardContent({ tenantId, tenantSlug, subscriptio
           </AlertDescription>
         </Alert>
       ) : (
-        <SubscriptionBillingControls key={tenantId} tenantId={tenantId} subscription={subscription} userRole={userRole} timeZone={timeZone}>
+        <SubscriptionBillingControls key={tenantId} tenantId={tenantId} subscription={subscription} userRole={userRole} timeZone={timeZone} onRefresh={credits.refresh}>
           <section aria-labelledby="subscription-usage-title" className="flex flex-col gap-4">
             <div className="flex flex-col gap-1">
               <h2 id="subscription-usage-title" className="text-base font-semibold text-foreground">Usage & limits</h2>
