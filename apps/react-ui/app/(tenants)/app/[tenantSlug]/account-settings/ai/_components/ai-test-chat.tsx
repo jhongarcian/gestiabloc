@@ -1,6 +1,6 @@
 "use client"
 import Link from "next/link"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Loader2, MessageCircle, Send } from "lucide-react"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import { AiHelperAvatar } from "@/components/ai-helper-avatar"
+import { AiReplyText } from "@/components/ai-reply-text"
+import { followAiReply } from "@/lib/ai-reply-reveal"
 import { PRIMARY_BUTTON, SECONDARY_BUTTON, TEXTAREA_CLASS } from "./ai-ui"
 import { useTestChat } from "./use-test-chat"
 import type { AiHelperSettings } from "../_lib/helper-settings"
@@ -39,13 +41,15 @@ export function AiTestChat({
   const [open, setOpen] = useState(false)
   const chat = useTestChat(tenantId)
   const end = useRef<HTMLDivElement>(null)
+  const scroll = useRef<HTMLDivElement>(null)
+  const followReply = useCallback(() => followAiReply(end.current, scroll.current), [])
   const lastHelper = chat.turns.at(-1)?.reply.helper
   const name =
     lastHelper && lastHelper.revision >= (helper?.revision ?? 0)
       ? lastHelper.name
       : (helper?.name ?? "AI Helper")
   useEffect(() => {
-    if (open) end.current?.scrollIntoView({ block: "end", behavior: "instant" })
+    if (open) followAiReply(end.current, scroll.current, true)
   }, [open, chat.turns.length, chat.pending, chat.error])
   const canSend =
     Boolean(chat.question.trim()) &&
@@ -58,6 +62,7 @@ export function AiTestChat({
       onOpenChange={(next) => {
         setOpen(next)
         if (next) void chat.checkAvailability()
+        else chat.finishReveal()
       }}
     >
       <SheetTrigger asChild>
@@ -86,7 +91,7 @@ export function AiTestChat({
             when you refresh or leave the workspace.
           </p>
         </SheetHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain bg-slate-50/50 px-4 py-5 [scrollbar-gutter:stable] sm:px-6">
+        <div ref={scroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 [scrollbar-gutter:stable] sm:px-6">
           <div
             role="log"
             aria-label="Test conversation"
@@ -124,24 +129,22 @@ export function AiTestChat({
                   </p>
                 </div>
                 <article
-                  className="mr-2 flex min-w-0 flex-col gap-3 rounded-2xl rounded-bl-sm border border-slate-200 bg-white p-4"
+                  className="mr-2 flex min-w-0 flex-col gap-3 py-1"
                   aria-label={`${turn.reply.helper.name} reply`}
                 >
                   <p className="text-xs font-semibold text-blue-950">
                     {turn.reply.helper.name}
                   </p>
-                  {turn.reply.answerMode === "EXACT" ||
-                  turn.reply.answerMode === "TRANSLATED" ? (
+                  {chat.revealingReplyId !== turn.reply.id && (turn.reply.answerMode === "EXACT" ||
+                  turn.reply.answerMode === "TRANSLATED") ? (
                     <Badge variant="outline" className="w-fit">
                       {turn.reply.answerMode === "EXACT"
                         ? "Answer as written"
                         : "Translated answer"}
                     </Badge>
                   ) : null}
-                  <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-700 [overflow-wrap:anywhere]">
-                    {turn.reply.answer}
-                  </p>
-                  {turn.reply.sources.length ? (
+                  <AiReplyText id={turn.reply.id} text={turn.reply.answer} animate={chat.revealingReplyId === turn.reply.id} onFinish={chat.finishReveal} onProgress={followReply} />
+                  {chat.revealingReplyId !== turn.reply.id && turn.reply.sources.length ? (
                     <details className="border-t border-slate-100 pt-3">
                       <summary className="cursor-pointer rounded text-xs font-medium text-blue-950 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700">
                         Saved sources · {turn.reply.sources.length}
@@ -168,7 +171,7 @@ export function AiTestChat({
                       </ul>
                     </details>
                   ) : null}
-                  {turn.reply.context.limited &&
+                  {chat.revealingReplyId !== turn.reply.id && turn.reply.context.limited &&
                   turn.reply.sources.length > 0 ? (
                     <p className="text-xs leading-5 text-slate-500">
                       A selection of relevant saved information was used. Ask a

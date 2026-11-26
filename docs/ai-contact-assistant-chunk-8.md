@@ -2,6 +2,16 @@
 
 The contact assistant now uses the saved account helper for company and service knowledge questions. Helper name/avatar, response preferences, company information, structured FAQs, guidance, and ready source excerpts come from the same saved configuration as Account Settings → AI.
 
+## Reply presentation
+
+Contact chat and Test helper reveal each new answer word by word on the chat canvas, without an assistant background bubble. The reveal begins after the complete validated response arrives; this is a display animation, not provider streaming. Full answers remain in conversation history for follow-up requests. The existing API, provider calls and credit deductions are unchanged.
+
+The animation preserves whitespace and paragraphs, finishes within eight seconds and offers **Show full answer** to skip it. Reduced-motion preferences display the complete answer immediately. Screen readers receive a stable full answer instead of individual animated words. Sources and reply details appear after the reveal. Closing Test helper ends the reveal so reopening it does not animate old replies again. Clearing or leaving the chat cancels its animation frames.
+
+The contact composer stays in place while the transcript scrolls. Replies follow the bottom while the user is near it; typing a new question or reading earlier messages preserves their position. User questions retain their existing bubble styling.
+
+Validation: the frontend production build, TypeScript and focused lint checks passed; full lint has four existing date-input warnings and no errors. Word-boundary/timing tests and existing chat-history/retry checks passed. Desktop and 390px sample-data browser checks verified progressive text, skipping, full follow-up history, reopening without replay, reduced-motion behavior, wrapping, and preserved reading/composer positions. Browser logs had no warnings or errors. No real AI or billing requests were used for these checks.
+
 ## Reply and qualification boundaries
 
 - `ai-helper-replies.ts` is the shared grounded reply engine. Existing workspace imports remain compatible through `ai-test-chat.ts`.

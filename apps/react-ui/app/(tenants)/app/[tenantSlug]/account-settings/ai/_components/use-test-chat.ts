@@ -1,5 +1,5 @@
 "use client"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { isAxiosError } from "axios"
 import { api } from "@/lib/api"
 import { aiCreditErrorMessage, releaseTerminalAiAttempt } from "@/lib/ai-credit-errors"
@@ -35,6 +35,8 @@ export function useTestChat(tenantId: string) {
   const [available, setAvailable] = useState<boolean | null>(null)
   const [checking, setChecking] = useState(false)
   const [truncated, setTruncated] = useState(false)
+  const [revealingReplyId, setRevealingReplyId] = useState<string | null>(null)
+  const finishReveal = useCallback((id?: string) => setRevealingReplyId(current => !id || current === id ? null : current), [])
   const request = useRef<AbortController | null>(null)
   const tracking = useRef(new AiActivityTracker())
   const statusRequest = useRef<AbortController | null>(null)
@@ -78,6 +80,7 @@ export function useTestChat(tenantId: string) {
       return
     const controller = new AbortController()
     request.current = controller
+    finishReveal()
     setPending(content)
     setError("")
     const activity = tracking.current.forRequest(JSON.stringify([content, turns.at(-1)?.reply.id]))
@@ -93,6 +96,7 @@ export function useTestChat(tenantId: string) {
       setTurns((current) =>
         [...current, { question: content, reply: data.reply }].slice(-20),
       )
+      setRevealingReplyId(data.reply.id)
       if (turns.length >= 20) setTruncated(true)
       setQuestion("")
     } catch (cause) {
@@ -114,6 +118,7 @@ export function useTestChat(tenantId: string) {
   function clear() {
     if (request.current) return
     tracking.current.newConversation()
+    finishReveal()
     setTurns([])
     setError("")
     setQuestion("")
@@ -128,6 +133,8 @@ export function useTestChat(tenantId: string) {
     available,
     checking,
     truncated,
+    revealingReplyId,
+    finishReveal,
     checkAvailability,
     send,
     stop,
