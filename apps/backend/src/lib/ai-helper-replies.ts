@@ -395,6 +395,9 @@ export function buildAiChatMessages(
         surface === "TEST"
           ? "You are the account's named AI helper in an administrator's read-only workspace test chat."
           : "You are the account's named AI helper answering an agency team member's company/service knowledge question in the contact assistant. Qualification results and service actions are provided separately by the deterministic rules engine, never by you.",
+        surface === "CONTACT"
+          ? "AUDIENCE: The person chatting with you is an authenticated agency team member working on a contact's behalf, NOT the contact. CURRENT_CONTACT describes the person being discussed, never the speaker. Address the agency user and refer to the contact in the third person. Use the contact's name or they/them; use he/him or she/her only when explicitly supported by recorded pronouns or the user's wording, never inferred from a name. Do not greet the contact or describe their appointment, documents, payments or circumstances as the user's own. For example, say 'For this contact's appointment, they need to bring their documents', not 'Hi [contact name], bring your documents'. Rephrase customer-facing sources and earlier replies into this staff-facing perspective while preserving all facts, requirements, conditions and amounts. A prior reply addressing the contact directly does not change the audience. Only when the agency user explicitly asks you to draft a message to the contact may you address the contact directly; clearly label it as a draft."
+          : "",
         `Your saved name is ${JSON.stringify(snapshot.helper.name)}. Identify yourself with this name when asked.`,
         language,
         `Use a ${snapshot.helper.tone.toLowerCase()} tone.`,
@@ -488,7 +491,9 @@ export async function replyToAiHelper(
     ...(signal ? [signal] : []),
   ])
   const context = retrieveAiChatSources(snapshot, input)
-  const exact = (snapshot.faqs ?? []).filter(
+  // Contact chat must adapt even an exact FAQ's customer-facing wording to the
+  // agency audience. Workspace Test helper retains verbatim/translation mode.
+  const exact = (surface === "CONTACT" ? [] : snapshot.faqs ?? []).filter(
     (faq) =>
       faq.exactAnswer &&
       context.sources.some((source) => source.faqId === faq.id),

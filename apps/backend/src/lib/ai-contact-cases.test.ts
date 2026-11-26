@@ -71,6 +71,8 @@ test("case chat uses authoritative records, never a generic exact FAQ, and falls
   const answer = await answerContactAssistant(client, "tenant", input, undefined, { load: async () => snapshot, getProvider: () => async (messages) => {
     generated = true
     const prompt = JSON.stringify(messages)
+    assert.match(messages[0]!.content, /authenticated agency team member/)
+    assert.match(messages[0]!.content, /refer to the contact in the third person/)
     assert.match(prompt, /7500/); assert.match(prompt, /Financial ledger totals/); assert.match(prompt, /Never mix their payments/); assert.match(prompt, /Do not combine currencies/)
     return { answer: "75 USD remains due; the note saying paid in full needs review.", sourceIds: [], outcome: "NEEDS_REVIEW" }
   } })

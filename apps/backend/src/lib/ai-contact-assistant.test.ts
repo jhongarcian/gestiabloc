@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { answerContactAssistant, isContactQualificationQuestion, type ContactAssistantInput } from "./ai-contact-assistant.js"
-import { type AiChatSnapshot, type AiChatProvider, loadAiHelperSnapshot } from "./ai-helper-replies.js"
+import { type AiChatSnapshot, type AiChatProvider, loadAiHelperSnapshot, buildAiChatMessages } from "./ai-helper-replies.js"
 import { loadAiHelperIdentity } from "./ai-helper-identity.js"
 import { retrieveAiDocumentSources } from "./ai-source-retrieval.js"
 
@@ -101,24 +101,60 @@ test("all-service knowledge remains available with qualification disabled", asyn
   assert.equal(answer.summary, "Westport")
 })
 
-test("exact FAQs preserve text and translations use the same bounded shared service", async () => {
+test("contact FAQ replies use the agency audience in either language instead of returning customer-facing text verbatim", async () => {
   const saved = snapshot()
   saved.helper.language = "English"
   saved.faqs = [{ id: "faq", serviceId: "service-one", serviceName: "Registration", question: "When are appointments?", answer: "Weekdays only.\nBring your original documents.", exactAnswer: true }]
   saved.sources.push({ id: "faq:faq", faqId: "faq", section: "faq", skillId: "service-one", label: "Appointments FAQ", content: saved.faqs[0]!.answer })
-  const provider: AiChatProvider = async () => { throw new Error("Do not adapt an exact FAQ") }
-  provider.matchFaq = async () => ({ faqId: "faq", translate: false, language: "English" })
+  const provider: AiChatProvider = async messages => {
+    assert.match(messages[0]!.content, /authenticated agency team member/)
+    assert.match(messages[0]!.content, /refer to the contact in the third person/)
+    assert.match(messages[1]!.content, /Bring your original documents/)
+    assert.match(messages[0]!.content, new RegExp(`Answer in ${saved.helper.language}`))
+    return { answer: saved.helper.language === "Spanish" ? "Las citas son solo entre semana. El contacto debe traer sus documentos originales." : "Appointments are weekdays only. The contact needs to bring their original documents.", sourceIds: ["faq:faq"], outcome: "ANSWERED" }
+  }
+  provider.matchFaq = async () => { throw new Error("Contact replies must not bypass the audience instructions") }
+  provider.translateFaq = async () => { throw new Error("Translation alone would retain customer-facing wording") }
   const deps = { getProvider: () => provider, load: async () => saved }
   const input = { ...contactAssistantFixture(), question: "When are appointments?" }
-  const exact = await answerContactAssistant(client, "tenant", input, undefined, deps)
-  assert.equal(exact.answerMode, "EXACT")
-  assert.equal(exact.summary, saved.faqs[0]!.answer)
-  saved.helper.language = "Spanish"
-  provider.matchFaq = async () => ({ faqId: "faq", translate: true, language: "Spanish" })
-  provider.translateFaq = async (answer) => { assert.equal(answer, saved.faqs![0]!.answer); return { answer: "Solo días laborables. Traiga sus documentos originales." } }
-  const translated = await answerContactAssistant(client, "tenant", input, undefined, deps)
-  assert.equal(translated.answerMode, "TRANSLATED")
-  assert.match(translated.summary, /días laborables/)
+  for (const language of ["English", "Spanish"] as const) {
+    saved.helper.language = language
+    const answer = await answerContactAssistant(client, "tenant", input, undefined, deps)
+    assert.equal(answer.answerMode, "ADAPTED")
+    assert.equal(answer.outcome, "ANSWERED")
+    assert.equal(answer.replySource, "KNOWLEDGE")
+    assert.equal(answer.sources?.[0]?.faqId, "faq")
+    assert.match(answer.summary, language === "Spanish" ? /El contacto debe traer/ : /The contact needs to bring/)
+  }
+  assert.equal(saved.faqs[0]!.exactAnswer, true)
+  assert.equal(saved.faqs[0]!.answer, "Weekdays only.\nBring your original documents.")
+})
+
+test("contact audience remains agency staff despite saved greetings, a first-person question and earlier client-facing replies", async () => {
+  const saved = snapshot()
+  saved.helper.language = "English"
+  saved.helper.instructions = "Always greet the client by name and say your appointment."
+  saved.sources.push({ id: "service-one:checklist", label: "Required documents", section: "checklist", skillId: "service-one", content: "Bring your Property Tax Bill and Property PIN Number." })
+  const input: ContactAssistantInput = { ...contactAssistantFixture(), question: "What do I need to bring?",
+    contactContext: { contactName: "Anthony Fixture", facts: [], services: [] },
+    history: [{ role: "user", content: "What about the appointment?" }, { role: "assistant", content: "Hi Anthony! For your appointment, bring your documents." }],
+  }
+  const provider: AiChatProvider = async messages => {
+    const system = messages[0]!.content
+    assert.match(system, /CURRENT_CONTACT describes the person being discussed, never the speaker/)
+    assert.match(system, /Do not greet the contact/)
+    assert.match(system, /never inferred from a name/)
+    assert.match(system, /prior reply addressing the contact directly does not change the audience/)
+    assert.ok(system.indexOf("AUDIENCE:") < system.indexOf("saved writing preferences only where consistent"))
+    assert.match(messages[1]!.content, /Anthony Fixture/)
+    assert.match(messages[1]!.content, /Hi Anthony!/)
+    return { answer: "Anthony needs to bring their Property Tax Bill and Property PIN Number.", sourceIds: ["service-one:checklist"], outcome: "ANSWERED" }
+  }
+  const answer = await answerContactAssistant(client, "tenant", input, undefined, { load: async () => saved, getProvider: () => provider })
+  assert.equal(answer.replySource, "CONTACT")
+  assert.equal(answer.summary, "Anthony needs to bring their Property Tax Bill and Property PIN Number.")
+  const testPrompt = buildAiChatMessages(saved, { question: "Hello", history: [] }, [], "TEST")
+  assert.doesNotMatch(testPrompt[0]!.content, /AUDIENCE:/)
 })
 
 test("unavailable generation, invalid citations and source failures return usable deterministic guidance", async () => {

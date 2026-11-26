@@ -274,7 +274,7 @@ export function AiFaqEditor({ skillId }: { skillId: string }) {
                 variant={faq.exactAnswer ? "secondary" : "outline"}
                 className="w-fit"
               >
-                {faq.exactAnswer ? "Answer as written" : "Adapt answer"}
+                {faq.exactAnswer ? "As written in Test helper" : "Adapt answer"}
               </Badge>
               <p className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-700 [overflow-wrap:anywhere]">
                 {faq.answer}
@@ -347,7 +347,7 @@ export function AiFaqEditor({ skillId }: { skillId: string }) {
                       </p>
                       <p className="mt-2 text-xs text-slate-500">
                         {latestQuestion.exactAnswer
-                          ? "Answer as written"
+                          ? "As written in Test helper"
                           : "Adapt answer"}
                       </p>
                     </div>
@@ -489,12 +489,14 @@ export function AiFaqEditor({ skillId }: { skillId: string }) {
                   />
                   <div className="flex min-w-0 flex-col gap-2">
                     <FieldLabel htmlFor="faq-exact-answer">
-                      Use answer as written
+                      Use answer as written in Test helper
                     </FieldLabel>
                     <FieldDescription id="faq-answer-style">
                       {editing?.value.exactAnswer
-                        ? "Uses this answer as written when the caller’s question closely matches. For other languages, it translates the answer without adding or removing information."
-                        : "Adapts this answer to the caller’s question and conversation."}
+                        ? "Test helper uses this answer as written for closely matching questions, translating it when needed."
+                        : "Adapts this answer to the question and conversation."}{" "}
+                      Contact chats adapt the wording for agency staff asking on
+                      the contact’s behalf.
                     </FieldDescription>
                   </div>
                 </Field>
