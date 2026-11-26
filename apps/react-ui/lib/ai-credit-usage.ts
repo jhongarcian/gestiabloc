@@ -8,6 +8,7 @@ export type AiCreditUsage = {
 }
 export type AiCreditOverview = {
   enabled: boolean; enforcementEnabled: boolean; asOf: string; timeZone: string | null
+  replyCreditCost?: number | null
   plan: { key: PlanKey; name: string; monthlyAllowance: number } | null
   access: { crmAllowed: boolean; aiAllowed: boolean; state: string; graceEndsAt: string | null } | null
   paidThrough?: string | null; cancelAtPeriodEnd?: boolean

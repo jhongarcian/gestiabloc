@@ -2,6 +2,32 @@
 
 Account Settings → AI → Analytics now reports recorded activity using the existing shadcn chart components (Recharts). The fictional metrics and handoff count are removed. Source filters separate Test helper from Contact assistant; 7-, 30-, and 90-day presets include today and use explicitly labeled UTC calendar days.
 
+## Usage report (November 25, 2026)
+
+Analytics also displays the current credit balance, monthly allowance progress, purchased credits and model-specific reply charge using the shared billing overview. This card always describes the current billing period across all sources; changing the report's source or date filters does not change its balance. Manage credits opens the subscription page. Wallet errors do not hide successfully loaded historical usage.
+
+The selected-period summary and daily chart/table use the existing 7/30/90-day and source filters:
+
+- Credits spent sum monthly and purchased units from `COMMIT` ledger entries. Charged replies count commits, independently of model-dependent units. Grants, reservations, releases and free deterministic checks are excluded.
+- Provider calls count recorded attempts by their start date, including internal calls, failures and calls still marked `STARTED`. One reply can require several calls. These totals do not need to match conversation activity or charged replies.
+- Input and output totals sum reported tokens. Cached input and reasoning output are already included and are not added again. Calls missing either count are disclosed; unknown counts are never described as a measured zero. Untracked history is not backfilled.
+- Only `TEST` and `CONTACT_ASSISTANT` records are included. System, diagnostic and evaluation traffic is excluded. Current metering/enforcement flags are informational and do not hide historical records. Provider prices/costs, transcript text and contact identifiers are not returned.
+
+The report reads the existing ledger and provider-usage tables independently so multiple provider calls cannot multiply charges. All queries are tenant-scoped, parameterized, bounded to 90 days and use existing tenant/time indexes; no new migration or environment variable is required. The route retains active-admin authorization and `Cache-Control: no-store`.
+
+Usage refreshes after credit/activity events, on focus/visibility changes and every 30 seconds while the page is visible. Manual Refresh updates both the report and balance. The expandable daily table provides the recorded values without relying on chart interaction.
+
+An isolated PostgreSQL integration test verifies actual aggregate queries, free/reserved/released entries, multiple provider calls per charge, partial/missing tokens, source/date filters, future/foreign records, and authenticated route access. Run with a disposable database (private test schema is removed afterward):
+
+```bash
+cd apps/backend
+AI_CREDIT_TEST_DATABASE_URL=postgresql://user:password@localhost/test DATABASE_URL=postgresql://user:password@localhost/test node --import tsx --test src/lib/ai-usage-analytics.integration.test.ts
+```
+
+UI rendering tests cover incomplete tokens, unavailable reports, a failed wallet alongside a valid report, read-only controls and the compact balance's precise progress semantics.
+
+Validation: 573 backend tests passed (9 opt-in tests skipped), 13 credit/usage UI tests passed, both production builds passed, and lint had no errors (four existing date-input warnings). Desktop and 390px sample-data previews covered chart switching, source/period changes, table scrolling and missing/empty/error states without console warnings. A read-only query also loaded recorded usage from the application database. No provider calls or billing changes were made for these checks.
+
 ## Recording and definitions
 
 - `AiInteraction` stores tenant, actor, channel, conversation/request UUIDs, question outcome, whether qualification ran, and server creation time. It contains no question, answer, history, contact ID, extracted source text, or provider payload.

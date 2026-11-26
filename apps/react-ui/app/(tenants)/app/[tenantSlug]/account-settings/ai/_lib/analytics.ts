@@ -6,6 +6,22 @@ export type AiAnalyticsMetrics = {
   needsReview: number
   qualificationRuns: number
 }
+export type AiUsageMetrics = {
+  creditsUsed: number
+  chargedReplies: number
+  providerCalls: number
+  inputTokens: number
+  outputTokens: number
+  unknownTokenCalls: number
+  inProgressCalls: number
+  failedCalls: number
+}
+export type AiUsageAnalytics = {
+  meteringEnabled: boolean
+  creditEnforcementEnabled: boolean
+  totals: AiUsageMetrics
+  daily: (AiUsageMetrics & { date: string })[]
+}
 export type AiAnalytics = {
   days: number
   channel: AiAnalyticsChannel
@@ -14,4 +30,5 @@ export type AiAnalytics = {
   through: string
   totals: AiAnalyticsMetrics
   daily: (AiAnalyticsMetrics & { date: string })[]
+  usage: AiUsageAnalytics
 }

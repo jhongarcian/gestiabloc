@@ -4,8 +4,10 @@ import { buildAiEvaluationCases, checkEvaluationAnswer } from "./ai-evaluation-c
 import { evaluationGate } from "./ai-evaluation.js"
 import type { ProviderUsageRecord } from "./ai-provider-usage.js"
 import { getGroqConfiguration } from "./groq-config.js"
-import { replyToAiHelper, type AiChatProvider } from "./ai-helper-replies.js"
+import { replyToAiHelper, buildAiChatMessages, retrieveAiChatSources, type AiChatProvider } from "./ai-helper-replies.js"
 import { countGroqInput } from "./groq-request.js"
+import { aiModels } from "./ai-model-catalog.js"
+import { countAiInput } from "./ai-token-budget.js"
 
 test("evaluation has 100 unique synthetic cases with bilingual grounding, financial, privacy, and FAQ coverage", () => {
   const cases = buildAiEvaluationCases()
@@ -15,6 +17,15 @@ test("evaluation has 100 unique synthetic cases with bilingual grounding, financ
   for (const item of cases.filter(c => c.exact)) {
     assert.equal(checkEvaluationAnswer(item, item.exact!), true)
     assert.equal(checkEvaluationAnswer(item, `Rewritten: ${item.exact}`), false)
+  }
+})
+test("each staged model budget admits the actual grounded evaluation prompts", () => {
+  for (const fixture of buildAiEvaluationCases()) {
+    const input = { question: fixture.question, history: [] }
+    const context = retrieveAiChatSources(fixture.snapshot, input)
+    const messages = buildAiChatMessages(fixture.snapshot, input, context.sources, fixture.contact ? "CONTACT" : "TEST", fixture.contact)
+    for (const model of aiModels)
+      assert.ok(countAiInput(messages, model) <= model.maxInputTokens, `${model.model}: ${fixture.id} exceeds its initial prompt budget`)
   }
 })
 test("partial or uncertain evaluation cannot pass, critical failures override overall accuracy, human signoff remains mandatory", () => {

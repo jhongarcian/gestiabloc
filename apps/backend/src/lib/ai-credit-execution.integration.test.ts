@@ -14,6 +14,7 @@ import express, { type ErrorRequestHandler } from "express"
 import cookieParser from "cookie-parser"
 import type { AddressInfo } from "node:net"
 import type { AiChatProvider, AiChatSnapshot } from "./ai-helper-replies.js"
+import { findAiModel, modelApprovalKey } from "./ai-model-catalog.js"
 
 const connectionString = process.env.AI_CREDIT_TEST_DATABASE_URL
 const model = "openai/gpt-oss-120b"
@@ -26,7 +27,7 @@ test("paid AI execution persists one encrypted reply and one debit with safe ret
   t.after(async () => { await db.$disconnect(); await pool.end(); await admin.query(`DROP SCHEMA "${schema}" CASCADE`); await admin.end() })
   await pool.query('CREATE TABLE "Tenant" ("id" TEXT PRIMARY KEY)')
   await pool.query('CREATE TABLE "TenantSubscription" ("id" TEXT PRIMARY KEY, "tenantId" TEXT UNIQUE NOT NULL, "status" TEXT NOT NULL, "paidThrough" TIMESTAMP(3))')
-  for (const name of ["20261029120000_ai_credit_wallet", "20261029130000_ai_credit_replay", "20261029150000_credit_purchase_review"])
+  for (const name of ["20261029120000_ai_credit_wallet", "20261029130000_ai_credit_replay", "20261029150000_credit_purchase_review", "20261125160000_model_credit_units"])
     await pool.query(await readFile(resolve(__dirname, `../../prisma/migrations/${name}/migration.sql`), "utf8"))
   let clock = new Date("2026-10-29T12:00:00Z")
   async function fixture() {
@@ -54,6 +55,24 @@ test("paid AI execution persists one encrypted reply and one debit with safe ret
     assert.doesNotMatch(JSON.stringify(stored), /Synthetic private answer|Hello|original/)
     await assert.rejects(run({ question: "Hello", context: "changed" }, generate, model), /AI_REQUEST_CONFLICT/)
     assert.equal(calls, 1)
+  })
+  await t.test("another approved model uses the same executor, and premium replies debit their configured units", async () => {
+    for (const id of ["openai/gpt-oss-20b", "qwen/qwen3.8-27b"]) {
+      const definition = findAiModel(id)!, { identity } = await fixture()
+      const settings = { ...env, AI_CREDIT_MODEL_GATE_PASSED: "false", AI_CREDIT_APPROVED_MODELS: modelApprovalKey(definition) }
+      const run = createAiReplyExecutor(db, identity, { env: settings, now: () => clock })
+      let calls = 0
+      const generate = async () => { calls++; return { answer: "Synthetic alternate model answer" } }
+      const answer = await run({}, generate, { provider: definition.provider, model: id })
+      assert.deepEqual(await run({}, generate, { provider: definition.provider, model: id }), answer)
+      assert.equal(calls, 1)
+      assert.equal((await readAiCreditUsage(db, identity.tenantId, clock)).monthly.used, definition.creditsPerReply)
+      await assert.rejects(run({}, generate, model), /AI_BILLING_UNAVAILABLE/)
+      const failed = createAiReplyExecutor(db, { ...identity, requestId: randomUUID() }, { env: settings, now: () => clock })
+      await assert.rejects(failed({}, async () => { throw new Error("MODEL_FAILED") }, definition), /MODEL_FAILED/)
+      const usage = await readAiCreditUsage(db, identity.tenantId, clock)
+      assert.equal(usage.monthly.used, definition.creditsPerReply); assert.equal(usage.monthly.reserved, 0)
+    }
   })
   await t.test("provider errors and cancellation release holds without charges; the failed ID is not regenerated", async () => {
     const { identity, run } = await fixture()

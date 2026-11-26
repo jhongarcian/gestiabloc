@@ -94,7 +94,7 @@ export async function answerContactAssistant(
       ? { contactName: input.cases[0]!.contactName, facts: [], services: [], catalog: [], limited: false } : undefined
     const prompt = contactPrompt ? { ...contactPrompt, ...(input.cases?.length ? { cases: caseContextForPrompt(input.cases) } : {}) } : undefined
     const reply = await executeReply({ snapshot: groundedSnapshot, request, prompt },
-      () => replyToAiHelper(groundedSnapshot, request, provider, signal, "CONTACT", prompt), provider.model)
+      () => replyToAiHelper(groundedSnapshot, request, provider, signal, "CONTACT", prompt), provider.modelReference ?? provider.model)
     return {
       title: snapshot.helper.name,
       summary: reply.answer,

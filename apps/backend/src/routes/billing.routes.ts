@@ -13,6 +13,8 @@ import { CreditCheckoutSchema, startCreditCheckout, processCreditEvent, cancelCr
 import { readAiCreditUsage } from "../lib/ai-credit-wallet.js"
 import { aiCreditPacks, subscriptionPlans } from "../lib/subscription-plans.js"
 import { subscriptionAccess } from "../lib/subscription-billing.js"
+import { configuredAiModel } from "../lib/ai-provider-config.js"
+import { findAiModel } from "../lib/ai-model-catalog.js"
 
 type Dependencies = { db?: BillingDatabase; gateway?: BillingGateway; creditGateway?: CreditGateway; env?: Record<string, string | undefined> }
 const creditEvents = new Set(["payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.canceled", "charge.refunded", "charge.dispute.created", "charge.dispute.updated", "charge.dispute.closed", "refund.created", "refund.updated", "refund.failed"])
@@ -38,13 +40,14 @@ export function createBillingRouter(deps: Dependencies = {}) {
     const { tenantId } = z.object({ tenantId: z.uuid() }).parse(req.params), env = deps.env ?? process.env, config = getBillingConfiguration(env)
     res.setHeader("Cache-Control", "no-store")
     const now = new Date(), asOf = now.toISOString()
-    if (!config.enabled) return res.json({ ok: true, enabled: false, enforcementEnabled: false, asOf, plan: null, access: null, timeZone: null, purchasesEnabled: false, eligible: false, canResume: false, usage: null, pendingCheckout: null, packs: aiCreditPacks })
+    if (!config.enabled) return res.json({ ok: true, enabled: false, enforcementEnabled: false, replyCreditCost: null, asOf, plan: null, access: null, timeZone: null, purchasesEnabled: false, eligible: false, canResume: false, usage: null, pendingCheckout: null, packs: aiCreditPacks })
     const db = (deps.db ?? prisma) as PurchaseDatabase
     const [sub, tenant] = await Promise.all([
       db.tenantSubscription.findUnique({ where: { tenantId } }),
       db.tenant.findUnique({ where: { id: tenantId }, select: { timezone: true } }),
     ])
-    const metadata = { enabled: true, enforcementEnabled: config.creditEnforcementEnabled, asOf, timeZone: tenant?.timezone ?? null,
+    const reference = configuredAiModel(env)
+    const metadata = { enabled: true, enforcementEnabled: config.creditEnforcementEnabled, replyCreditCost: reference ? findAiModel(reference)?.creditsPerReply ?? null : null, asOf, timeZone: tenant?.timezone ?? null,
       plan: sub ? { key: sub.planKey, name: subscriptionPlans[sub.planKey].name, monthlyAllowance: subscriptionPlans[sub.planKey].aiCreditsPerMonth } : null,
       access: subscriptionAccess(sub, now), paidThrough: sub?.paidThrough ?? null, cancelAtPeriodEnd: sub?.cancelAtPeriodEnd ?? false }
     if (!config.creditEnforcementEnabled) return res.json({ ok: true, ...metadata, purchasesEnabled: false, eligible: false, canResume: false, usage: null, pendingCheckout: null, packs: aiCreditPacks })

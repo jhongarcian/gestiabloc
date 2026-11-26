@@ -108,6 +108,16 @@ Enabling billing still requires all subscription settings; purchases additionall
 require all pack IDs, credit enforcement, metering and an approved model. New
 accounts and seeded tenants have no trial or paid credit grant.
 
+Model-specific approvals, credit costs and provider connections are described in
+`docs/ai-model-credit-architecture.md`. New models use the shared wallet through
+the server-owned catalog; the legacy model approval flag approves only the
+original GPT-OSS 120B policy. OpenAI and Anthropic connections remain separate
+provider additions. Apply the model-credit-units migration before activation.
+
+AI settings → Analytics displays the current credit balance alongside filtered
+credit spending, token totals and daily usage. Definitions and validation are in
+`docs/ai-analytics-chunk-7.md`.
+
 After migrations and rollout approval, run the billing, purchase reconciliation,
 and credit maintenance workers alongside the API using the workspace scripts
 `worker:billing:dev`, `worker:credit-purchases:dev`, and `worker:ai-credits:dev`.

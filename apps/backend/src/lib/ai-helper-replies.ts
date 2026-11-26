@@ -1,5 +1,8 @@
 import { currentAiUsage } from "./ai-provider-usage.js"
-import { requestGroq, completionJson, GroqRequestError, countGroqInput } from "./groq-request.js"
+import { requestAi, completionJson, AiProviderRequestError } from "./ai-provider-request.js"
+import { countAiInput } from "./ai-token-budget.js"
+import { findAiModel, modelKey, type AiModelReference } from "./ai-model-catalog.js"
+import type { AiProviderRequest } from "./ai-provider-adapters.js"
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { PrismaClient } from "../generated/prisma/index.js"
@@ -9,7 +12,7 @@ import {
 } from "./ai-helper-settings.js"
 import { aiSkillSelect, presentAiSkill } from "./ai-skills.js"
 import { enrollableServiceWhere } from "./service-hierarchy.js"
-import { getGroqConfiguration } from "./groq-config.js"
+import { getAiConfiguration } from "./ai-provider-config.js"
 import { aiFaqSelect } from "./ai-skill-content.js"
 import { retrieveAiDocumentSources } from "./ai-source-retrieval.js"
 import {
@@ -433,18 +436,18 @@ export type AiChatProvider = ((
   messages: ReturnType<typeof buildAiChatMessages>,
   signal?: AbortSignal,
 ) => Promise<z.input<typeof ProviderOutputSchema>>) &
-  ExactFaqProvider & { model?: string }
-export function getAiChatProvider(config = getGroqConfiguration()): AiChatProvider | null {
+  ExactFaqProvider & { model?: string; modelReference?: AiModelReference }
+export function getAiChatProvider(config: Pick<AiProviderRequest, "provider" | "apiKey" | "model" | "baseUrl"> | null = getAiConfiguration()): AiChatProvider | null {
   if (!config) return null
   async function requestJson<T extends z.ZodType>(
     schema: T, messages: ChatMessages, signal?: AbortSignal, maxTokens = 1800,
     purpose = "CHAT",
   ): Promise<z.output<T>> {
     try {
-      return await requestGroq({ ...config!, messages, signal, maxTokens, purpose },
+      return await requestAi({ ...config!, messages, signal, maxTokens, purpose },
         payload => schema.parse(completionJson(payload)))
     } catch (error) {
-      if (error instanceof GroqRequestError) throw new AiChatError(error.status, error.code)
+      if (error instanceof AiProviderRequestError) throw new AiChatError(error.status, error.code)
       throw new AiChatError(503, "AI_PROVIDER_UNAVAILABLE")
     }
   }
@@ -467,6 +470,7 @@ export function getAiChatProvider(config = getGroqConfiguration()): AiChatProvid
       "FAQ_TRANSLATION",
     )
   provider.model = config.model
+  provider.modelReference = { provider: config.provider ?? "groq", model: config.model }
   return provider
 }
 
@@ -526,8 +530,9 @@ export async function replyToAiHelper(
   if (!result) {
     let boundedInput = { ...input, history: [...input.history] }
     let messages = buildAiChatMessages(snapshot, boundedInput, context.sources, surface, contactContext)
-    if (provider.model?.startsWith("openai/gpt-oss-")) {
-      while (countGroqInput(messages) + (currentAiUsage()?.input ?? 0) > 6000) {
+    const model = findAiModel(provider.modelReference ?? provider.model)
+    if (model && (process.env.AI_CREDIT_ENFORCEMENT_ENABLED === "true" || model.limitUnbilledRequests || currentAiUsage()?.budgetModelKey === modelKey(model))) {
+      while (countAiInput(messages, model) + (currentAiUsage()?.input ?? 0) > model.maxInputTokens) {
         if (boundedInput.history.length) boundedInput.history = boundedInput.history.slice(2)
         else if (context.sources.length) context.sources.pop()
         else throw new AiChatError(413, "AI_CONTEXT_TOO_LARGE")

@@ -1,5 +1,5 @@
-import { getGroqConfiguration } from "./groq-config.js"
-import { requestGroq, completionJson } from "./groq-request.js"
+import { getAiConfiguration } from "./ai-provider-config.js"
+import { requestAi, completionJson } from "./ai-provider-request.js"
 import { z } from "zod"
 
 import type {
@@ -334,12 +334,8 @@ export function shouldRunServiceVerification(question: string, profile: ServiceV
   return DEFAULT_VERIFICATION_PATTERNS.some((pattern) => pattern.test(question))
 }
 
-class GroqServiceVerificationProvider {
-  constructor(
-    private readonly apiKey: string,
-    private readonly model: string,
-    private readonly baseUrl: string,
-  ) {}
+class ConfiguredServiceVerificationProvider {
+  constructor(private readonly config: NonNullable<ReturnType<typeof getAiConfiguration>>) {}
 
   async summarize(
     input: VerifyServiceQuestionInput,
@@ -367,7 +363,7 @@ class GroqServiceVerificationProvider {
     ].join("\n")
 
     try {
-      const parsed = await requestGroq({ apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl,
+      const parsed = await requestAi({ ...this.config,
         purpose: "VERIFICATION", signal: AbortSignal.timeout(12000), maxTokens: 1800,
         messages: [
           { role: "system", content: "You summarize service verification findings from provided sources. Return only JSON." },
@@ -380,14 +376,15 @@ class GroqServiceVerificationProvider {
 
 }
 
-function getGroqVerificationProvider() {
-  const config = getGroqConfiguration({
+function getVerificationProvider() {
+  const config = getAiConfiguration({
     ...process.env,
     SERVICE_FIT_AI_PROVIDER: process.env.SERVICE_VERIFICATION_AI_PROVIDER || process.env.SERVICE_FIT_AI_PROVIDER,
+    AI_MODEL: process.env.SERVICE_VERIFICATION_AI_MODEL || process.env.SERVICE_VERIFICATION_GROQ_MODEL || process.env.AI_MODEL,
     GROQ_MODEL: process.env.SERVICE_VERIFICATION_GROQ_MODEL || process.env.GROQ_MODEL,
     GROQ_BASE_URL: process.env.SERVICE_VERIFICATION_GROQ_BASE_URL || process.env.GROQ_BASE_URL,
   })
-  return config ? new GroqServiceVerificationProvider(config.apiKey, config.model, config.baseUrl) : null
+  return config ? new ConfiguredServiceVerificationProvider(config) : null
 
 }
 
@@ -454,7 +451,7 @@ export async function verifyServiceQuestion(
   ).filter((doc): doc is VerificationDocument => Boolean(doc))
 
   const snippets = selectRelevantSnippets(input, docs)
-  const provider = getGroqVerificationProvider()
+  const provider = getVerificationProvider()
 
   if (provider && snippets.length > 0) {
     const aiSummary = await provider.summarize(input, snippets)

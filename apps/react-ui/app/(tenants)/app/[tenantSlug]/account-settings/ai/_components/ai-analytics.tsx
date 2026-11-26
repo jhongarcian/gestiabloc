@@ -13,7 +13,9 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { AiEmpty, AiPageHeader, AiPanel, SECONDARY_BUTTON } from "./ai-ui"
 import { useAiWorkspace } from "./ai-workspace"
 import { useAiAnalytics } from "./use-ai-analytics"
-import type { AiAnalyticsChannel, AiAnalyticsPeriod } from "../_lib/analytics"
+import type { AiAnalytics as AnalyticsData, AiAnalyticsChannel, AiAnalyticsPeriod } from "../_lib/analytics"
+import { useAiCreditOverview, type AiCreditOverviewController } from "@/lib/use-ai-credit-overview"
+import { AiUsageReport } from "./ai-usage-report"
 
 const chartConfig = {
   conversations: { label: "Conversations", color: "var(--chart-3)" },
@@ -37,15 +39,24 @@ const dateLabel = (value: string) => new Date(`${value}T00:00:00Z`).toLocaleDate
 const toggleClass = "h-8 cursor-pointer rounded-full px-3 text-xs font-semibold data-[state=on]:bg-blue-950 data-[state=on]:text-white"
 
 export function AiAnalytics() {
-  const { tenantId } = useAiWorkspace()
+  const { tenantId, tenantSlug, userRole } = useAiWorkspace()
   const [period, setPeriod] = useState<AiAnalyticsPeriod>("30")
   const [channel, setChannel] = useState<AiAnalyticsChannel>("ALL")
-  const { data, loading, error, refresh } = useAiAnalytics(tenantId, period, channel)
+  const report = useAiAnalytics(tenantId, period, channel)
+  const credits = useAiCreditOverview(tenantId, userRole === "TENANT_ADMIN")
+  return <AiAnalyticsContent {...report} credits={credits} tenantSlug={tenantSlug} userRole={userRole} period={period} setPeriod={setPeriod} channel={channel} setChannel={setChannel} refresh={() => { report.refresh(); credits.refresh() }} />
+}
+
+export function AiAnalyticsContent({ data, loading, error, refresh, credits, tenantSlug, userRole, period, setPeriod, channel, setChannel }: {
+  data?: AnalyticsData; loading: boolean; error?: string; refresh: () => void; credits: AiCreditOverviewController
+  tenantSlug: string; userRole: string; period: AiAnalyticsPeriod; setPeriod: (value: AiAnalyticsPeriod) => void
+  channel: AiAnalyticsChannel; setChannel: (value: AiAnalyticsChannel) => void
+}) {
   const hasActivity = data && data.totals.conversations > 0
 
   return (
     <div className="flex min-w-0 flex-col gap-4" aria-busy={loading}>
-      <AiPageHeader title="Analytics" description="Follow your helper’s conversations, answers, and qualification activity."
+      <AiPageHeader title="Analytics" description="Follow your helper’s activity, credit spending, and token usage."
         actions={<Button variant="outline" className={SECONDARY_BUTTON} onClick={refresh} disabled={loading}>
           <RefreshCw data-icon="inline-start" aria-hidden="true" />{loading ? "Loading…" : "Refresh"}
         </Button>}>
@@ -75,6 +86,8 @@ export function AiAnalytics() {
           </div>
         </div>
       </AiPageHeader>
+
+      <AiUsageReport usage={data?.usage} loading={loading} credits={credits} tenantSlug={tenantSlug} userRole={userRole} />
 
       {error ? <Alert variant="destructive" role="alert"><AlertTitle>Analytics unavailable</AlertTitle><AlertDescription>{error} Counts are unavailable, rather than zero.</AlertDescription></Alert> : null}
       {loading ? <div role="status" aria-label="Loading Analytics" className="flex flex-col gap-3"><Skeleton className="h-80 w-full rounded-[22px]" /><span className="sr-only">Loading activity…</span></div> : null}

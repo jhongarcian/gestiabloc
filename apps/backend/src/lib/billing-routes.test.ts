@@ -69,7 +69,7 @@ test("credit overview returns real balances, plan/access metadata and no fabrica
     $transaction: async (action: (tx: unknown) => unknown) => { transactions++; return action({ aiCreditWallet: { findUnique: async () => ({ revision: 5, purchasedBalance: 600, purchasedReserved: 20, purchaseReviewRequired: false }) }, aiCreditPeriod: { findFirst: async () => ({ startsAt: new Date(Date.now() - 86400000), endsAt: new Date(Date.now() + 86400000), granted: 2400, used: 500, reserved: 100 }) } }) },
   } as unknown as BillingDatabase
   const app = express(); app.use(cookieParser(), express.json())
-  app.use("/api/billing", createBillingRouter({ db, env: creditTestEnv }))
+  app.use("/api/billing", createBillingRouter({ db, env: { ...creditTestEnv, SERVICE_FIT_AI_PROVIDER: "groq", GROQ_MODEL: "qwen/qwen3.8-27b", AI_CREDIT_APPROVED_MODELS: "groq:qwen/qwen3.8-27b@v1" } }))
   app.use("/off", createBillingRouter({ db, env: { ...creditTestEnv, AI_CREDIT_ENFORCEMENT_ENABLED: "false" } }))
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve, reject) => { const s = app.listen(0, "127.0.0.1", () => resolve(s)); s.once("error", reject) })
   t.after(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections() }))
@@ -77,6 +77,7 @@ test("credit overview returns real balances, plan/access metadata and no fabrica
   const res = await fetch(`${root}/api/billing/${tenantId}/credits`, { headers }), data = await res.json()
   assert.equal(res.status, 200); assert.equal(res.headers.get("cache-control"), "no-store")
   assert.equal(data.plan.name, "Pro"); assert.equal(data.plan.monthlyAllowance, 2400); assert.equal(data.access.state, "GRACE")
+  assert.equal(data.replyCreditCost, 12)
   assert.equal(data.timeZone, "America/Chicago"); assert.ok(Number.isFinite(Date.parse(data.asOf)))
   assert.equal(data.usage.monthly.remaining, 1800); assert.equal(data.usage.purchased.available, 580); assert.equal(data.usage.available, 2380)
   assert.equal(data.eligible, false); assert.equal(transactions, 1)

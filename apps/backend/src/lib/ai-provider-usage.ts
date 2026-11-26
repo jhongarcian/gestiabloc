@@ -2,17 +2,18 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import { randomUUID } from "node:crypto"
 import type { RequestHandler } from "express"
 import type { AuthedRequest } from "../middleware/requireAuth.js"
+import type { AiProviderId } from "./ai-model-catalog.js"
 
 export type ProviderUsageRecord = {
   id: string; logicalRequestId: string; tenantId: string | null; actorId: string | null
-  channel: string; purpose: string; provider: "groq"; requestedModel: string; model: string | null
+  channel: string; purpose: string; provider: AiProviderId; requestedModel: string; model: string | null
   status: string; httpStatus: number | null; durationMs: number
   inputTokens: number | null; outputTokens: number | null; cachedTokens: number | null
   reasoningTokens: number | null; estimatedCostUsd: string | null; upperBoundCostUsd: string | null
   rateVersion: string
 }
 export type UsageRecorder = (record: ProviderUsageRecord) => Promise<void>
-type Context = { tenantId?: string; actorId?: string; channel: string; requestId?: string; logicalRequestId?: string; creditRequestId?: string }
+type Context = { tenantId?: string; actorId?: string; channel: string; requestId?: string; logicalRequestId?: string; creditRequestId?: string; billingModelKey?: string; billingPolicyVersion?: string; budgetModelKey?: string }
 type Scope = Context & { logicalRequestId: string; input: number; output: number; record?: UsageRecorder }
 const storage = new AsyncLocalStorage<Scope>()
 

@@ -74,7 +74,7 @@ export function createAiTestChatRouter(
         }
         try { return await replyToAiTestChat(snapshot, input, provider, controller.signal) }
         finally { release() }
-      }, provider.model)
+      }, provider.modelReference ?? provider.model)
       if (controller.signal.aborted) return
       await recordActivity(prisma, {
         tenantId,

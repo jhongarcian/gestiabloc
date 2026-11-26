@@ -79,7 +79,7 @@ export function CreditPurchaseControls({ tenantId, userRole, overview }: { tenan
       {data.purchasesEnabled ? <>
         {!data.eligible && !data.pendingCheckout && !data.usage?.purchaseReviewRequired ? <p className="text-sm text-muted-foreground">An active paid subscription is required to purchase additional credits.</p> : null}
         <div className="grid gap-3 md:grid-cols-3">{Object.entries(aiCreditPacks).map(([key, pack]) => <div key={key} className="grid gap-4 rounded-lg border p-4"><div className="flex flex-wrap items-baseline justify-between gap-2"><p className="text-sm font-medium tabular-nums">{pack.credits.toLocaleString("en-US")} credits</p><p className="text-xl font-semibold tabular-nums">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(pack.priceCents / 100)}</p></div><Button variant="outline" disabled={!data.eligible || busy || overview.loading} onClick={() => void buy(key as PackKey)}>{busy ? "Please wait…" : "Buy credits"}</Button></div>)}</div>
-        <p className="text-xs text-muted-foreground">One credit covers one generated AI reply. Rules-only checks are free.</p>
+        <p className="text-xs text-muted-foreground">Credit cost per reply depends on the selected AI model. Rules-only checks are free.</p>
       </> : null}
       <div className="flex flex-wrap items-center gap-3"><Button variant="ghost" size="sm" disabled={busy || overview.loading} onClick={() => { setError(""); refresh() }}>Refresh purchase status</Button><p className="text-xs text-muted-foreground">Payment is completed securely through Stripe.</p></div>
       {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}

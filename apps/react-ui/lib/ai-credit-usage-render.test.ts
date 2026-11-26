@@ -12,6 +12,11 @@ test("the real shared progress exposes remaining value and precise reservation c
   assert.match(html, /900 of 1,200 credits available, 240 used and 60 reserved/)
   assert.match(html, /1,880/); assert.match(html, /980/)
 })
+test("the usage summary describes the server-selected model charge without assuming one credit", () => {
+  assert.match(render({ ...data, replyCreditCost: 6 }), /Each generated AI reply uses 6 credits/)
+  assert.match(render({ ...data, replyCreditCost: 1 }), /Each generated AI reply uses 1 credit\./)
+  assert.doesNotMatch(render({ ...data, enforcementEnabled: false, replyCreditCost: 6 }), /Each generated AI reply uses/)
+})
 test("errors, loading, unavailable and non-admin views never render invented balances or a zero-value chart", () => {
   for (const html of [render(), render(data, "Could not refresh"), render({ ...data, usage: null, enabled: false }), render(data, undefined, "TENANT_USER")]) {
     assert.doesNotMatch(html, /role="progressbar"/)
@@ -24,4 +29,12 @@ test("paused balances are not labelled spendable and exhausted states remain rea
   assert.match(paused, /Credits in balance/); assert.doesNotMatch(paused, /Credits available to spend/)
   const exhausted = render({ ...data, usage: { ...data.usage!, monthly: { granted: 1200, used: 1200, reserved: 0, remaining: 0 }, purchased: { balance: 0, reserved: 0, available: 0 }, available: 0 } })
   assert.match(exhausted, /aria-valuenow="0"/); assert.match(exhausted, /No credits available/)
+})
+test("the compact analytics balance still exposes exact progress and explains its independent billing scope", () => {
+  const html = renderToStaticMarkup(React.createElement(AiCreditUsageCard, { controller: { data, loading: false, error: undefined, refresh: () => {} }, manageHref: "/billing", compact: true }))
+  assert.match(html, /Current credit balance/)
+  assert.match(html, /Current billing period · all activity/)
+  assert.match(html, /Report filters do not change this balance/)
+  assert.match(html, /1,880/)
+  assert.match(html, /900 of 1,200 credits available, 240 used and 60 reserved/)
 })

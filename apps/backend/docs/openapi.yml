@@ -7399,8 +7399,8 @@ paths:
   /api/account-settings/{tenantId}/ai/analytics:
     get:
       tags: [AI]
-      summary: Read recorded account AI activity
-      description: Active tenant administrators only. Completed server interactions are aggregated into UTC calendar days including today. Distinct conversations are counted across the whole selected period, not summed from daily counts. No transcripts, contact IDs or source contents are returned. Tracking starts at deployment; earlier activity is not backfilled.
+      summary: Read recorded account AI activity and usage
+      description: Active tenant administrators only. Activity, committed credit spending and provider token usage follow the same source and UTC calendar-day filters, including today. Distinct conversations are counted across the whole selected period, not summed from daily counts. Provider attempts and committed charges are aggregated independently; free checks, grants, reservations and releases do not count as spending. Missing token counts are explicit. System, diagnostic and evaluation calls are excluded. No provider costs, transcripts, contact IDs or source contents are returned. Earlier untracked usage is not backfilled. Current billing-period balance is available separately from the billing credits endpoint.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
         - in: query
@@ -7437,6 +7437,24 @@ paths:
                             - type: object
                               properties:
                                 date: { type: string, format: date }
+                      usage:
+                        type: object
+                        required: [meteringEnabled, creditEnforcementEnabled, totals, daily]
+                        properties:
+                          meteringEnabled: { type: boolean, description: Whether new provider usage is currently recorded; historical data is still returned when false }
+                          creditEnforcementEnabled: { type: boolean, description: Whether credit enforcement is currently enabled; does not remove historical charges }
+                          totals: { $ref: "#/components/schemas/AiUsageMetrics" }
+                          daily:
+                            type: array
+                            minItems: 7
+                            maxItems: 90
+                            items:
+                              allOf:
+                                - $ref: "#/components/schemas/AiUsageMetrics"
+                                - type: object
+                                  required: [date]
+                                  properties:
+                                    date: { type: string, format: date }
         "400": { description: Unsupported filters or unknown query parameters }
         "401": { description: Authentication required }
         "403": { description: Active tenant administrator access required }
@@ -7524,7 +7542,7 @@ paths:
     post:
       tags: [AI]
       summary: Ask the existing contact qualification assistant
-      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Case-only questions do not run qualification or increment qualification runs. An explicit qualification question about a selected purchase runs the existing rules engine and records that actual run. Multiple matching purchases require selection unless comparison is explicitly requested; comparisons are limited to five validated purchases. Case history is read-only and refreshed for each question. With credit enforcement off, tracking IDs deduplicate metadata only. With enforcement enabled, generated replies require conversationId/requestId, reserve one credit and save an encrypted reply for 15-minute replay. Retries recheck current access and source context; changed context conflicts. Rules-only replies and provider/validation fallbacks are free. Billing errors are returned rather than hidden by fallback. Active tenant membership and trusted origin required.
+      description: Saved helper identity, language, tone, instructions, company information, FAQs and ready knowledge sources answer general service questions through the shared reply engine. Every typed question uses fresh server-authorized non-encrypted contact facts, all relevant saved qualification alternatives and bounded in-memory conversation history. Encrypted and sensitive fields are excluded from generation. Saved rules alone decide eligibility and scores; knowledge exceptions are flagged for review. A named service can change the selected scope. Selected-service questions retrieve only that service's knowledge; all-service questions may use all active skills, including skills with qualification off. Exact FAQs remain verbatim or use translation only. Provider failure, invalid citations or rate limits return rule guidance with replySource FALLBACK and outcome NEEDS_REVIEW. One concurrent generated reply and ten attempts per minute per actor/account/server instance. Case-only questions do not run qualification or increment qualification runs. An explicit qualification question about a selected purchase runs the existing rules engine and records that actual run. Multiple matching purchases require selection unless comparison is explicitly requested; comparisons are limited to five validated purchases. Case history is read-only and refreshed for each question. With credit enforcement off, tracking IDs deduplicate metadata only. With enforcement enabled, generated replies require conversationId/requestId, reserve the selected model policy's credit units and save an encrypted reply for 15-minute replay. Retries recheck current access and source context; changed context conflicts. Rules-only replies and provider/validation fallbacks are free. Billing errors are returned rather than hidden by fallback. Active tenant membership and trusted origin required.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7645,7 +7663,7 @@ paths:
     post:
       tags: [AI]
       summary: Ask the saved account helper a read-only test question
-      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching or actions. Completed replies record metadata for Analytics. With enforcement off, optional tracking IDs deduplicate counts only and no reply is persisted. With enforcement on, conversationId and requestId are required; one credit is charged atomically with an encrypted 15-minute replay copy after a valid answer. Repeated IDs never regenerate or debit twice; changed context conflicts. Current authorization and fresh context are checked before replay. Expired replies return AI_RESPONSE_EXPIRED. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
+      description: Uses fresh saved helper settings, shared company information and bounded knowledge from active offerings under active parents. No contact data, qualification decisions, external source fetching or actions. Completed replies record metadata for Analytics. With enforcement off, optional tracking IDs deduplicate counts only and no reply is persisted. With enforcement on, conversationId and requestId are required; the selected model policy's credit units are charged atomically with an encrypted 15-minute replay copy after a valid answer. Repeated IDs never regenerate or debit twice; changed context conflicts. Current authorization and fresh context are checked before replay. Expired replies return AI_RESPONSE_EXPIRED. Client-supplied history is conversational context rather than factual evidence. Provider failures return errors rather than simulated replies.
       parameters:
         - $ref: "#/components/parameters/TenantIdPathParam"
       requestBody:
@@ -7708,11 +7726,12 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [ok, enabled, enforcementEnabled, asOf, timeZone, plan, access, purchasesEnabled, eligible, canResume, usage, pendingCheckout, packs]
+                required: [ok, enabled, enforcementEnabled, replyCreditCost, asOf, timeZone, plan, access, purchasesEnabled, eligible, canResume, usage, pendingCheckout, packs]
                 properties:
                   ok: { type: boolean, enum: [true] }
                   enabled: { type: boolean, description: Billing rollout enabled }
                   enforcementEnabled: { type: boolean }
+                  replyCreditCost: { type: integer, minimum: 1, maximum: 1000, nullable: true, description: Configured credit units per generated reply for the selected model; not a balance or a grant }
                   asOf: { type: string, format: date-time }
                   timeZone: { type: string, nullable: true, description: Tenant IANA timezone }
                   plan:
@@ -8294,6 +8313,18 @@ components:
         answered: { type: integer, minimum: 0, description: Questions marked ANSWERED by the reply path }
         needsReview: { type: integer, minimum: 0, description: Questions flagged for missing knowledge or agency help; not a human review queue }
         qualificationRuns: { type: integer, minimum: 0, description: Completed explicit contact analysis requests, including scans for assistant follow-up questions }
+    AiUsageMetrics:
+      type: object
+      required: [creditsUsed, chargedReplies, providerCalls, inputTokens, outputTokens, unknownTokenCalls, inProgressCalls, failedCalls]
+      properties:
+        creditsUsed: { type: integer, minimum: 0, description: Monthly plus purchased units on COMMIT ledger entries created in the selected period }
+        chargedReplies: { type: integer, minimum: 0, description: Count of committed replies; independent of their model-dependent credit charge }
+        providerCalls: { type: integer, minimum: 0, description: Recorded provider attempts started in the selected period, including internal and failed calls }
+        inputTokens: { type: integer, minimum: 0, description: Sum of known reported input tokens; cached input is already included }
+        outputTokens: { type: integer, minimum: 0, description: Sum of known reported output tokens; reasoning output is already included }
+        unknownTokenCalls: { type: integer, minimum: 0, description: Attempts with missing input or output counts; token totals may be incomplete }
+        inProgressCalls: { type: integer, minimum: 0, description: Attempts still marked STARTED }
+        failedCalls: { type: integer, minimum: 0, description: HTTP_ERROR, TRANSPORT_ERROR and INVALID_RESPONSE attempts }
     AiTestReply:
       type: object
       properties:

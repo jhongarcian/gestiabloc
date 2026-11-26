@@ -1,6 +1,6 @@
-import { requestGroq, completionJson } from "./groq-request.js"
+import { requestAi, completionJson } from "./ai-provider-request.js"
 import { z } from "zod"
-import { getGroqConfiguration } from "./groq-config.js"
+import { getAiConfiguration } from "./ai-provider-config.js"
 
 export type ServiceFitExplanationStatus = "ELIGIBLE" | "NEEDS_INFO" | "NOT_ELIGIBLE"
 
@@ -242,15 +242,11 @@ export function buildServiceFitExplanationPrompt(input: ServiceFitExplanationInp
   ].join("\n")
 }
 
-class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider {
-  constructor(
-    private readonly apiKey: string,
-    private readonly model: string,
-    private readonly baseUrl: string,
-  ) {}
+class ConfiguredServiceFitExplanationProvider implements ServiceFitExplanationProvider {
+  constructor(private readonly config: NonNullable<ReturnType<typeof getAiConfiguration>>) {}
 
   async explainQualification(input: ServiceFitExplanationInput): Promise<ServiceFitExplanationOutput> {
-    const parsed = await requestGroq({ apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl,
+    const parsed = await requestAi({ ...this.config,
       purpose: "QUALIFICATION_EXPLANATION", maxTokens: 1800,
       messages: [
         { role: "system", content: "You produce short, accurate qualification explanations for services. Return only JSON." },
@@ -265,13 +261,9 @@ class GroqServiceFitExplanationProvider implements ServiceFitExplanationProvider
 }
 
 export function getServiceFitExplanationProvider(): ServiceFitExplanationProvider | null {
-  const config = getGroqConfiguration()
+  const config = getAiConfiguration()
   if (!config) return null
-  return new GroqServiceFitExplanationProvider(
-    config.apiKey,
-    config.model,
-    config.baseUrl,
-  )
+  return new ConfiguredServiceFitExplanationProvider(config)
 }
 
 export async function generateServiceFitExplanation(

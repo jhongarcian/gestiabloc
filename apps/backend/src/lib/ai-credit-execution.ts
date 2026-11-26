@@ -4,24 +4,26 @@ import { getBillingConfiguration } from "./billing-config.js"
 import { AiCreditError, reserveAiCredit, settleAiCredit, type AiCreditRequestKey } from "./ai-credit-wallet.js"
 import { aiCreditFingerprint, encryptAiReply, decryptAiReply, emptyAiReply } from "./ai-credit-replay.js"
 import { withAiUsage } from "./ai-provider-usage.js"
+import { findAiModel, isAiModelApproved, modelApprovalKey, modelKey, type AiModelSelection } from "./ai-model-catalog.js"
 
 type Database = Pick<PrismaClient, "$transaction" | "aiCreditRequest">
-export type AiReplyExecutor = <T>(fingerprint: unknown, generate: () => Promise<T>, model?: string) => Promise<T>
+export type AiReplyExecutor = <T>(fingerprint: unknown, generate: () => Promise<T>, model?: AiModelSelection) => Promise<T>
 type Identity = Omit<AiCreditRequestKey, "requestHash" | "requestId"> & { requestId?: string; conversationId?: string }
 type Options = { signal?: AbortSignal; env?: Record<string, string | undefined>; now?: () => Date }
 export function createAiReplyExecutor(db: Database, identity: Identity, options: Options = {}): AiReplyExecutor {
-  return async <T>(fingerprint: unknown, generate: () => Promise<T>, model?: string): Promise<T> => {
+  return async <T>(fingerprint: unknown, generate: () => Promise<T>, selection?: AiModelSelection): Promise<T> => {
     const env = options.env ?? process.env, now = options.now ?? (() => new Date())
     let config: ReturnType<typeof getBillingConfiguration>
     try { config = getBillingConfiguration(env) } catch { throw new AiCreditError(503, "AI_BILLING_UNAVAILABLE") }
     if (!config.creditEnforcementEnabled) return generate()
-    if (model !== "openai/gpt-oss-120b") throw new AiCreditError(503, "AI_BILLING_UNAVAILABLE")
+    const model = findAiModel(selection)
+    if (!model || !isAiModelApproved(model, env)) throw new AiCreditError(503, "AI_BILLING_UNAVAILABLE")
     if (!z.uuid().safeParse(identity.requestId).success || !z.uuid().safeParse(identity.conversationId).success)
       throw new AiCreditError(400, "AI_REQUEST_ID_REQUIRED")
-    const p: AiCreditRequestKey = { ...identity, requestId: identity.requestId!, requestHash: aiCreditFingerprint({ identity, fingerprint, model }, env) }
+    const p: AiCreditRequestKey = { ...identity, requestId: identity.requestId!, requestHash: aiCreditFingerprint({ identity, fingerprint, model: modelKey(model), policy: modelApprovalKey(model), credits: model.creditsPerReply }, env) }
     options.signal?.throwIfAborted()
     let hold: Awaited<ReturnType<typeof reserveAiCredit>>
-    try { hold = await reserveAiCredit(db, p, options.now?.()) } catch (error) {
+    try { hold = await reserveAiCredit(db, p, options.now?.(), model.creditsPerReply) } catch (error) {
       if (error instanceof AiCreditError) throw error
       throw new AiCreditError(503, "AI_BILLING_UNAVAILABLE")
     }
@@ -37,7 +39,7 @@ export function createAiReplyExecutor(db: Database, identity: Identity, options:
       catch { throw new AiCreditError(409, "AI_RESPONSE_EXPIRED") }
     }
     try {
-      const reply = await withAiUsage({ tenantId: p.tenantId, actorId: p.actorId, channel: p.channel, logicalRequestId: hold.request.id, creditRequestId: hold.request.id }, async () => {
+      const reply = await withAiUsage({ tenantId: p.tenantId, actorId: p.actorId, channel: p.channel, logicalRequestId: hold.request.id, creditRequestId: hold.request.id, billingModelKey: modelKey(model), billingPolicyVersion: model.policyVersion }, async () => {
         options.signal?.throwIfAborted()
         return generate()
       })

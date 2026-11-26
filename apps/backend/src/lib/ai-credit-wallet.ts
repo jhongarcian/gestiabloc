@@ -90,7 +90,7 @@ export async function grantPurchasedAiCredits(db: Writer, input: z.input<typeof 
   })
 }
 async function release(tx: Tx, request: AiCreditRequest, now: Date) {
-  if (request.monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: request.periodId! }, data: { reserved: { decrement: 1 } } })
+  if (request.monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: request.periodId! }, data: { reserved: { decrement: request.monthlyUnits } } })
   await tx.aiCreditWallet.update({ where: { tenantId: request.tenantId }, data: { purchasedReserved: { decrement: request.purchasedUnits }, revision: { increment: 1 } } })
   const result = await tx.aiCreditRequest.update({ where: { id: request.id }, data: { status: "RELEASED", finishedAt: now } })
   await tx.aiCreditLedger.create({ data: { tenantId: request.tenantId, kind: "RELEASE", periodId: request.periodId, requestId: request.id, monthlyUnits: request.monthlyUnits, purchasedUnits: request.purchasedUnits } })
@@ -107,13 +107,14 @@ export async function recoverExpiredAiCredits(db: Writer, tenantId: string, at?:
   return locked(db, tenantId, tx => recover(tx, tenantId, validNow(at ?? new Date())))
 }
 
-export async function reserveAiCredit(db: Writer, input: AiCreditRequestKey, at?: Date) {
+export async function reserveAiCredit(db: Writer, input: AiCreditRequestKey, at?: Date, units = 1) {
   const p = AiCreditRequestSchema.parse(input); if (at) validNow(at)
+  z.number().int().min(1).max(1000).parse(units)
   return locked(db, p.tenantId, async tx => {
     const now = validNow(at ?? new Date()) // evaluate after acquiring the lock
     const prior = await tx.aiCreditRequest.findUnique({ where: requestWhere(p) })
     if (prior) {
-      if (prior.requestHash !== p.requestHash) throw new AiCreditError(409, "AI_REQUEST_CONFLICT")
+      if (prior.requestHash !== p.requestHash || prior.monthlyUnits + prior.purchasedUnits !== units) throw new AiCreditError(409, "AI_REQUEST_CONFLICT")
       if (prior.status === "RELEASED" || (prior.status === "RESERVED" && prior.expiresAt <= now)) throw new AiCreditError(409, "AI_RESPONSE_EXPIRED")
       return { request: prior, duplicate: true }
     }
@@ -123,12 +124,12 @@ export async function reserveAiCredit(db: Writer, input: AiCreditRequestKey, at?
       throw new AiCreditError(402, "BILLING_REQUIRED")
     await recover(tx, p.tenantId, now)
     const period = await tx.aiCreditPeriod.findFirst({ where: { tenantId: p.tenantId, startsAt: { lte: now }, endsAt: { gt: now } } })
-    const monthlyUnits = period && period.granted - period.used - period.reserved > 0 ? 1 : 0
-    const purchasedUnits = monthlyUnits ? 0 : 1
+    const monthlyUnits = Math.min(units, period ? period.granted - period.used - period.reserved : 0)
+    const purchasedUnits = units - monthlyUnits
     const wallet = await tx.aiCreditWallet.findUniqueOrThrow({ where: { tenantId: p.tenantId } })
     if (wallet.purchaseReviewRequired) throw new AiCreditError(402, "AI_PURCHASE_REVIEW_REQUIRED")
-    if (purchasedUnits && wallet.purchasedBalance - wallet.purchasedReserved < 1) throw new AiCreditError(402, "AI_CREDITS_EXHAUSTED")
-    if (monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: period!.id }, data: { reserved: { increment: 1 } } })
+    if (wallet.purchasedBalance - wallet.purchasedReserved < purchasedUnits) throw new AiCreditError(402, "AI_CREDITS_EXHAUSTED")
+    if (monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: period!.id }, data: { reserved: { increment: monthlyUnits } } })
     await tx.aiCreditWallet.update({ where: { tenantId: p.tenantId }, data: { purchasedReserved: { increment: purchasedUnits }, revision: { increment: 1 } } })
     const request = await tx.aiCreditRequest.create({ data: { ...p, status: "RESERVED", monthlyUnits, purchasedUnits, periodId: monthlyUnits ? period!.id : null, expiresAt: new Date(now.getTime() + 5 * 60000) } })
     await tx.aiCreditLedger.create({ data: { tenantId: p.tenantId, kind: "RESERVE", periodId: request.periodId, requestId: request.id, monthlyUnits, purchasedUnits } })
@@ -149,7 +150,7 @@ export async function settleAiCredit(db: Writer, input: AiCreditRequestKey, outc
     }
     if (outcome === "RELEASE") return release(tx, request, now)
     if (request.expiresAt <= now) throw new AiCreditError(409, "AI_RESPONSE_EXPIRED")
-    if (request.monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: request.periodId! }, data: { reserved: { decrement: 1 }, used: { increment: 1 } } })
+    if (request.monthlyUnits) await tx.aiCreditPeriod.update({ where: { id: request.periodId! }, data: { reserved: { decrement: request.monthlyUnits }, used: { increment: request.monthlyUnits } } })
     await tx.aiCreditWallet.update({ where: { tenantId: p.tenantId }, data: { purchasedReserved: { decrement: request.purchasedUnits }, purchasedBalance: { decrement: request.purchasedUnits }, revision: { increment: 1 } } })
     const result = await tx.aiCreditRequest.update({ where: { id: request.id }, data: { status: "COMMITTED", finishedAt: now } })
     await tx.aiCreditLedger.create({ data: { tenantId: p.tenantId, kind: "COMMIT", periodId: request.periodId, requestId: request.id, monthlyUnits: request.monthlyUnits, purchasedUnits: request.purchasedUnits } })
